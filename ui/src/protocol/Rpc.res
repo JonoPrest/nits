@@ -221,7 +221,11 @@ module Request = {
   @@warning("-27")
   @schema @tag("type")
   type t =
-    | @as("EnsureDirectoryReview") EnsureDirectoryReview({@as("client_seq") clientSeq: clientSeq, options: EnsureDirectoryReview.t})
+    | @as("EnsureDirectoryReview")
+    EnsureDirectoryReview({
+        @as("client_seq") clientSeq: clientSeq,
+        options: EnsureDirectoryReview.t,
+      })
     | @as("ListWorkspaces") ListWorkspaces({})
     | @as("ListReviews") ListReviews({@as("workspace_id") workspaceId: workspaceId})
     | @as("ListRefs") ListRefs({@as("repo_id") repoId: repoId})
