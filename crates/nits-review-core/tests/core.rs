@@ -3,8 +3,8 @@
 use nits_protocol::{
     AgentVia, Anchor, Author, BaseRefSpec, ClientId, ClientSeq, CommentId, CommentKind,
     CommentState, CommitOid, DiffScope, EventBody, NonEmpty, RefSpec, RenderOpts, RepoId, RepoPath,
-    ReviewId, ReviewTarget, ReviewTargetUpdate, Row, Side, TargetRevision, ThreadResolution,
-    Timestamp, WorkspaceId,
+    ReviewId, ReviewStatus, ReviewTarget, ReviewTargetUpdate, Row, Side, TargetRevision,
+    ThreadResolution, Timestamp, WorkspaceId,
 };
 use nits_review_core::comments::{lines_anchor, thread_id_of};
 use nits_review_core::review::ViewedState;
@@ -276,6 +276,195 @@ fn re_resolve_is_idempotent_and_emits_on_change() {
         last[0].body,
         EventBody::ReviewTargetsResolved { .. }
     ));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn archived_working_tree_reviews_preserve_history_and_refresh_on_reopen() {
+    let w = world();
+    let review = review_id(1);
+    w.core
+        .create_review(
+            &human(),
+            review,
+            ws(),
+            "working tree".into(),
+            NonEmpty::singleton(ReviewTarget {
+                repo_id: rid(1),
+                base: RefSpec::Branch {
+                    name: "main".into(),
+                },
+                head: RefSpec::WorkingTree,
+            }),
+        )
+        .unwrap();
+    let blob = head_blob(&w.core, review, rid(1), "src/main.rs");
+    w.core
+        .add_comment(
+            &human(),
+            review,
+            cid(1),
+            CommentKind::Note,
+            lines_anchor(rid(1), p("src/main.rs"), Side::Head, blob, 8, 8).unwrap(),
+            "keep this discussion".into(),
+            None,
+        )
+        .unwrap();
+    let original = w.core.review_snapshot(review).unwrap();
+    let candidates = w.core.working_tree_reviews(rid(1)).unwrap();
+    assert_eq!(candidates, vec![review]);
+    w.core
+        .update_review(&human(), review, "archived".into(), ReviewStatus::Archived)
+        .unwrap();
+    let archived_at = w.core.last_seq().unwrap();
+    let shifted = format!(
+        "// header\n// header2\n{}",
+        SRC.replace("let h = 8;", "let h = 80;")
+    );
+    w.a.write_file("src/main.rs", shifted.as_bytes()).unwrap();
+    // A watcher that selected this review before archival must still skip it.
+    for candidate in candidates {
+        w.core
+            .refresh_working_tree_review(&human(), candidate, rid(1))
+            .unwrap();
+    }
+    assert_eq!(w.core.last_seq().unwrap(), archived_at);
+    assert!(w.core.working_tree_reviews(rid(1)).unwrap().is_empty());
+
+    drop(w.core);
+    let core = Core::open(&w.data).unwrap();
+    let archived = core.review_snapshot(review).unwrap();
+    assert_eq!(archived.review.status, ReviewStatus::Archived);
+    assert_eq!(archived.resolved, original.resolved);
+    assert_eq!(archived.comments, original.comments);
+    assert_eq!(archived.threads, original.threads);
+    assert!(core.working_tree_reviews(rid(1)).unwrap().is_empty());
+    core.blob_render(rid(1), &p("src/main.rs"), blob).unwrap();
+
+    core.update_review(&human(), review, "reopened".into(), ReviewStatus::Open)
+        .unwrap();
+    let events = core.events_after(archived_at).unwrap();
+    assert_eq!(events.len(), 3);
+    assert!(matches!(
+        events[0].body,
+        EventBody::ReviewUpdated {
+            status: ReviewStatus::Open,
+            ..
+        }
+    ));
+    assert!(matches!(
+        events[1].body,
+        EventBody::ReviewTargetsResolved { .. }
+    ));
+    assert!(matches!(
+        events[2].body,
+        EventBody::CommentReanchored { .. }
+    ));
+    let reopened = core.review_snapshot(review).unwrap();
+    assert_ne!(reopened.resolved, original.resolved);
+    assert_eq!(reopened.comments.len(), 1);
+    let comment = &reopened.comments[0];
+    assert_eq!(comment.id, original.comments[0].id);
+    assert_eq!(comment.body, original.comments[0].body);
+    assert_eq!(comment.state, CommentState::Live);
+    let Anchor::Lines {
+        lines, blob_oid, ..
+    } = &comment.anchor
+    else {
+        panic!("expected line anchor")
+    };
+    assert_eq!(lines.start().get(), 10);
+    assert_ne!(*blob_oid, blob);
+    assert_eq!(reopened.threads, original.threads);
+    assert_eq!(core.working_tree_reviews(rid(1)).unwrap(), vec![review]);
+    // Old anchor blobs remain readable after refreshing as well.
+    core.blob_render(rid(1), &p("src/main.rs"), blob).unwrap();
+}
+
+#[test]
+fn reopening_unchanged_review_emits_only_metadata_and_missing_ref_keeps_it_archived() {
+    let w = world();
+    w.core
+        .create_review(&human(), review_id(1), ws(), "r".into(), targets())
+        .unwrap();
+    w.core
+        .update_review(&human(), review_id(1), "r".into(), ReviewStatus::Archived)
+        .unwrap();
+    let before = w.core.last_seq().unwrap();
+    w.core
+        .update_review(&human(), review_id(1), "r".into(), ReviewStatus::Open)
+        .unwrap();
+    let events = w.core.events_after(before).unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0].body, EventBody::ReviewUpdated { .. }));
+
+    w.core
+        .update_review(&human(), review_id(1), "r".into(), ReviewStatus::Archived)
+        .unwrap();
+    let archived = w.core.review_snapshot(review_id(1)).unwrap();
+    w.a.git(&["checkout", "main"]).unwrap();
+    w.a.git(&["branch", "-D", "feature"]).unwrap();
+    assert!(
+        w.core
+            .update_review(
+                &human(),
+                review_id(1),
+                "reopened".into(),
+                ReviewStatus::Open
+            )
+            .is_err()
+    );
+    assert_eq!(w.core.review_snapshot(review_id(1)).unwrap(), archived);
+}
+
+#[test]
+fn working_tree_refresh_candidates_require_open_status_and_the_matching_repo() {
+    let w = world();
+    for (review, base, head) in [
+        (review_id(1), RefSpec::Head, RefSpec::WorkingTree),
+        (review_id(2), RefSpec::WorkingTree, RefSpec::Head),
+        (review_id(3), RefSpec::Head, RefSpec::Head),
+        (review_id(4), RefSpec::Head, RefSpec::WorkingTree),
+        (review_id(5), RefSpec::Head, RefSpec::WorkingTree),
+    ] {
+        w.core
+            .create_review(
+                &human(),
+                review,
+                ws(),
+                "r".into(),
+                NonEmpty::singleton(ReviewTarget {
+                    repo_id: rid(1),
+                    base,
+                    head,
+                }),
+            )
+            .unwrap();
+    }
+    w.core
+        .update_review(&human(), review_id(4), "r".into(), ReviewStatus::Archived)
+        .unwrap();
+    w.core.delete_review(&human(), review_id(5)).unwrap();
+    assert_eq!(
+        w.core.working_tree_reviews(rid(1)).unwrap(),
+        vec![review_id(1), review_id(2)]
+    );
+    assert!(w.core.working_tree_reviews(rid(2)).unwrap().is_empty());
+    let before = w.core.last_seq().unwrap();
+    w.a.write_file("new.txt", b"changed\n").unwrap();
+    w.core
+        .refresh_working_tree_review(&human(), review_id(1), rid(2))
+        .unwrap();
+    w.core
+        .refresh_working_tree_review(&human(), review_id(3), rid(1))
+        .unwrap();
+    assert_eq!(w.core.last_seq().unwrap(), before);
+    // Explicit refresh is still available for archived reviews.
+    assert!(w.core.resolve_targets(&human(), review_id(4)).unwrap().1);
+    assert_eq!(
+        w.core.review(review_id(4)).unwrap().review.status,
+        ReviewStatus::Archived
+    );
 }
 
 #[test]

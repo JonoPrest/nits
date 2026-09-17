@@ -216,6 +216,8 @@ impl Core {
         })
     }
 
+    /// Update metadata, refreshing targets and anchors when an archived review
+    /// is reopened. Unresolvable refs leave the review archived.
     pub fn update_review(
         &self,
         ctx: &Ctx,
@@ -223,7 +225,15 @@ impl Core {
         title: String,
         status: ReviewStatus,
     ) -> Result<(), CoreError> {
-        self.review(id)?;
+        let rec = self.review(id)?;
+        // Resolve before writing so a missing ref cannot reopen a stale review.
+        // Keep ReviewUpdated first: transports acknowledge the primary event.
+        let refreshed =
+            if rec.review.status == ReviewStatus::Archived && status == ReviewStatus::Open {
+                Some(self.resolve_review_targets(&rec.review)?)
+            } else {
+                None
+            };
         self.append(
             ctx,
             EventBody::ReviewUpdated {
@@ -232,6 +242,9 @@ impl Core {
                 status,
             },
         )?;
+        if let Some(resolved) = refreshed {
+            self.record_resolved_targets(ctx, &rec, &resolved)?;
+        }
         Ok(())
     }
 
@@ -288,8 +301,17 @@ impl Core {
         id: ReviewId,
     ) -> Result<(NonEmpty<ResolvedTarget>, bool), CoreError> {
         let rec = self.review(id)?;
+        let resolved = self.resolve_review_targets(&rec.review)?;
+        let changed = self.record_resolved_targets(ctx, &rec, &resolved)?;
+        Ok((resolved, changed))
+    }
+
+    fn resolve_review_targets(
+        &self,
+        review: &Review,
+    ) -> Result<NonEmpty<ResolvedTarget>, CoreError> {
         let mut resolved = Vec::new();
-        for t in &rec.review.targets {
+        for t in &review.targets {
             let repo = self.repo(t.repo_id)?;
             resolved.push(ResolvedTarget {
                 repo_id: t.repo_id,
@@ -297,21 +319,29 @@ impl Core {
                 head: repo.resolve(&t.head)?,
             });
         }
-        let resolved = NonEmpty::new(resolved).map_err(|e| CoreError::invalid(e.to_string()))?;
-        let changed = rec.resolved.as_ref() != Some(&resolved);
+        NonEmpty::new(resolved).map_err(|e| CoreError::invalid(e.to_string()))
+    }
+
+    fn record_resolved_targets(
+        &self,
+        ctx: &Ctx,
+        rec: &ReviewRecord,
+        resolved: &NonEmpty<ResolvedTarget>,
+    ) -> Result<bool, CoreError> {
+        let changed = rec.resolved.as_ref() != Some(resolved);
         if changed {
             self.append(
                 ctx,
                 EventBody::ReviewTargetsResolved {
-                    review_id: id,
+                    review_id: rec.review.id,
                     targets: resolved.clone(),
                 },
             )?;
             if let Some(old) = &rec.resolved {
-                self.reanchor_review(ctx, id, old, &resolved)?;
+                self.reanchor_review(ctx, rec.review.id, old, resolved)?;
             }
         }
-        Ok((resolved, changed))
+        Ok(changed)
     }
 
     fn resolved(
@@ -841,22 +871,43 @@ impl Core {
         Ok(self.repo(repo_id)?.tree_delta(repo_id, from, to)?)
     }
 
-    /// Live reviews with a working-tree target on `repo_id`, across all
-    /// workspaces.
+    /// Open, non-deleted reviews with a working-tree target on `repo_id`,
+    /// across all workspaces. Archived reviews retain their last resolution.
     pub fn working_tree_reviews(&self, repo_id: RepoId) -> Result<Vec<ReviewId>, CoreError> {
         let mut out = Vec::new();
         for ws in self.store.workspaces()? {
             for rec in self.store.reviews(ws.id)? {
                 let live = matches!(rec.lifecycle, ReviewLifecycle::Live);
-                let uses = rec.review.targets.iter().any(|t| {
-                    t.repo_id == repo_id
-                        && (t.base == RefSpec::WorkingTree || t.head == RefSpec::WorkingTree)
-                });
-                if live && uses {
+                if live && watches_working_tree(&rec.review, repo_id) {
                     out.push(rec.review.id);
                 }
             }
         }
         Ok(out)
+    }
+
+    /// Refresh a watcher candidate only while it still watches `repo_id`.
+    /// Call on the writer thread: a review may have been archived since the
+    /// watcher obtained its candidate list.
+    pub fn refresh_working_tree_review(
+        &self,
+        ctx: &Ctx,
+        id: ReviewId,
+        repo_id: RepoId,
+    ) -> Result<(), CoreError> {
+        if watches_working_tree(&self.review(id)?.review, repo_id) {
+            self.resolve_targets(ctx, id)?;
+        }
+        Ok(())
+    }
+}
+
+fn watches_working_tree(review: &Review, repo_id: RepoId) -> bool {
+    match review.status {
+        ReviewStatus::Open => review.targets.iter().any(|t| {
+            t.repo_id == repo_id
+                && (t.base == RefSpec::WorkingTree || t.head == RefSpec::WorkingTree)
+        }),
+        ReviewStatus::Archived => false,
     }
 }

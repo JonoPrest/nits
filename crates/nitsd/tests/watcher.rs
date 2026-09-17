@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use nits_protocol::{
     Author, BuildInfo, ClientId, ClientSeq, EventBody, Mutation, NonEmpty, RefSpec, RepoId,
-    Request, Response, ReviewId, ReviewTarget, Since, SubscribeScope, TreeEntryKind, WorkspaceId,
+    Request, Response, ReviewId, ReviewStatus, ReviewTarget, Since, SubscribeScope, TreeEntryKind,
+    WorkspaceId,
 };
 use nits_review_core::DataDir;
 use nits_test_support::{RepoBuilder, TestRepo, files};
@@ -174,6 +175,148 @@ fn resolved_count(msgs: &[Unsolicited]) -> usize {
             )
         })
         .count()
+}
+
+fn resolved_reviews(msgs: &[Unsolicited]) -> Vec<ReviewId> {
+    msgs.iter()
+        .filter_map(|message| {
+            if let Unsolicited::Event(event) = message
+                && let EventBody::ReviewTargetsResolved { review_id, .. } = event.body
+            {
+                Some(review_id)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn archived_review_stays_quiet_while_open_review_updates_and_reopening_catches_up() {
+    let h = start().await;
+    let archived_id = ReviewId::from_parts(1, 2);
+    mutate(
+        &h.client,
+        4,
+        Mutation::CreateReview {
+            review_id: archived_id,
+            workspace_id: ws(),
+            title: "superseded".into(),
+            targets: NonEmpty::singleton(ReviewTarget {
+                repo_id: rid(),
+                base: RefSpec::Head,
+                head: RefSpec::WorkingTree,
+            }),
+        },
+    )
+    .await;
+    mutate(
+        &h.client,
+        5,
+        Mutation::UpdateReview {
+            review_id: archived_id,
+            title: "superseded".into(),
+            status: ReviewStatus::Archived,
+        },
+    )
+    .await;
+    let Response::ReviewSnapshot { snapshot: archived } = h
+        .client
+        .request(Request::ReviewSnapshot {
+            review_id: archived_id,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected snapshot");
+    };
+    h.client
+        .request(Request::Subscribe {
+            scope: SubscribeScope::Workspace { workspace_id: ws() },
+            since: Since::Now,
+        })
+        .await
+        .unwrap();
+    collect(&h.client, Duration::from_millis(100)).await;
+
+    h.repo
+        .write_file("a.txt", b"changed while archived\n")
+        .unwrap();
+    let msgs = collect(&h.client, Duration::from_secs(2)).await;
+    assert_eq!(resolved_reviews(&msgs), vec![review_id()], "{msgs:#?}");
+    let Response::ReviewSnapshot {
+        snapshot: still_archived,
+    } = h
+        .client
+        .request(Request::ReviewSnapshot {
+            review_id: archived_id,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected snapshot");
+    };
+    assert_eq!(still_archived.review, archived.review);
+    assert_eq!(still_archived.resolved, archived.resolved);
+
+    // No additional filesystem event is needed to refresh on reopening.
+    let response = h
+        .client
+        .request(Request::Mutate {
+            client_seq: ClientSeq::new(6),
+            mutation: Mutation::UpdateReview {
+                review_id: archived_id,
+                title: "reopened".into(),
+                status: ReviewStatus::Open,
+            },
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(response, Response::Committed { event } if matches!(event.body, EventBody::ReviewUpdated { status: ReviewStatus::Open, .. }))
+    );
+    let msgs = collect(&h.client, Duration::from_millis(200)).await;
+    assert_eq!(resolved_reviews(&msgs), vec![archived_id], "{msgs:#?}");
+    let Response::ReviewSnapshot { snapshot: reopened } = h
+        .client
+        .request(Request::ReviewSnapshot {
+            review_id: archived_id,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected snapshot");
+    };
+    assert_eq!(reopened.review.status, ReviewStatus::Open);
+    assert_ne!(reopened.resolved, archived.resolved);
+
+    h.repo
+        .write_file("b.txt", b"both reviews are now open\n")
+        .unwrap();
+    let msgs = collect(&h.client, Duration::from_secs(2)).await;
+    let mut reviews = resolved_reviews(&msgs);
+    reviews.sort();
+    assert_eq!(reviews, vec![review_id(), archived_id], "{msgs:#?}");
+}
+
+#[tokio::test]
+async fn archived_review_subscription_receives_neither_refresh_events_nor_tree_deltas() {
+    let h = start().await;
+    mutate(
+        &h.client,
+        4,
+        Mutation::UpdateReview {
+            review_id: review_id(),
+            title: "archived".into(),
+            status: ReviewStatus::Archived,
+        },
+    )
+    .await;
+    collect(&h.client, Duration::from_millis(100)).await;
+    h.repo.write_file("a.txt", b"changed\n").unwrap();
+    let msgs = collect(&h.client, Duration::from_secs(2)).await;
+    assert!(msgs.is_empty(), "{msgs:#?}");
 }
 
 #[tokio::test]
