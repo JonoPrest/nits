@@ -461,8 +461,13 @@ async fn prefs_survive_a_host_restart_through_redb() {
         )
         .await;
         shutdown.cancel();
-        // Let the task drop the database before reopening it.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The patch sender drops after the host's KV store. Wait for that
+        // observable shutdown instead of guessing how long database close takes.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while rx.recv().await.is_some() {}
+        })
+        .await
+        .expect("host did not finish shutting down");
     }
     let shutdown = CancellationToken::new();
     let (handle, mut rx) = spawn(config(&h, KvConfig::Redb(kv)), shutdown.clone()).unwrap();
