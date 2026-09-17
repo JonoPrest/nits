@@ -735,6 +735,9 @@ enum_fixture!(
             comment_id: comment_id()?
         },
         Action::CloseReview,
+        Action::CheckCurrent,
+        Action::CheckRequested,
+        Action::CheckpointDelta,
         Action::InformationalNoteOpened,
         Action::DraftOpened {
             anchor: proto_named::<Anchor>("Lines")?,
@@ -899,6 +902,12 @@ enum_fixture!(
     ScopeChoiceKind,
     "ScopeChoice",
     [
+        ScopeChoice::Requested {
+            request_id: ReviewRequestId::from_event_seq(Seq::new(40))
+        },
+        ScopeChoice::SinceCheckpoint {
+            checkpoint_id: ReviewCheckpointId::from_event_seq(Seq::new(41))
+        },
         ScopeChoice::All,
         ScopeChoice::Committed,
         ScopeChoice::ByCommit,
@@ -983,6 +992,7 @@ enum_fixture!(
         },
         ViewPatch::Conversation {
             requests: vec![proto::<ReviewRequest>()?],
+            checkpoints: vec![proto::<ReviewerCheckpoint>()?],
             conversation: vec![local::<ThreadView>()?],
         },
         ViewPatch::CommitStepper {
@@ -1059,6 +1069,7 @@ struct_fixture!(
         threads: vec![local::<ThreadView>()?],
         conversation: Vec::new(),
         requests: vec![proto::<ReviewRequest>()?],
+        checkpoints: vec![proto::<ReviewerCheckpoint>()?],
         stepper: Some(local::<CommitStepper>()?),
         focus: Focus::Diff {
             row: 121,

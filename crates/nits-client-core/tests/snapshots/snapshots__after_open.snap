@@ -705,6 +705,7 @@ expression: core.view()
     }
   ],
   "requests": [],
+  "checkpoints": [],
   "stepper": null,
   "focus": {
     "type": "Diff",
@@ -881,6 +882,16 @@ expression: core.view()
       "label": "informational note"
     },
     {
+      "keys": "space k",
+      "command": "CheckCurrent",
+      "label": "record current revision checked"
+    },
+    {
+      "keys": "space d",
+      "command": "CheckpointDelta",
+      "label": "next checkpoint delta"
+    },
+    {
       "keys": "space f",
       "command": "ReviewFinding",
       "label": "review-wide finding"
@@ -899,6 +910,11 @@ expression: core.view()
       "keys": "ctrl+shift+d",
       "command": "Disconnect",
       "label": "disconnect"
+    },
+    {
+      "keys": "v",
+      "command": "CheckRequested",
+      "label": "record requested revision checked"
     },
     {
       "keys": "j",
@@ -1226,6 +1242,16 @@ expression: core.view()
       "keys": "space i",
       "command": "InformationalNote",
       "label": "informational note"
+    },
+    {
+      "keys": "space k",
+      "command": "CheckCurrent",
+      "label": "record current revision checked"
+    },
+    {
+      "keys": "space d",
+      "command": "CheckpointDelta",
+      "label": "next checkpoint delta"
     },
     {
       "keys": "space f",
@@ -1598,6 +1624,7 @@ expression: core.view()
       ],
       "viewed": [],
       "requests": [],
+      "checkpoints": [],
       "seq": 1
     },
     "pending": [],

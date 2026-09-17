@@ -62,6 +62,7 @@ pub enum ViewPatch {
     Conversation {
         conversation: Vec<ThreadView>,
         requests: Vec<nits_protocol::ReviewRequest>,
+        checkpoints: Vec<nits_protocol::ReviewerCheckpoint>,
     },
     CommitStepper {
         stepper: Option<CommitStepper>,
@@ -169,6 +170,7 @@ impl ViewModel {
             ViewSection::Conversation => ViewPatch::Conversation {
                 conversation: self.conversation.clone(),
                 requests: self.requests.clone(),
+                checkpoints: self.checkpoints.clone(),
             },
             ViewSection::CommitStepper => ViewPatch::CommitStepper {
                 stepper: self.stepper.clone(),
@@ -265,9 +267,11 @@ impl ViewModel {
             ViewPatch::Conversation {
                 conversation,
                 requests,
+                checkpoints,
             } => {
                 self.conversation = conversation;
                 self.requests = requests;
+                self.checkpoints = checkpoints;
             }
             ViewPatch::CommitStepper { stepper } => self.stepper = stepper,
             ViewPatch::RefSelector { ref_selector } => self.ref_selector = ref_selector,

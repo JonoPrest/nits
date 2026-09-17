@@ -76,6 +76,8 @@ pub enum Divergence {
     Threads(Peer),
     #[error("client {0:?} requests differ from the daemon's")]
     Requests(Peer),
+    #[error("client {0:?} checkpoints differ from the daemon's")]
+    Checkpoints(Peer),
     #[error("client {0:?} has no review open")]
     NotOpen(Peer),
 }
@@ -170,6 +172,14 @@ impl Sim {
                 review_id: self.daemon.snapshot.review.id,
                 agent: recipient,
                 note,
+                targets: self
+                    .daemon
+                    .snapshot
+                    .resolved
+                    .clone()
+                    .map_or(nits_protocol::RequestedTargets::Unknown, |targets| {
+                        nits_protocol::RequestedTargets::Captured { targets }
+                    }),
             },
         };
         apply_event(&mut self.daemon.snapshot, &event);
@@ -185,6 +195,38 @@ impl Sim {
             }
         }
         event
+    }
+
+    /// Commit a moving-target update independently of either reviewer.
+    pub fn advance_targets(
+        &mut self,
+        targets: nits_protocol::NonEmpty<nits_protocol::ResolvedTarget>,
+    ) {
+        let event = Event {
+            seq: self.daemon.next_seq(),
+            ts: Timestamp::from_millis(self.daemon.now_ms),
+            author: Author::Daemon {
+                machine: "sim".into(),
+            },
+            client_id: ClientId::from_parts(1, u128::MAX),
+            client_seq: nits_protocol::ClientSeq::new(self.daemon.next_seq().get()),
+            body: nits_protocol::EventBody::ReviewTargetsResolved {
+                review_id: self.daemon.snapshot.review.id,
+                targets,
+            },
+        };
+        apply_event(&mut self.daemon.snapshot, &event);
+        self.daemon.log.push(event.clone());
+        for i in 0..self.clients.len() {
+            if self.clients[i].session == (Session::Live { subscribed: true }) {
+                self.push_down(
+                    Peer(i),
+                    ServerMsg::Event {
+                        event: event.clone(),
+                    },
+                );
+            }
+        }
     }
 
     /// Messages waiting in each direction for `peer`.
@@ -290,6 +332,9 @@ impl Sim {
             }
             if open.snapshot.threads != self.daemon.snapshot.threads {
                 return Err(Divergence::Threads(peer));
+            }
+            if open.snapshot.checkpoints != self.daemon.snapshot.checkpoints {
+                return Err(Divergence::Checkpoints(peer));
             }
             if open.snapshot.requests != self.daemon.snapshot.requests {
                 return Err(Divergence::Requests(peer));
@@ -449,7 +494,26 @@ impl Sim {
                     author: author.clone(),
                     ts: Timestamp::from_millis(self.daemon.now_ms),
                 };
-                match local_event(&self.daemon.snapshot, &meta, &mutation) {
+                let body = if let nits_protocol::Mutation::RecordCheckpoint {
+                    review_id,
+                    targets,
+                    in_reply_to,
+                } = &mutation
+                {
+                    nits_protocol::ReviewerIdentity::from_author(&author)
+                        .map(|reviewer| nits_protocol::EventBody::ReviewChecked {
+                            review_id: *review_id,
+                            reviewer,
+                            targets: targets.clone(),
+                            in_reply_to: *in_reply_to,
+                        })
+                        .ok_or(MutationError::Unsupported(
+                            nits_protocol::MutationKind::RecordCheckpoint,
+                        ))
+                } else {
+                    local_event(&self.daemon.snapshot, &meta, &mutation)
+                };
+                match body {
                     Ok(body) => {
                         let event = Event {
                             seq: self.daemon.next_seq(),

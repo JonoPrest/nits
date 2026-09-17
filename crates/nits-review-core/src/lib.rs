@@ -6,6 +6,7 @@
 #![deny(clippy::wildcard_enum_match_arm)]
 
 pub mod anchor;
+mod checkpoints;
 pub mod comments;
 pub mod core;
 mod directory;

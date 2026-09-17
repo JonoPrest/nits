@@ -187,6 +187,12 @@ module Mutation = {
         agent: string,
         note: string,
       })
+    | @as("RecordCheckpoint")
+    RecordCheckpoint({
+        @as("review_id") reviewId: reviewId,
+        targets: array<ResolvedTarget.t>,
+        @as("in_reply_to") inReplyTo: @s.null option<ReviewRound.t>,
+      })
     | @as("ApplySuggestion")
     ApplySuggestion({
         @as("review_id") reviewId: reviewId,

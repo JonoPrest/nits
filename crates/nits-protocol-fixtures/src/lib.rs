@@ -223,6 +223,13 @@ registry!(
     ReviewSnapshot,
     ReviewRequest,
     ReviewRequestId,
+    ReviewCheckpointId,
+    RequestedTargets,
+    ReviewerIdentity,
+    ReviewRound,
+    ReviewCheckpoint,
+    CheckpointFreshness,
+    ReviewerCheckpoint,
     Response,
     StreamItem,
     EntityKind,
@@ -703,6 +710,7 @@ fn review_request() -> ReviewRequest {
         recipient: "review-agent".into(),
         note: "Please review the updated parser.".into(),
         created: Timestamp::from_millis(1_700_000_000_000),
+        targets: nits_protocol::RequestedTargets::Unknown,
     }
 }
 
@@ -715,6 +723,7 @@ fn review_snapshot() -> Result<ReviewSnapshot, FixtureError> {
         viewed: vec![viewed_mark()?],
         requests: vec![review_request()],
         seq: Seq::new(42),
+        checkpoints: vec![review_checkpoint()?],
     })
 }
 
@@ -942,6 +951,12 @@ enum_fixture!(
             oid: commit(11)
         },
         DiffScope::Worktree { repo_id: repo_id() },
+        DiffScope::Requested {
+            request_id: ReviewRequestId::from_event_seq(Seq::new(40))
+        },
+        DiffScope::SinceCheckpoint {
+            checkpoint_id: ReviewCheckpointId::from_event_seq(Seq::new(41))
+        },
     ]
 );
 enum_fixture!(
@@ -1108,7 +1123,18 @@ enum_fixture!(
         EventBody::ReviewRequested {
             review_id: review_id(),
             agent: "claude-code".into(),
-            note: "Please review the store.".into()
+            note: "Please review the store.".into(),
+            targets: nits_protocol::RequestedTargets::Unknown,
+        },
+        EventBody::ReviewChecked {
+            review_id: review_id(),
+            reviewer: ReviewerIdentity::Agent {
+                name: "review-agent".into()
+            },
+            targets: resolved_targets()?,
+            in_reply_to: Some(ReviewRound::Request {
+                request_id: ReviewRequestId::from_event_seq(Seq::new(40))
+            })
         },
         EventBody::SuggestionApplied {
             review_id: review_id(),
@@ -1443,10 +1469,17 @@ enum_fixture!(
             repo_id: repo_id(),
             path: path("src/lib.rs")?
         },
+        Mutation::RecordCheckpoint {
+            review_id: review_id(),
+            targets: resolved_targets()?,
+            in_reply_to: Some(ReviewRound::Request {
+                request_id: ReviewRequestId::from_event_seq(Seq::new(40))
+            })
+        },
         Mutation::RequestReview {
             review_id: review_id(),
             agent: "claude-code".into(),
-            note: "Please review the store.".into()
+            note: "Please review the store.".into(),
         },
         Mutation::ApplySuggestion {
             review_id: review_id(),
@@ -1759,3 +1792,72 @@ struct_fixture!(
 );
 struct_fixture!(DirectoryReview, "DirectoryReview", directory_review());
 unit_enum_fixture!(DirectoryReviewOutcome, "DirectoryReviewOutcome");
+
+fn review_checkpoint() -> Result<ReviewCheckpoint, FixtureError> {
+    Ok(ReviewCheckpoint {
+        id: ReviewCheckpointId::from_event_seq(Seq::new(41)),
+        review_id: review_id(),
+        reviewer: ReviewerIdentity::Agent {
+            name: "claude-code".into(),
+        },
+        author: agent_author(),
+        created: ts(6),
+        targets: resolved_targets()?,
+        in_reply_to: Some(ReviewRound::Request {
+            request_id: ReviewRequestId::from_event_seq(Seq::new(40)),
+        }),
+    })
+}
+struct_fixture!(
+    ReviewCheckpointId,
+    "ReviewCheckpointId",
+    ReviewCheckpointId::from_event_seq(Seq::new(41))
+);
+struct_fixture!(ReviewCheckpoint, "ReviewCheckpoint", review_checkpoint()?);
+struct_fixture!(
+    ReviewerCheckpoint,
+    "ReviewerCheckpoint",
+    ReviewerCheckpoint {
+        checkpoint: review_checkpoint()?,
+        freshness: CheckpointFreshness::Changed
+    }
+);
+enum_fixture!(
+    RequestedTargets,
+    RequestedTargetsKind,
+    "RequestedTargets",
+    [
+        RequestedTargets::Unknown,
+        RequestedTargets::Captured {
+            targets: resolved_targets()?
+        }
+    ]
+);
+enum_fixture!(
+    ReviewerIdentity,
+    ReviewerIdentityKind,
+    "ReviewerIdentity",
+    [
+        ReviewerIdentity::Agent {
+            name: "review-agent".into()
+        },
+        ReviewerIdentity::Human {
+            name: "Ada".into(),
+            machine: "laptop".into()
+        }
+    ]
+);
+enum_fixture!(
+    ReviewRound,
+    ReviewRoundKind,
+    "ReviewRound",
+    [
+        ReviewRound::Request {
+            request_id: ReviewRequestId::from_event_seq(Seq::new(40))
+        },
+        ReviewRound::Checkpoint {
+            checkpoint_id: ReviewCheckpointId::from_event_seq(Seq::new(41))
+        }
+    ]
+);
+unit_enum_fixture!(CheckpointFreshness, "CheckpointFreshness");

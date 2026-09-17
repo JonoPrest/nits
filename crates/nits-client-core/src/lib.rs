@@ -177,6 +177,9 @@ pub enum Action {
         comment_id: nits_protocol::CommentId,
     },
     CloseReview,
+    CheckCurrent,
+    CheckRequested,
+    CheckpointDelta,
     /// Start a review-level informational note, without an actionable lifecycle.
     InformationalNoteOpened,
     /// The user started writing a finding at `anchor`. The editor is the
@@ -420,8 +423,19 @@ pub enum ScopeChoice {
     All,
     Committed,
     ByCommit,
-    Commit { repo_id: RepoId, oid: CommitOid },
-    Worktree { repo_id: RepoId },
+    Commit {
+        repo_id: RepoId,
+        oid: CommitOid,
+    },
+    Worktree {
+        repo_id: RepoId,
+    },
+    Requested {
+        request_id: nits_protocol::ReviewRequestId,
+    },
+    SinceCheckpoint {
+        checkpoint_id: nits_protocol::ReviewCheckpointId,
+    },
 }
 
 /// Something the host must do for the core.
@@ -628,9 +642,9 @@ pub struct ClientCore {
     /// The open review as the daemon last confirmed it; `view.review.snapshot`
     /// is this plus `pending`.
     committed: Option<ReviewSnapshot>,
-    /// Live invitations arriving while a snapshot is in flight. A response
+    /// Live requests, checks and target updates arriving while a snapshot is in flight. A response
     /// can carry an older cursor than an event delivered ahead of it.
-    snapshot_requests: BTreeMap<RequestId, (ReviewId, Vec<nits_protocol::ReviewRequest>)>,
+    snapshot_events: BTreeMap<RequestId, (ReviewId, Vec<Event>)>,
     /// Mutations sent and not yet echoed by the daemon, in send order.
     pending: Vec<Pending>,
     reference_context: Option<nits_protocol::ReferenceContext>,
@@ -715,7 +729,7 @@ impl ClientCore {
             deferred: Vec::new(),
             content,
             committed: None,
-            snapshot_requests: BTreeMap::new(),
+            snapshot_events: BTreeMap::new(),
             pending: Vec::new(),
             reference_context: None,
             pending_reference: None,
@@ -1060,6 +1074,25 @@ impl ClientCore {
             .review
             .as_ref()
             .map_or_else(Vec::new, |r| r.snapshot.requests.clone());
+        let checkpoints = self.view.review.as_ref().map_or_else(Vec::new, |r| {
+            let current = self
+                .deferred
+                .iter()
+                .rev()
+                .find_map(|event| {
+                    if let EventBody::ReviewTargetsResolved { review_id, targets } = &event.body {
+                        (*review_id == r.snapshot.review.id).then_some(targets)
+                    } else {
+                        None
+                    }
+                })
+                .or(r.snapshot.resolved.as_ref());
+            nits_protocol::latest_checkpoints(&r.snapshot.checkpoints, current)
+        });
+        if checkpoints != self.view.checkpoints {
+            self.view.checkpoints = checkpoints;
+            sections.push(ViewSection::Conversation);
+        }
         if requests != self.view.requests {
             self.view.requests = requests;
             sections.push(ViewSection::Conversation);
@@ -1227,6 +1260,7 @@ impl ClientCore {
                 | EventBody::FileViewed { .. }
                 | EventBody::FileUnviewed { .. }
                 | EventBody::ReviewRequested { .. }
+                | EventBody::ReviewChecked { .. }
                 | EventBody::SuggestionApplied { .. }
                 | EventBody::WorkspaceCreated { .. }
                 | EventBody::WorkspaceUpdated { .. }
@@ -2272,6 +2306,10 @@ impl ClientCore {
                 };
                 let review_id = open.snapshot.review.id;
                 let wire = match scope {
+                    ScopeChoice::Requested { request_id } => DiffScope::Requested { request_id },
+                    ScopeChoice::SinceCheckpoint { checkpoint_id } => {
+                        DiffScope::SinceCheckpoint { checkpoint_id }
+                    }
                     ScopeChoice::All => DiffScope::All,
                     ScopeChoice::Committed => DiffScope::Committed,
                     ScopeChoice::Commit { repo_id, oid } => DiffScope::Commit { repo_id, oid },
@@ -2295,6 +2333,7 @@ impl ClientCore {
                             .ok_or(CoreError::NoStepper)?
                     }
                 };
+                self.view.tab = Tab::FilesChanged;
                 Ok(self.apply_scope(wire))
             }
             Action::OpenOriginalDiff { thread_id } => self.open_original(thread_id),
@@ -2808,6 +2847,81 @@ impl ClientCore {
                     thread_id,
                 })
             }
+            Action::CheckCurrent | Action::CheckRequested => {
+                self.require_subscribed()?;
+                let snapshot = self.committed.as_ref().ok_or(CoreError::NoOpenReview)?;
+                let review_id = snapshot.review.id;
+                let (targets, in_reply_to) = if matches!(action, Action::CheckRequested) {
+                    let Focus::ReviewRequest { index } = self.view.focus else {
+                        return Err(CoreError::NoOpenReview);
+                    };
+                    let request = snapshot
+                        .requests
+                        .get(index)
+                        .ok_or(CoreError::NoOpenReview)?;
+                    let nits_protocol::RequestedTargets::Captured { targets } = &request.targets
+                    else {
+                        return Err(CoreError::NoOpenReview);
+                    };
+                    (
+                        targets.clone(),
+                        Some(nits_protocol::ReviewRound::Request {
+                            request_id: request.id,
+                        }),
+                    )
+                } else {
+                    (
+                        snapshot.resolved.clone().ok_or(CoreError::NoOpenReview)?,
+                        match self.view.scope {
+                            DiffScope::Requested { request_id } => {
+                                Some(nits_protocol::ReviewRound::Request { request_id })
+                            }
+                            DiffScope::SinceCheckpoint { checkpoint_id } => {
+                                Some(nits_protocol::ReviewRound::Checkpoint { checkpoint_id })
+                            }
+                            DiffScope::All
+                            | DiffScope::Committed
+                            | DiffScope::Commit { .. }
+                            | DiffScope::Worktree { .. } => None,
+                        },
+                    )
+                };
+                let client_seq = self.next_client_seq;
+                self.next_client_seq = client_seq.next();
+                Ok(vec![self.request(
+                    Request::Mutate {
+                        client_seq,
+                        mutation: Mutation::RecordCheckpoint {
+                            review_id,
+                            targets,
+                            in_reply_to,
+                        },
+                    },
+                    InFlight::Mutate { client_seq },
+                )])
+            }
+            Action::CheckpointDelta => {
+                self.require_subscribed()?;
+                let checkpoints = &self.view.checkpoints;
+                let next = match self.view.scope {
+                    DiffScope::SinceCheckpoint { checkpoint_id } => checkpoints
+                        .iter()
+                        .position(|c| c.checkpoint.id == checkpoint_id)
+                        .map_or(0, |i| (i + 1) % checkpoints.len().max(1)),
+                    DiffScope::All
+                    | DiffScope::Committed
+                    | DiffScope::Commit { .. }
+                    | DiffScope::Worktree { .. }
+                    | DiffScope::Requested { .. } => 0,
+                };
+                let checkpoint_id = checkpoints
+                    .get(next)
+                    .ok_or(CoreError::NoOpenReview)?
+                    .checkpoint
+                    .id;
+                self.view.tab = Tab::FilesChanged;
+                Ok(self.apply_scope(DiffScope::SinceCheckpoint { checkpoint_id }))
+            }
             Action::ApplySuggestion { comment_id } => {
                 let review_id = self.open_review_id()?;
                 self.require_subscribed()?;
@@ -3016,9 +3130,11 @@ impl ClientCore {
                 .as_ref()
                 .map(|r| r.iter().cloned().collect())
                 .unwrap_or_default(),
-            DiffScope::Committed | DiffScope::Commit { .. } | DiffScope::Worktree { .. } => {
-                open.scoped_targets.clone()
-            }
+            DiffScope::Committed
+            | DiffScope::Commit { .. }
+            | DiffScope::Worktree { .. }
+            | DiffScope::Requested { .. }
+            | DiffScope::SinceCheckpoint { .. } => open.scoped_targets.clone(),
         };
         let mut sections = Vec::new();
         let author = self.config.author.clone();
@@ -3085,15 +3201,13 @@ impl ClientCore {
         mut snapshot: ReviewSnapshot,
         effects: &mut Vec<Effect>,
     ) {
-        if let Some((_, requests)) = self.snapshot_requests.remove(&id) {
-            for request in requests {
-                if request.id.event_seq() > snapshot.seq
-                    && !snapshot.requests.iter().any(|r| r.id == request.id)
-                {
-                    snapshot.requests.push(request);
+        if let Some((_, mut events)) = self.snapshot_events.remove(&id) {
+            events.sort_by_key(|event| event.seq);
+            for event in events {
+                if event.seq > snapshot.seq {
+                    events::apply_event(&mut snapshot, &event);
                 }
             }
-            snapshot.requests.sort_by_key(|r| r.id);
         }
         let same = self
             .committed
@@ -3158,7 +3272,7 @@ impl ClientCore {
         if let Request::OpenReview { review_id, .. } | Request::ReviewSnapshot { review_id } =
             &request
         {
-            self.snapshot_requests.insert(id, (*review_id, Vec::new()));
+            self.snapshot_events.insert(id, (*review_id, Vec::new()));
         }
         self.in_flight.insert(id, waiting);
         Effect::Send(ClientMsg::Request { id, request })
@@ -3302,7 +3416,7 @@ impl ClientCore {
                 Ok(effects)
             }
             ServerMsg::Error { id, error } => {
-                self.snapshot_requests.remove(&id);
+                self.snapshot_events.remove(&id);
                 let Some(waiting) = self.in_flight.remove(&id) else {
                     return Err(CoreError::UnknownRequest(id));
                 };
@@ -3838,7 +3952,7 @@ impl ClientCore {
             }
         };
         self.in_flight.remove(&id);
-        self.snapshot_requests.remove(&id);
+        self.snapshot_events.remove(&id);
         Ok(effects)
     }
 
@@ -3847,10 +3961,17 @@ impl ClientCore {
     // One arm per event; splitting would hide the exhaustive match.
     #[allow(clippy::too_many_lines)]
     fn apply_event(&mut self, event: Event) -> Vec<Effect> {
-        if let Some(request) = nits_protocol::ReviewRequest::from_event(&event) {
-            for (review_id, requests) in self.snapshot_requests.values_mut() {
-                if request.review_id == *review_id && !requests.iter().any(|r| r.id == request.id) {
-                    requests.push(request.clone());
+        if matches!(
+            &event.body,
+            EventBody::ReviewRequested { .. }
+                | EventBody::ReviewChecked { .. }
+                | EventBody::ReviewTargetsResolved { .. }
+        ) {
+            for (review_id, events) in self.snapshot_events.values_mut() {
+                if event.body.review_id() == Some(*review_id)
+                    && !events.iter().any(|e| e.seq == event.seq)
+                {
+                    events.push(event.clone());
                 }
             }
         }
@@ -3988,6 +4109,7 @@ impl ClientCore {
             | EventBody::FileViewed { .. }
             | EventBody::FileUnviewed { .. }
             | EventBody::ReviewRequested { .. }
+            | EventBody::ReviewChecked { .. }
             | EventBody::SuggestionApplied { .. } => {}
         }
         let concerns_open = event

@@ -85,6 +85,7 @@ events:            seq (u64) → Event           source of truth
 reviews:           review_id → ReviewView
 comments_by_review review_id, comment_id → CommentView
 review_requests    review_id, event_seq → ReviewRequest
+review_checkpoints review_id, event_seq → ReviewCheckpoint
 anchors_by_blob:   (repo, blob_oid) → [comment_id]   for fast re-anchoring
 workspaces:        workspace_id → Workspace
 ```
@@ -339,6 +340,10 @@ Two independent versions, both typed in `nits-protocol::version`.
 - Schema 5 adds deferred finding dispositions. The 4→5 migration restamps event
   envelopes and rebuilds views, preserving Browse provenance, requests,
   informational notes and historical resolutions. Older binaries refuse this store.
+- Schema 6 adds revision capture and the checkpoint view. The 5→6 migration
+  rewrites raw historical request events with `RequestedTargets::Unknown` and
+  rebuilds views. Earlier envelope migrations also operate on raw JSON before
+  current event decoding, preserving every supported starting schema.
 - The daemon reports `schema` in `Welcome` for diagnostics only; clients never depend on it.
 
 ## 5. Client core (sans-I/O)
@@ -558,3 +563,34 @@ ahead of a reference snapshot before selecting the exact reply. Copy targets and
 comment selection are core view state; browser shells perform clipboard and DOM
 scroll effects. Reference/view additions use protocol 0.10; persisted events and
 store schema are unchanged.
+
+### Revision requests and checkpoints
+
+Every new review request captures all repository/base/head `ResolvedTarget`s at
+request time. Working trees are real immutable git tree objects, retained with
+`refs/nits/reviews/<review>/trees/<tree>` refs so GC and later checkout edits do not
+remove requested or checked content. Commit sources also retain a `commits/<oid>`
+ref so force pushes and GC cannot remove their provenance. Resolved target events are retained as well,
+so a check submitted from a previously displayed snapshot remains valid during a
+refresh race. Existing historical requests explicitly carry unknown targets.
+The note is prose: requesting another head requires an explicit review target update.
+
+`RecordCheckpoint` records exact targets and an optional typed request/checkpoint
+identity being answered. IDs are committed event sequence newtypes. Each checkpoint
+keeps the full author, timestamp and session provenance. `ReviewerIdentity::Agent`
+groups by the established agent routing name across sessions/models; humans group
+by name and machine. `latest_checkpoints` selects the last committed check for each
+identity and compares repository/base/head tree and commit identities with the
+current resolved review, independently of viewing scope. Checks imply no approval,
+readiness, thread resolution, or human viewed marking.
+
+Snapshots read checkpoints, requests and their cursor in one redb transaction;
+rebuilds and fresh/reconnected clients retain the same records. `Requested` scope
+opens a request's captured diff. `SinceCheckpoint` scope compares each checked head
+to its current head, preserving the original review base and thread history. Both
+scopes use the existing file listing/rendering API and support multiple repos.
+MCP exposes `record_checkpoint`, `get_checkpoint_delta` and `get_diff.scope`;
+`get_review` returns full history and latest reviewer freshness. CLI exposes
+`review set-head REVIEW REF --repo REPO`, `review request`, `review check --request ID|--current`, optional
+`--answer-request ID` / `--answer-checkpoint ID`, and `files`/`diff` with either
+`--request ID` (the captured revision) or `--since-checkpoint ID` (the incremental delta).

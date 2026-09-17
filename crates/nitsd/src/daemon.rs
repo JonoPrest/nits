@@ -329,6 +329,7 @@ fn event_workspace(body: &EventBody) -> Option<WorkspaceId> {
         | EventBody::FileViewed { .. }
         | EventBody::FileUnviewed { .. }
         | EventBody::ReviewRequested { .. }
+        | EventBody::ReviewChecked { .. }
         | EventBody::SuggestionApplied { .. } => None,
     }
 }
@@ -351,6 +352,7 @@ fn event_review(body: &EventBody) -> Option<ReviewId> {
         | EventBody::FileViewed { review_id, .. }
         | EventBody::FileUnviewed { review_id, .. }
         | EventBody::ReviewRequested { review_id, .. }
+        | EventBody::ReviewChecked { review_id, .. }
         | EventBody::SuggestionApplied { review_id, .. } => Some(*review_id),
         EventBody::WorkspaceCreated { .. }
         | EventBody::WorkspaceUpdated { .. }

@@ -42,6 +42,7 @@ fn snapshot() -> ReviewSnapshot {
         viewed: Vec::new(),
         requests: Vec::new(),
         seq: Seq::new(1),
+        checkpoints: Vec::new(),
     }
 }
 
@@ -892,4 +893,74 @@ fn competing_deferrals_preserve_winning_metadata_and_reopen_converges() {
         sim.daemon_snapshot().threads[0].resolution,
         ThreadResolution::Resolved { .. }
     ));
+}
+
+#[test]
+fn two_reviewers_keep_requested_h1_when_current_h2_arrives_before_checks() {
+    use nits_protocol::{
+        CheckpointFreshness, Oid, ResolvedRef, ResolvedSource, ResolvedTarget, TreeOid,
+    };
+    let mut initial = snapshot();
+    let reference = |n| ResolvedRef {
+        tree: TreeOid::new(Oid::from_bytes([n; 20])),
+        source: ResolvedSource::WorkingTree {
+            dirty: Vec::new(),
+            branch: Some("feature".into()),
+        },
+    };
+    let h1 = NonEmpty::singleton(ResolvedTarget {
+        repo_id: initial.review.targets.first().repo_id,
+        base: reference(1),
+        head: reference(2),
+    });
+    initial.resolved = Some(h1.clone());
+    let mut sim = Sim::new(initial, vec![human("ada"), human("bob")]);
+    sim.connect_and_open(A).unwrap();
+    sim.connect_and_open(B).unwrap();
+    sim.request_review(human("ada"), "bob".into(), "Check H1".into());
+    sim.settle();
+    let mut h2 = h1.clone();
+    h2.iter_mut().next().unwrap().head = reference(3);
+    sim.advance_targets(h2);
+    sim.settle();
+    for peer in [A, B] {
+        sim.act(
+            peer,
+            Action::SetFocus {
+                focus: nits_client_core::Focus::ReviewRequest { index: 0 },
+            },
+        )
+        .unwrap();
+        sim.act(peer, Action::CheckRequested).unwrap();
+    }
+    assert!(sim.deliver_up(B));
+    assert!(sim.deliver_up(A));
+    sim.disconnect(B);
+    sim.settle();
+    sim.reconnect(B).unwrap();
+    sim.settle();
+    sim.converged().unwrap();
+    for peer in [A, B] {
+        let view = sim.client(peer).view();
+        assert_eq!(view.checkpoints.len(), 2);
+        assert!(
+            view.checkpoints
+                .iter()
+                .all(|c| c.freshness == CheckpointFreshness::Changed && c.checkpoint.targets == h1)
+        );
+        assert!(view.review.as_ref().unwrap().snapshot.viewed.is_empty());
+        assert!(view.threads.is_empty());
+    }
+    sim.act(A, Action::CheckCurrent).unwrap();
+    sim.settle();
+    sim.converged().unwrap();
+    assert_eq!(
+        sim.client(B)
+            .view()
+            .checkpoints
+            .iter()
+            .filter(|c| c.freshness == CheckpointFreshness::Current)
+            .count(),
+        1
+    );
 }

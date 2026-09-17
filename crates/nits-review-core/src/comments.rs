@@ -330,16 +330,33 @@ impl Core {
         agent: String,
         note: String,
     ) -> Result<nits_protocol::ReviewRequestId, CoreError> {
-        self.review(review)?;
         if agent.trim().is_empty() {
             return Err(CoreError::invalid("agent name must not be empty"));
         }
+        let record = self.review(review)?;
+        let targets = record
+            .review
+            .targets
+            .iter()
+            .map(|target| {
+                let repo = self.repo(target.repo_id)?;
+                Ok(nits_protocol::ResolvedTarget {
+                    repo_id: target.repo_id,
+                    base: repo.resolve(&target.base)?,
+                    head: repo.resolve(&target.head)?,
+                })
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        let targets = nits_protocol::NonEmpty::new(targets)
+            .map_err(|_| CoreError::invalid("review has no targets"))?;
+        self.retain_targets(review, &targets)?;
         let event = self.append(
             ctx,
             EventBody::ReviewRequested {
                 review_id: review,
                 agent,
                 note,
+                targets: nits_protocol::RequestedTargets::Captured { targets },
             },
         )?;
         Ok(nits_protocol::ReviewRequestId::from_event_seq(event.seq))

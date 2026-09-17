@@ -61,6 +61,7 @@ fn snapshot(id: ReviewId, seq: Seq) -> ReviewSnapshot {
         viewed: Vec::new(),
         requests: Vec::new(),
         seq,
+        checkpoints: Vec::new(),
     }
 }
 
@@ -1314,6 +1315,7 @@ fn request_delivered_ahead_of_older_open_snapshot_survives_handoff() {
         2,
         EventBody::ReviewRequested {
             review_id,
+            targets: nits_protocol::RequestedTargets::Unknown,
             agent: "review-agent".into(),
             note: "Review the update".into(),
         },
@@ -1342,6 +1344,7 @@ fn request_delivered_ahead_of_older_open_snapshot_survives_handoff() {
             3,
             EventBody::ReviewRequested {
                 review_id,
+                targets: nits_protocol::RequestedTargets::Unknown,
                 agent: "other-agent".into(),
                 note: "Follow-up".into(),
             },
@@ -1360,6 +1363,7 @@ fn committed_request_fold_is_idempotent_scoped_and_ordered_by_identity() {
             seq,
             EventBody::ReviewRequested {
                 review_id,
+                targets: nits_protocol::RequestedTargets::Unknown,
                 agent: "review-agent".into(),
                 note: "Please review".into(),
             },
@@ -1758,4 +1762,115 @@ fn reference_piecewise_snapshot_and_informational_thread_land_on_root() {
         nits_client_core::ThreadStatus::Informational
     );
     assert_eq!(core.view().tab, nits_client_core::Tab::Conversation);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Snapshot delivery, refresh deferral and checkpoint recording share one race.
+fn requested_checkpoint_and_new_target_delivered_ahead_of_snapshot_are_preserved() {
+    use nits_protocol::{
+        CheckpointFreshness, NonEmpty, Oid, RequestedTargets, ResolvedRef, ResolvedSource,
+        ResolvedTarget, ReviewRound, ReviewerIdentity, TreeOid,
+    };
+    let mut core = subscribed(1);
+    let review_id = ReviewId::from_parts(4, 1);
+    let mut old = snapshot(review_id, Seq::new(1));
+    let reference = |n| ResolvedRef {
+        tree: TreeOid::new(Oid::from_bytes([n; 20])),
+        source: ResolvedSource::WorkingTree {
+            dirty: Vec::new(),
+            branch: None,
+        },
+    };
+    let h1 = NonEmpty::singleton(ResolvedTarget {
+        repo_id: old.review.targets.first().repo_id,
+        base: reference(1),
+        head: reference(2),
+    });
+    let mut h2 = h1.clone();
+    h2.iter_mut().next().unwrap().head = reference(3);
+    old.resolved = Some(h1.clone());
+    let effects = core
+        .handle(Input::User(Action::OpenReview { review_id }))
+        .unwrap();
+    let (id, _) = sent_request(&effects).unwrap();
+    let request = event(
+        2,
+        EventBody::ReviewRequested {
+            review_id,
+            agent: "review-agent".into(),
+            note: "H1".into(),
+            targets: RequestedTargets::Captured {
+                targets: h1.clone(),
+            },
+        },
+    );
+    let request_id = nits_protocol::ReviewRequestId::from_event_seq(request.seq);
+    let checked = event(
+        4,
+        EventBody::ReviewChecked {
+            review_id,
+            reviewer: ReviewerIdentity::Human {
+                name: "ada".into(),
+                machine: "box".into(),
+            },
+            targets: h1.clone(),
+            in_reply_to: Some(ReviewRound::Request { request_id }),
+        },
+    );
+    for e in [
+        request,
+        event(
+            3,
+            EventBody::ReviewTargetsResolved {
+                review_id,
+                targets: h2,
+            },
+        ),
+        checked,
+    ] {
+        core.handle(Input::Server(ServerMsg::Event { event: e }))
+            .unwrap();
+    }
+    core.handle(Input::Server(ServerMsg::StreamItem {
+        id,
+        item: StreamItem::ReviewSnapshot { snapshot: old },
+    }))
+    .unwrap();
+    assert_eq!(core.view().requests.len(), 1);
+    assert_eq!(core.view().checkpoints.len(), 1);
+    assert_eq!(core.view().checkpoints[0].checkpoint.targets, h1);
+    assert_eq!(
+        core.view().checkpoints[0].freshness,
+        CheckpointFreshness::Changed
+    );
+    // Holding rendered targets for a draft must not hide authoritative freshness.
+    core.handle(Input::User(Action::DraftOpened {
+        anchor: Anchor::Review,
+    }))
+    .unwrap();
+    core.handle(Input::Server(ServerMsg::Event {
+        event: event(
+            5,
+            EventBody::ReviewTargetsResolved {
+                review_id,
+                targets: h1.clone(),
+            },
+        ),
+    }))
+    .unwrap();
+    assert!(core.view().pending_refresh);
+    assert_eq!(
+        core.view().checkpoints[0].freshness,
+        CheckpointFreshness::Current
+    );
+    core.handle(Input::User(Action::DraftDiscarded)).unwrap();
+    core.handle(Input::User(Action::SetFocus {
+        focus: nits_client_core::Focus::ReviewRequest { index: 0 },
+    }))
+    .unwrap();
+    let effects = core.handle(Input::User(Action::CheckRequested)).unwrap();
+    let (_, request) = sent_request(&effects).unwrap();
+    assert!(
+        matches!(request, Request::Mutate { mutation: Mutation::RecordCheckpoint { targets, in_reply_to: Some(ReviewRound::Request { request_id: checked_request }), .. }, .. } if targets == h1 && checked_request == request_id)
+    );
 }

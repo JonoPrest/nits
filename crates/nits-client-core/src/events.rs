@@ -268,6 +268,7 @@ pub fn local_event(
         | Mutation::MarkViewed { .. }
         | Mutation::UnmarkViewed { .. }
         | Mutation::RequestReview { .. }
+        | Mutation::RecordCheckpoint { .. }
         | Mutation::ApplySuggestion { .. } => {
             Err(MutationError::Unsupported(MutationKind::from(mutation)))
         }
@@ -288,6 +289,13 @@ pub fn apply_event(
     {
         snapshot.requests.push(request);
         snapshot.requests.sort_by_key(|r| r.id);
+    }
+    if let Some(checkpoint) = nits_protocol::ReviewCheckpoint::from_event(event)
+        && checkpoint.review_id == snapshot.review.id
+        && !snapshot.checkpoints.iter().any(|c| c.id == checkpoint.id)
+    {
+        snapshot.checkpoints.push(checkpoint);
+        snapshot.checkpoints.sort_by_key(|c| c.id);
     }
     apply_body(
         snapshot,
@@ -467,7 +475,8 @@ pub fn apply_body(
                 .retain(|v| !(v.repo_id == *repo_id && v.path == *path && v.viewer == *viewer));
             vec![ViewSection::Progress]
         }
-        EventBody::ReviewRequested { review_id, .. }
+        EventBody::ReviewChecked { review_id, .. }
+        | EventBody::ReviewRequested { review_id, .. }
         | EventBody::SuggestionApplied { review_id, .. }
             if mine(*review_id) =>
         {
@@ -486,6 +495,7 @@ pub fn apply_body(
         | EventBody::FileViewed { .. }
         | EventBody::FileUnviewed { .. }
         | EventBody::ReviewRequested { .. }
+        | EventBody::ReviewChecked { .. }
         | EventBody::SuggestionApplied { .. }
         | EventBody::ReviewCreated { .. }
         | EventBody::ReviewDeleted { .. }

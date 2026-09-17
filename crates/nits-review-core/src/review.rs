@@ -340,6 +340,7 @@ impl Core {
     ) -> Result<bool, CoreError> {
         let changed = rec.resolved.as_ref() != Some(resolved);
         if changed {
+            self.retain_targets(rec.review.id, resolved)?;
             self.append(
                 ctx,
                 EventBody::ReviewTargetsResolved {
@@ -388,6 +389,43 @@ impl Core {
         let (_, resolved) = self.resolved(id)?;
         match scope {
             DiffScope::All => Ok(resolved),
+            DiffScope::Requested { request_id } => {
+                let snapshot = self.review_snapshot(id)?;
+                let request = snapshot
+                    .requests
+                    .iter()
+                    .find(|request| request.id == *request_id)
+                    .ok_or_else(|| CoreError::invalid("request does not belong to this review"))?;
+                match &request.targets {
+                    nits_protocol::RequestedTargets::Unknown => {
+                        Err(CoreError::invalid("historical request has unknown targets"))
+                    }
+                    nits_protocol::RequestedTargets::Captured { targets } => Ok(targets.clone()),
+                }
+            }
+            DiffScope::SinceCheckpoint { checkpoint_id } => {
+                let snapshot = self.review_snapshot(id)?;
+                let checkpoint = snapshot
+                    .checkpoints
+                    .iter()
+                    .find(|checkpoint| checkpoint.id == *checkpoint_id)
+                    .ok_or_else(|| {
+                        CoreError::invalid("checkpoint does not belong to this review")
+                    })?;
+                if checkpoint.targets.len() != resolved.len() {
+                    return Err(CoreError::invalid(
+                        "checkpoint repository set differs from current review",
+                    ));
+                }
+                let targets = resolved
+                    .into_iter()
+                    .map(|mut target| {
+                        target.base = Self::target(&checkpoint.targets, target.repo_id)?.head;
+                        Ok(target)
+                    })
+                    .collect::<Result<Vec<_>, CoreError>>()?;
+                NonEmpty::new(targets).map_err(|_| CoreError::invalid("review has no targets"))
+            }
             DiffScope::Committed => {
                 let mapped = resolved
                     .into_iter()

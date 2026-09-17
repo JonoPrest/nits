@@ -3,7 +3,7 @@
 //! one step per transaction.
 
 use nits_protocol::SchemaVersion;
-use redb::{Database, ReadableTable, WriteTransaction};
+use redb::{Database, WriteTransaction};
 
 use super::{StoreError, tables};
 
@@ -34,6 +34,7 @@ const MIGRATIONS: &[Migration] = &[
     migrate_2_to_3,
     migrate_3_to_4,
     migrate_4_to_5,
+    migrate_5_to_6,
 ];
 
 /// Schema 3 materializes every historical `ReviewRequested`. The event format is
@@ -53,39 +54,10 @@ fn migrate_2_to_3(txn: &WriteTransaction) -> Result<(), String> {
 fn migrate_1_to_2(txn: &WriteTransaction) -> Result<(), String> {
     fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
         let mut tables = tables::Write::open(txn)?;
-        // Later migrations may change event payloads. Stamp the old envelope
-        // without decoding it as the current domain before those steps run.
-        let mut events = Vec::new();
-        for entry in tables.events.iter()? {
-            let (seq, bytes) = entry?;
-            let mut value: serde_json::Value = serde_json::from_slice(bytes.value())?;
-            let schema = value.get_mut("schema").ok_or_else(|| StoreError::Corrupt {
-                seq: nits_protocol::Seq::new(seq.value()),
-                reason: "stored event envelope is missing its schema".into(),
-            })?;
-            let _: SchemaVersion = serde_json::from_value(schema.clone())?;
-            *schema = serde_json::to_value(SchemaVersion::new(2))?;
-            events.push((seq.value(), serde_json::to_vec(&value)?));
-        }
-        for (seq, bytes) in events {
-            tables.events.insert(seq, bytes.as_slice())?;
-        }
-        tables.clear_views()?;
-        tables.clear_view_seq()?;
-        Ok(())
-    }
-    migrate(txn).map_err(|error| error.to_string())
-}
-
-/// Schema 5 admits deferred findings. Schema 4 already has current comment
-/// provenance; preserve its events and rebuild every materialized view.
-fn migrate_4_to_5(txn: &WriteTransaction) -> Result<(), String> {
-    fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
-        let mut tables = tables::Write::open(txn)?;
-        for (_, mut stored) in tables.all_events()? {
-            stored.schema = SchemaVersion::new(5);
-            tables.put_event(&stored)?;
-        }
+        rewrite_raw_events(&mut tables, |stored| {
+            stored.schema = SchemaVersion::new(2);
+            Ok(())
+        })?;
         tables.clear_views()?;
         tables.clear_view_seq()?;
         Ok(())
@@ -95,44 +67,6 @@ fn migrate_4_to_5(txn: &WriteTransaction) -> Result<(), String> {
 
 #[allow(clippy::unnecessary_wraps)] // must match the `Migration` fn-pointer type
 fn migrate_0_to_1(_txn: &WriteTransaction) -> Result<(), String> {
-    Ok(())
-}
-
-/// Preserve legacy diff provenance while distinguishing future Browse anchors.
-/// Only `CommentCreated` carries `Comment.context`; other events retain their data.
-fn migrate_3_to_4(txn: &WriteTransaction) -> Result<(), String> {
-    let mut tables = tables::Write::open(txn).map_err(|e| e.to_string())?;
-    let mut events = Vec::new();
-    for entry in tables.events.iter().map_err(|e| e.to_string())? {
-        let (seq, bytes) = entry.map_err(|e| e.to_string())?;
-        let mut value: serde_json::Value =
-            serde_json::from_slice(bytes.value()).map_err(|e| e.to_string())?;
-        if let Some(context) = value.pointer_mut("/event/body/comment/context")
-            && !context.is_null()
-        {
-            let change: nits_protocol::ChangeKind =
-                serde_json::from_value(context.clone()).map_err(|e| e.to_string())?;
-            *context = serde_json::to_value(nits_protocol::CommentContext::Diff { change })
-                .map_err(|e| e.to_string())?;
-        }
-        let schema = value
-            .get_mut("schema")
-            .ok_or_else(|| "stored event envelope is missing its schema".to_owned())?;
-        let _: SchemaVersion = serde_json::from_value(schema.clone()).map_err(|e| e.to_string())?;
-        *schema = serde_json::to_value(SchemaVersion::new(4)).map_err(|e| e.to_string())?;
-        events.push((
-            seq.value(),
-            serde_json::to_vec(&value).map_err(|e| e.to_string())?,
-        ));
-    }
-    for (seq, bytes) in events {
-        tables
-            .events
-            .insert(seq, bytes.as_slice())
-            .map_err(|e| e.to_string())?;
-    }
-    tables.clear_views().map_err(|e| e.to_string())?;
-    tables.clear_view_seq().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -165,4 +99,96 @@ pub(super) fn run(db: &Database, stored: SchemaVersion) -> Result<(), StoreError
         at = next;
     }
     Ok(())
+}
+
+/// The envelope was stable before revision provenance existed. Its event body
+/// remains raw until every schema step has introduced the required fields.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct RawStoredEvent {
+    schema: SchemaVersion,
+    event: serde_json::Value,
+}
+
+/// Rewrite raw envelopes before decoding current types, so older migrations never
+/// attempt to deserialize fields introduced by a later schema.
+fn rewrite_raw_events(
+    tables: &mut tables::Write<'_>,
+    rewrite: impl Fn(&mut RawStoredEvent) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    use redb::ReadableTable;
+    let rows = tables
+        .events
+        .iter()?
+        .map(|row| {
+            let (key, value) = row?;
+            let mut stored: RawStoredEvent = serde_json::from_slice(value.value())?;
+            rewrite(&mut stored)?;
+            Ok((key.value(), serde_json::to_vec(&stored)?))
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    for (key, value) in rows {
+        tables.events.insert(key, value.as_slice())?;
+    }
+    Ok(())
+}
+
+/// No historical request can truthfully inherit today's moving targets.
+fn migrate_5_to_6(txn: &WriteTransaction) -> Result<(), String> {
+    fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
+        let mut tables = tables::Write::open(txn)?;
+        rewrite_raw_events(&mut tables, |stored| {
+            if let Some(body) = stored
+                .event
+                .get_mut("body")
+                .and_then(serde_json::Value::as_object_mut)
+                && body.get("type").and_then(serde_json::Value::as_str) == Some("ReviewRequested")
+            {
+                body.insert("targets".into(), serde_json::json!({"type": "Unknown"}));
+            }
+            stored.schema = SchemaVersion::new(6);
+            Ok(())
+        })?;
+        tables.clear_views()?;
+        tables.clear_view_seq()?;
+        Ok(())
+    }
+    migrate(txn).map_err(|error| error.to_string())
+}
+
+/// Preserve legacy diff provenance while distinguishing future Browse anchors.
+/// Keep request bodies raw until schema 6 supplies their unknown targets.
+fn migrate_3_to_4(txn: &WriteTransaction) -> Result<(), String> {
+    fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
+        let mut tables = tables::Write::open(txn)?;
+        rewrite_raw_events(&mut tables, |stored| {
+            if let Some(context) = stored.event.pointer_mut("/body/comment/context")
+                && !context.is_null()
+            {
+                let change: nits_protocol::ChangeKind = serde_json::from_value(context.clone())?;
+                *context = serde_json::to_value(nits_protocol::CommentContext::Diff { change })?;
+            }
+            stored.schema = SchemaVersion::new(4);
+            Ok(())
+        })?;
+        tables.clear_views()?;
+        tables.clear_view_seq()?;
+        Ok(())
+    }
+    migrate(txn).map_err(|error| error.to_string())
+}
+
+/// Schema 5 admits deferred findings, preserving all prior raw event bodies.
+fn migrate_4_to_5(txn: &WriteTransaction) -> Result<(), String> {
+    fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
+        let mut tables = tables::Write::open(txn)?;
+        rewrite_raw_events(&mut tables, |stored| {
+            stored.schema = SchemaVersion::new(5);
+            Ok(())
+        })?;
+        tables.clear_views()?;
+        tables.clear_view_seq()?;
+        Ok(())
+    }
+    migrate(txn).map_err(|error| error.to_string())
 }

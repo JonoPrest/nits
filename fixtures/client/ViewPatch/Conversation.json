@@ -1,4 +1,72 @@
 {
+  "checkpoints": [
+    {
+      "checkpoint": {
+        "author": {
+          "invoked_by": {
+            "machine": "laptop",
+            "name": "ada"
+          },
+          "model": "claude-fable-5",
+          "name": "claude-code",
+          "session_id": "sess_01",
+          "type": "Agent",
+          "via": "Mcp"
+        },
+        "created": 1700000006000,
+        "id": 41,
+        "in_reply_to": {
+          "request_id": 40,
+          "type": "Request"
+        },
+        "review_id": "01HF7YATZ80000000000000004",
+        "reviewer": {
+          "name": "claude-code",
+          "type": "Agent"
+        },
+        "targets": [
+          {
+            "base": {
+              "source": {
+                "oid": "1f202122232425262728292a2b2c2d2e2f303132",
+                "type": "Commit"
+              },
+              "tree": "8b8c8d8e8f909192939495969798999a9b9c9d9e"
+            },
+            "head": {
+              "source": {
+                "branch": "feature",
+                "dirty": [
+                  "src/lib.rs"
+                ],
+                "type": "WorkingTree"
+              },
+              "tree": "aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbd"
+            },
+            "repo_id": "01HF7YAT000000000000000002"
+          },
+          {
+            "base": {
+              "source": {
+                "oid": "1f202122232425262728292a2b2c2d2e2f303132",
+                "type": "Commit"
+              },
+              "tree": "c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdc"
+            },
+            "head": {
+              "source": {
+                "oid": "3e3f404142434445464748494a4b4c4d4e4f5051",
+                "type": "Commit"
+              },
+              "tree": "e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafb"
+            },
+            "repo_id": "01HF7YAT000000000000000003"
+          }
+        ]
+      },
+      "freshness": "Changed"
+    }
+  ],
   "conversation": [
     {
       "author": {
@@ -63,7 +131,10 @@
         "name": "ada",
         "type": "Human"
       },
-      "review_id": "01HF7YATZ80000000000000004"
+      "review_id": "01HF7YATZ80000000000000004",
+      "targets": {
+        "type": "Unknown"
+      }
     }
   ],
   "type": "Conversation"

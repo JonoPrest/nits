@@ -224,6 +224,11 @@ pub enum Mutation {
         agent: String,
         note: String,
     },
+    RecordCheckpoint {
+        review_id: ReviewId,
+        targets: NonEmpty<ResolvedTarget>,
+        in_reply_to: Option<crate::ReviewRound>,
+    },
     ApplySuggestion {
         review_id: ReviewId,
         comment_id: CommentId,
@@ -393,6 +398,7 @@ pub struct ReviewSnapshot {
     pub viewed: Vec<ViewedMark>,
     /// Durable requests, in creation event order, independent of finding threads.
     pub requests: Vec<crate::ReviewRequest>,
+    pub checkpoints: Vec<crate::ReviewCheckpoint>,
     /// The log position this snapshot reflects; subscribe `After` it.
     pub seq: Seq,
 }

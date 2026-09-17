@@ -277,6 +277,7 @@ impl Store {
         let comments = txn.open_table(tables::COMMENTS)?;
         let viewed = txn.open_table(tables::VIEWED)?;
         let requests = txn.open_table(tables::REVIEW_REQUESTS)?;
+        let checkpoints = txn.open_table(tables::CHECKPOINTS)?;
         Ok(Some(nits_protocol::ReviewSnapshot {
             review: record.review,
             resolved: record.resolved,
@@ -293,6 +294,10 @@ impl Store {
                 .map(|e| Ok(serde_json::from_slice(e?.1.value())?))
                 .collect::<Result<_, StoreError>>()?,
             requests: requests
+                .range((rid.as_str(), 0)..=(rid.as_str(), u64::MAX))?
+                .map(|e| Ok(serde_json::from_slice(e?.1.value())?))
+                .collect::<Result<_, StoreError>>()?,
+            checkpoints: checkpoints
                 .range((rid.as_str(), 0)..=(rid.as_str(), u64::MAX))?
                 .map(|e| Ok(serde_json::from_slice(e?.1.value())?))
                 .collect::<Result<_, StoreError>>()?,
@@ -398,6 +403,7 @@ impl Store {
             threads: rows(&txn.open_table(tables::THREADS)?)?,
             viewed: rows(&txn.open_table(tables::VIEWED)?)?,
             requests: rows(&txn.open_table(tables::REVIEW_REQUESTS)?)?,
+            checkpoints: rows(&txn.open_table(tables::CHECKPOINTS)?)?,
             anchors: Vec::new(),
         };
         for entry in txn.open_table(tables::ANCHORS_BY_BLOB)?.iter()? {
@@ -423,6 +429,7 @@ pub struct ViewDump {
     pub threads: Vec<Thread>,
     pub viewed: Vec<ViewedMark>,
     pub requests: Vec<nits_protocol::ReviewRequest>,
+    pub checkpoints: Vec<nits_protocol::ReviewCheckpoint>,
     /// `(repo_id, blob_oid, comment_id, review_id)`
     pub anchors: Vec<(String, String, String, String)>,
 }

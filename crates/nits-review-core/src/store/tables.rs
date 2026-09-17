@@ -15,6 +15,8 @@ pub(super) const THREADS: TableDefinition<'_, (&str, &str), &[u8]> =
     TableDefinition::new("threads");
 pub(super) const REVIEW_REQUESTS: TableDefinition<'_, (&str, u64), &[u8]> =
     TableDefinition::new("review_requests");
+pub(super) const CHECKPOINTS: TableDefinition<'_, (&str, u64), &[u8]> =
+    TableDefinition::new("review_checkpoints");
 pub(super) const VIEWED: TableDefinition<'_, (&str, &str, &str), &[u8]> =
     TableDefinition::new("viewed");
 pub(super) const ANCHORS_BY_BLOB: TableDefinition<'_, (&str, &str, &str), &str> =
@@ -35,14 +37,21 @@ pub(super) fn ensure(txn: &WriteTransaction) -> Result<SchemaVersion, StoreError
     txn.open_table(THREADS)?;
     txn.open_table(VIEWED)?;
     txn.open_table(REVIEW_REQUESTS)?;
+    txn.open_table(CHECKPOINTS)?;
     txn.open_table(ANCHORS_BY_BLOB)?;
     let existing = meta.get(META_SCHEMA)?.map(|v| v.value());
     let v = if let Some(v) = existing {
         v
     } else {
-        let fresh = u64::from(SchemaVersion::CURRENT.get());
-        meta.insert(META_SCHEMA, fresh)?;
-        fresh
+        // An unstamped nonempty log predates schema versioning. Do not mark
+        // it current before raw-event migrations have had a chance to run.
+        let version = if txn.open_table(EVENTS)?.is_empty()? {
+            u64::from(SchemaVersion::CURRENT.get())
+        } else {
+            0
+        };
+        meta.insert(META_SCHEMA, version)?;
+        version
     };
     #[allow(clippy::cast_possible_truncation)]
     Ok(SchemaVersion::new(v as u32))
@@ -57,6 +66,7 @@ pub(super) struct Write<'txn> {
     pub comments: Table<'txn, (&'static str, &'static str), &'static [u8]>,
     pub threads: Table<'txn, (&'static str, &'static str), &'static [u8]>,
     pub requests: Table<'txn, (&'static str, u64), &'static [u8]>,
+    pub checkpoints: Table<'txn, (&'static str, u64), &'static [u8]>,
     pub viewed: Table<'txn, (&'static str, &'static str, &'static str), &'static [u8]>,
     pub anchors_by_blob: Table<'txn, (&'static str, &'static str, &'static str), &'static str>,
 }
@@ -78,6 +88,7 @@ impl<'txn> Write<'txn> {
             threads: txn.open_table(THREADS)?,
             viewed: txn.open_table(VIEWED)?,
             requests: txn.open_table(REVIEW_REQUESTS)?,
+            checkpoints: txn.open_table(CHECKPOINTS)?,
             anchors_by_blob: txn.open_table(ANCHORS_BY_BLOB)?,
         })
     }
@@ -124,6 +135,7 @@ impl<'txn> Write<'txn> {
         self.threads.retain(|_, _| false)?;
         self.viewed.retain(|_, _| false)?;
         self.requests.retain(|_, _| false)?;
+        self.checkpoints.retain(|_, _| false)?;
         self.anchors_by_blob.retain(|_, _| false)?;
         Ok(())
     }

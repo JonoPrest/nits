@@ -792,6 +792,34 @@ impl Repo {
         parse_raw_diff(&out)
     }
 
+    /// Keep immutable content and commit provenance reachable through git GC.
+    /// Nits owns these namespaced refs; moving a branch never changes them.
+    pub fn retain_revision(
+        &self,
+        review: nits_protocol::ReviewId,
+        revision: &ResolvedRef,
+    ) -> Result<(), GitError> {
+        self.git(
+            &[
+                "update-ref",
+                &format!("refs/nits/reviews/{review}/trees/{}", revision.tree),
+                &revision.tree.to_string(),
+            ],
+            &[],
+        )?;
+        if let ResolvedSource::Commit { oid } = revision.source {
+            self.git(
+                &[
+                    "update-ref",
+                    &format!("refs/nits/reviews/{review}/commits/{oid}"),
+                    &oid.to_string(),
+                ],
+                &[],
+            )?;
+        }
+        Ok(())
+    }
+
     // ---- working tree -----------------------------------------------------
 
     /// Snapshot the working tree into a real tree object via a temporary

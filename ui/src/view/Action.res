@@ -11,6 +11,11 @@ module ScopeChoice = {
     | @as("ByCommit") ByCommit({})
     | @as("Commit") Commit({@as("repo_id") repoId: repoId, oid: commitOid})
     | @as("Worktree") Worktree({@as("repo_id") repoId: repoId})
+    | @as("Requested") Requested({@as("request_id") requestId: reviewRequestId})
+    | @as("SinceCheckpoint")
+    SinceCheckpoint({
+        @as("checkpoint_id") checkpointId: reviewCheckpointId,
+      })
   @@warning("+27")
 }
 
@@ -34,6 +39,9 @@ type t =
     })
   | @as("OpenReview") OpenReview({@as("review_id") reviewId: reviewId})
   | @as("CloseReview") CloseReview({})
+  | @as("CheckCurrent") CheckCurrent({})
+  | @as("CheckRequested") CheckRequested({})
+  | @as("CheckpointDelta") CheckpointDelta({})
   | @as("InformationalNoteOpened") InformationalNoteOpened({})
   | @as("DraftOpened") DraftOpened({anchor: Domain.Anchor.t})
   | @as("DraftSubmitted") DraftSubmitted({body: string})

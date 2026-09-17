@@ -150,6 +150,9 @@ pub enum Command {
     /// Focus the thread list.
     FocusThreads,
     FocusRequests,
+    CheckCurrent,
+    CheckRequested,
+    CheckpointDelta,
     /// Focus the commits list.
     FocusCommits,
     /// Re-list workspaces and reviews.
@@ -589,6 +592,9 @@ impl Keymap {
             l('b', C::ToggleSidebar),
             l('C', C::Commits),
             l('i', C::InformationalNote),
+            l('k', C::CheckCurrent),
+            b(X::Requests, keys!("v"), C::CheckRequested, false),
+            l('d', C::CheckpointDelta),
             l('f', C::ReviewFinding),
             b(X::Global, keys!("esc"), C::Back, false),
             b(X::Global, keys!("ctrl+shift+c"), C::Connect, false),
@@ -1103,6 +1109,9 @@ pub fn label(command: Command) -> &'static str {
         Command::FocusDiff => "focus diff",
         Command::FocusThreads => "focus threads",
         Command::FocusRequests => "review requests",
+        Command::CheckCurrent => "record current revision checked",
+        Command::CheckRequested => "record requested revision checked",
+        Command::CheckpointDelta => "next checkpoint delta",
         Command::FocusCommits => "focus commits",
         Command::VisualMode => "select lines",
         Command::ExpandUp => "expand up",
@@ -1179,6 +1188,9 @@ pub fn modes_of(command: Command) -> &'static [Mode] {
         | Command::FocusTree
         | Command::FocusDiff
         | Command::FocusRequests
+        | Command::CheckCurrent
+        | Command::CheckRequested
+        | Command::CheckpointDelta
         | Command::FocusThreads
         | Command::FocusCommits
         | Command::ExpandUp

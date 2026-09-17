@@ -251,6 +251,13 @@ fn apply(core: &Core, ctx: &nits_review_core::Ctx, m: Mutation) -> Result<(), Co
         } => {
             core.request_review(ctx, review_id, agent, note)?;
         }
+        Mutation::RecordCheckpoint {
+            review_id,
+            targets,
+            in_reply_to,
+        } => {
+            core.record_checkpoint(ctx, review_id, targets, in_reply_to)?;
+        }
         Mutation::ApplySuggestion {
             review_id,
             comment_id,
