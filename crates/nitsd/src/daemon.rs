@@ -28,7 +28,7 @@ pub struct Daemon {
     writer: std::sync::mpsc::Sender<WriteJob>,
     events: broadcast::Sender<Arc<Event>>,
     deltas: broadcast::Sender<Arc<TreeDelta>>,
-    review_workspaces: Mutex<HashMap<ReviewId, WorkspaceId>>,
+    review_workspaces: Arc<Mutex<HashMap<ReviewId, WorkspaceId>>>,
     /// Cancelled by `Request::Shutdown`, ctrl-c, or the idle timer.
     shutdown: tokio_util::sync::CancellationToken,
     /// Open connections, for the idle timer.
@@ -120,7 +120,7 @@ impl Daemon {
             writer,
             events,
             deltas,
-            review_workspaces: Mutex::new(HashMap::new()),
+            review_workspaces: Arc::new(Mutex::new(HashMap::new())),
             shutdown: tokio_util::sync::CancellationToken::new(),
             connections: std::sync::atomic::AtomicUsize::new(0),
             build,
@@ -181,25 +181,33 @@ impl Daemon {
         F: FnOnce(&Core) -> Result<T, CoreError> + Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
+        let broadcast = self.events.clone();
+        let review_workspaces = Arc::clone(&self.review_workspaces);
         let job: WriteJob = Box::new(move |core| {
             let result = (|| {
                 let before = core.last_seq()?;
-                let out = f(core)?;
+                let out = f(core);
                 let events = core.events_after(before)?;
-                Ok::<_, CoreError>((out, events))
+                // Publish on the writer thread, in commit order, even if the
+                // requesting task was cancelled before receiving its result.
+                for event in &events {
+                    // Keep scope information even if the review is deleted
+                    // before a subscriber first asks for its workspace.
+                    if let EventBody::ReviewCreated { review } = &event.body {
+                        review_workspaces
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(review.id, review.workspace_id);
+                    }
+                    // No subscribers is not an error.
+                    let _ = broadcast.send(Arc::new(event.clone()));
+                }
+                Ok::<_, CoreError>((out?, events))
             })();
-            // The receiver only disappears if the caller was cancelled; the
-            // write already happened and is broadcast below regardless.
             let _ = tx.send(result);
         });
         self.writer.send(job).map_err(|_| DaemonError::Shutdown)?;
-        let (out, events) = rx.await.map_err(|_| DaemonError::Shutdown)??;
-        for e in &events {
-            self.note_workspace(e);
-            // No subscribers is not an error.
-            let _ = self.events.send(Arc::new(e.clone()));
-        }
-        Ok((out, events))
+        Ok(rx.await.map_err(|_| DaemonError::Shutdown)??)
     }
 
     /// Subscribe to the live event tail.
@@ -250,15 +258,6 @@ impl Daemon {
             client_id,
             client_seq,
             now: now(),
-        }
-    }
-
-    fn note_workspace(&self, e: &Event) {
-        if let EventBody::ReviewCreated { review } = &e.body {
-            self.review_workspaces
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(review.id, review.workspace_id);
         }
     }
 

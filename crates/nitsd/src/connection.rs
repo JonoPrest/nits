@@ -48,10 +48,9 @@ impl Outbox {
 /// Per-connection subscription state, shared with the event tail task.
 #[derive(Debug, Default)]
 struct Subscriptions {
-    scopes: Vec<SubscribeScope>,
-    /// Highest `Seq` already delivered to this client, so replay and the
-    /// live tail never send the same event twice.
-    delivered: Option<Seq>,
+    /// Live-tail watermark per scope. Explicit replay ignores prior delivery;
+    /// this only prevents the tail from repeating that subscription's replay.
+    scopes: HashMap<SubscribeScope, Seq>,
 }
 
 /// Serve one already-accepted byte stream (length-prefixed frames) until
@@ -106,7 +105,9 @@ where
         outbox: outbox.clone(),
         subs: Mutex::new(Subscriptions::default()),
     });
-    let tail = tokio::spawn(event_tail(Arc::clone(&conn)));
+    // Start observing broadcasts before any subscription request can run.
+    let events = conn.daemon.subscribe();
+    let tail = tokio::spawn(event_tail(Arc::clone(&conn), events));
     let delta_tail = tokio::spawn(delta_tail(Arc::clone(&conn)));
     let mut in_flight: HashMap<RequestId, AbortHandle> = HashMap::new();
 
@@ -192,8 +193,7 @@ async fn write_loop<W: FrameWrite>(
 }
 
 /// Forward broadcast events matching this connection's scopes.
-async fn event_tail(conn: Arc<Connection>) {
-    let mut rx = conn.daemon.subscribe();
+async fn event_tail(conn: Arc<Connection>, mut rx: tokio::sync::broadcast::Receiver<Arc<Event>>) {
     loop {
         match rx.recv().await {
             Ok(event) => conn.deliver_live(&event).await,
@@ -227,7 +227,7 @@ async fn delta_tail(conn: Arc<Connection>) {
                 let subs = conn.subs.lock().await;
                 if subs
                     .scopes
-                    .iter()
+                    .keys()
                     .any(|s| conn.daemon.delta_matches(s, &delta))
                 {
                     conn.outbox.send(ServerMsg::TreeDelta {
@@ -246,11 +246,14 @@ async fn delta_tail(conn: Arc<Connection>) {
 impl Connection {
     async fn deliver_live(&self, event: &Arc<Event>) {
         let mut subs = self.subs.lock().await;
-        if subs.delivered.is_some_and(|d| event.seq <= d) {
-            return;
+        let mut deliver = false;
+        for (scope, delivered) in &mut subs.scopes {
+            if event.seq > *delivered && self.daemon.matches(scope, event) {
+                *delivered = event.seq;
+                deliver = true;
+            }
         }
-        if subs.scopes.iter().any(|s| self.daemon.matches(s, event)) {
-            subs.delivered = Some(event.seq);
+        if deliver {
             self.outbox.send(ServerMsg::Event {
                 event: (**event).clone(),
             });
@@ -262,7 +265,7 @@ impl Connection {
         let result = match request {
             Request::Subscribe { scope, since } => self.subscribe(scope, since).await,
             Request::Unsubscribe { scope } => {
-                self.subs.lock().await.scopes.retain(|s| *s != scope);
+                self.subs.lock().await.scopes.remove(&scope);
                 Ok(Response::Unsubscribed)
             }
             Request::Shutdown => {
@@ -369,22 +372,37 @@ impl Connection {
             Since::Now => None,
             Since::After { seq } => Some(seq),
         };
+        // Include pending events for existing scopes too. Their live tail may
+        // be waiting for this lock; replaying a newer event first would break
+        // delivery order, and replaying overlap twice would duplicate events.
+        // Re-subscribing replaces this scope's previous cursor; only other
+        // active scopes may contribute pending events outside the requested gap.
+        let active_after = subs
+            .scopes
+            .iter()
+            .filter(|(active, _)| **active != scope)
+            .map(|(_, delivered)| *delivered)
+            .min();
+        let replay_after = match (after, active_after) {
+            (Some(requested), Some(active)) => Some(requested.min(active)),
+            (requested, active) => requested.or(active),
+        };
         let events = self
             .daemon
-            .read(move |core| core.events_after(after))
+            .read(move |core| core.events_after(replay_after))
             .await?;
-        let mut last = subs.delivered;
-        if matches!(since, Since::After { .. }) {
-            for e in events
-                .iter()
-                .filter(|e| self.daemon.matches(&scope, e))
-                .filter(|e| subs.delivered.is_none_or(|d| e.seq > d))
-            {
-                last = Some(e.seq);
+        for e in &events {
+            // The caller's cursor acknowledges receipt. A previous subscription
+            // may have queued these events without the caller consuming them.
+            let requested = after.is_some_and(|seq| e.seq > seq) && self.daemon.matches(&scope, e);
+            let pending = subs.scopes.iter().any(|(active, delivered)| {
+                *active != scope && e.seq > *delivered && self.daemon.matches(active, e)
+            });
+            if requested || pending {
                 self.outbox.send(ServerMsg::Event { event: e.clone() });
             }
         }
-        let head = events.last().map(|e| e.seq).or(after);
+        let head = events.last().map(|e| e.seq).or(replay_after);
         let head = match head {
             Some(h) => h,
             None => self
@@ -393,13 +411,16 @@ impl Connection {
                 .await?
                 .unwrap_or(Seq::new(0)),
         };
-        // Everything up to `head` is either replayed above or, for
-        // `Since::Now`, deliberately skipped.
-        subs.delivered = Some(last.map_or(head, |l| l.max(head)));
-        if !subs.scopes.contains(&scope) {
-            subs.scopes.push(scope);
+        // All active scopes have caught up to this read's head. Live copies
+        // already in the broadcast queue must not repeat the replay above.
+        for delivered in subs.scopes.values_mut() {
+            *delivered = (*delivered).max(head);
         }
-        Ok(Response::Subscribed { seq: head })
+        let requested_head = after.map_or(head, |seq| head.max(seq));
+        subs.scopes.insert(scope, requested_head);
+        Ok(Response::Subscribed {
+            seq: requested_head,
+        })
     }
 }
 
@@ -441,4 +462,123 @@ pub fn send_chunk(
             chunk,
         },
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nits_protocol::{Author, BuildInfo, ClientId, ClientSeq, WorkspaceId};
+    use nits_review_core::DataDir;
+
+    fn connection() -> (
+        tempfile::TempDir,
+        Connection,
+        mpsc::UnboundedReceiver<ServerMsg>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let build = BuildInfo {
+            name: "test".into(),
+            version: "0".into(),
+        };
+        let daemon = Daemon::open(&DataDir::new(dir.path()), build.clone()).unwrap();
+        let (tx, outgoing) = mpsc::unbounded_channel();
+        let conn = Connection {
+            daemon,
+            negotiated: Negotiated {
+                protocol: ProtocolVersion::CURRENT,
+                client_id: ClientId::from_parts(1, 1),
+                client: build,
+                author: Author::Human {
+                    name: "ada".into(),
+                    machine: "box".into(),
+                },
+            },
+            outbox: Outbox { tx },
+            subs: Mutex::default(),
+        };
+        (dir, conn, outgoing)
+    }
+
+    #[tokio::test]
+    async fn subscribing_catches_up_existing_scopes_before_the_live_tail_resumes() {
+        for since in [Since::Now, Since::After { seq: Seq::new(0) }] {
+            let (_dir, conn, mut outgoing) = connection();
+            conn.subscribe(SubscribeScope::All, Since::Now)
+                .await
+                .unwrap();
+            let ctx = Daemon::ctx(
+                conn.negotiated.author.clone(),
+                conn.negotiated.client_id,
+                ClientSeq::new(1),
+            );
+            let (_, events) = conn
+                .daemon
+                .write(move |core| {
+                    core.create_workspace(&ctx, WorkspaceId::from_parts(1, 1), "first".into())?;
+                    core.create_workspace(&ctx, WorkspaceId::from_parts(1, 2), "second".into())
+                })
+                .await
+                .unwrap();
+
+            // Both events are committed but their live delivery is still waiting
+            // for the subscription lock. Only the second matches the new scope.
+            let scope = SubscribeScope::Workspace {
+                workspace_id: WorkspaceId::from_parts(1, 2),
+            };
+            conn.subscribe(scope.clone(), since).await.unwrap();
+            for event in &events {
+                assert_eq!(
+                    outgoing.try_recv().unwrap(),
+                    ServerMsg::Event {
+                        event: event.clone()
+                    }
+                );
+            }
+            for event in &events {
+                conn.deliver_live(&Arc::new(event.clone())).await;
+            }
+            assert!(
+                outgoing.try_recv().is_err(),
+                "no replay/live overlap duplicates"
+            );
+
+            // An explicit rewind still replays even while both scopes stay active.
+            conn.subscribe(scope, Since::After { seq: Seq::new(0) })
+                .await
+                .unwrap();
+            assert_eq!(
+                outgoing.try_recv().unwrap(),
+                ServerMsg::Event {
+                    event: events[1].clone()
+                }
+            );
+            assert!(outgoing.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn replacing_a_scope_honors_the_new_cursor_instead_of_its_pending_live_events() {
+        for since in [Since::Now, Since::After { seq: Seq::FIRST }] {
+            let (_dir, conn, mut outgoing) = connection();
+            conn.subscribe(SubscribeScope::All, Since::Now)
+                .await
+                .unwrap();
+            let ctx = Daemon::ctx(
+                conn.negotiated.author.clone(),
+                conn.negotiated.client_id,
+                ClientSeq::new(1),
+            );
+            let (_, events) = conn
+                .daemon
+                .write(move |core| {
+                    core.create_workspace(&ctx, WorkspaceId::from_parts(1, 1), "first".into())
+                })
+                .await
+                .unwrap();
+            assert_eq!(events[0].seq, Seq::FIRST);
+            conn.subscribe(SubscribeScope::All, since).await.unwrap();
+            conn.deliver_live(&Arc::new(events[0].clone())).await;
+            assert!(outgoing.try_recv().is_err());
+        }
+    }
 }

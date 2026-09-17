@@ -10,13 +10,17 @@ use nits_protocol::{
     Anchor, Author, BaseRefSpec, BuildInfo, ChunkIndex, ClientId, ClientMsg, ClientSeq, CommentId,
     CommentKind, DiffScope, Envelope, EventBody, Mutation, NonEmpty, ProtocolVersion, RefSpec,
     RenderOpts, RepoId, RepoPath, Request, RequestId, Response, ReviewId, ReviewTarget,
-    ReviewTargetUpdate, RpcError, Since, StreamItem, SubscribeScope, TargetRevision, WorkspaceId,
+    ReviewTargetUpdate, RpcError, Seq, ServerMsg, Since, StreamItem, SubscribeScope,
+    TargetRevision, WorkspaceId,
 };
 use nits_review_core::DataDir;
 use nits_test_support::{RepoBuilder, TestRepo, files};
 use nitsd::Daemon;
 use nitsd::client::{Client, Identity};
+use nitsd::ops::Ops;
 use nitsd::server::{UnixServer, WsServer};
+use nitsd::transport::{FrameRead, FrameWrite};
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 /// Which listener a test's clients connect through.
@@ -48,6 +52,7 @@ struct Harness {
     endpoint: Endpoint,
     shutdown: CancellationToken,
     repo: TestRepo,
+    daemon: Arc<Daemon>,
 }
 
 impl Drop for Harness {
@@ -110,6 +115,7 @@ fn start_on(repo: TestRepo, transport: Transport) -> Harness {
         .unwrap();
     let ws_ready = Arc::new(tokio::sync::Notify::new());
     tokio::spawn({
+        let daemon = Arc::clone(&daemon);
         let ready = Arc::clone(&ws_ready);
         let shutdown = shutdown.clone();
         async move {
@@ -134,6 +140,7 @@ fn start_on(repo: TestRepo, transport: Transport) -> Harness {
         endpoint,
         shutdown,
         repo,
+        daemon,
     }
 }
 
@@ -445,6 +452,299 @@ async fn scopes_filter_events(t: Transport) {
     .await
     .unwrap();
     assert_eq!(reader.next_event().await.unwrap(), wanted);
+}
+
+async fn poll_cursor_replays_limited_batches_and_older_events(t: Transport) {
+    let h = start_on(small_repo(), t);
+    let writer = connect(&h, 1, "ada").await;
+    seed(&h, &writer).await;
+    let ops = Ops::new(connect(&h, 2, "bob").await);
+    let scope = SubscribeScope::Review {
+        review_id: review_id(),
+    };
+    let start = ops
+        .poll_events(scope.clone(), Since::Now, Duration::ZERO, 10)
+        .await
+        .unwrap()
+        .last_seq;
+    let mut expected = Vec::new();
+    for n in 0..7 {
+        expected.push(
+            mutate(&writer, 10 + n, file_comment(u128::from(n), "burst"))
+                .await
+                .unwrap(),
+        );
+    }
+
+    // Every subscription queues the full gap, but only returned events advance
+    // the caller's cursor. The next poll must replay the unconsumed remainder.
+    let mut cursor = start;
+    let mut received = Vec::new();
+    for batch in expected.chunks(2) {
+        let got = ops
+            .poll_events(
+                scope.clone(),
+                Since::After { seq: cursor },
+                Duration::from_millis(50),
+                2,
+            )
+            .await
+            .unwrap();
+        assert_eq!(got.events, batch);
+        cursor = got.last_seq;
+        assert_eq!(cursor, batch.last().unwrap().seq);
+        received.extend(got.events);
+    }
+    assert_eq!(received, expected);
+
+    // A deliberate rewind on this same connection returns the requested gap.
+    let replay = ops
+        .poll_events(
+            scope.clone(),
+            Since::After { seq: start },
+            Duration::from_millis(50),
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.events, expected);
+    assert_eq!(replay.last_seq, cursor);
+    let empty = ops
+        .poll_events(scope, Since::After { seq: cursor }, Duration::ZERO, 10)
+        .await
+        .unwrap();
+    assert!(empty.events.is_empty());
+    assert_eq!(empty.last_seq, cursor);
+}
+
+async fn polling_another_review_does_not_acknowledge_its_events(t: Transport) {
+    let h = start_on(small_repo(), t);
+    let writer = connect(&h, 1, "ada").await;
+    seed(&h, &writer).await;
+    let other_review = ReviewId::from_parts(1, 2);
+    mutate(
+        &writer,
+        4,
+        Mutation::CreateReview {
+            review_id: other_review,
+            workspace_id: ws(),
+            title: "second review".into(),
+            targets: NonEmpty::new(vec![ReviewTarget {
+                repo_id: rid(),
+                base: RefSpec::Head,
+                head: RefSpec::Head,
+            }])
+            .unwrap(),
+        },
+    )
+    .await
+    .unwrap();
+    let ops = Ops::new(connect(&h, 2, "bob").await);
+    let first_scope = SubscribeScope::Review {
+        review_id: review_id(),
+    };
+    let second_scope = SubscribeScope::Review {
+        review_id: other_review,
+    };
+    let start = ops
+        .poll_events(SubscribeScope::All, Since::Now, Duration::ZERO, 10)
+        .await
+        .unwrap()
+        .last_seq;
+    let first = mutate(&writer, 10, file_comment(1, "first review"))
+        .await
+        .unwrap();
+    let second = mutate(
+        &writer,
+        11,
+        Mutation::AddComment {
+            review_id: other_review,
+            comment_id: comment_id(2),
+            kind: CommentKind::Note,
+            anchor: Anchor::Review,
+            body: "second review".into(),
+            context: None,
+        },
+    )
+    .await
+    .unwrap();
+    for (scope, expected) in [
+        (second_scope.clone(), second.clone()),
+        (first_scope, first),
+        (second_scope, second),
+    ] {
+        let got = ops
+            .poll_events(
+                scope,
+                Since::After { seq: start },
+                Duration::from_millis(50),
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(got.last_seq, expected.seq);
+        assert_eq!(got.events, vec![expected]);
+    }
+    // Workspace replay still recognizes events for a review deleted before
+    // this connection first subscribes to the workspace.
+    mutate(
+        &writer,
+        12,
+        Mutation::DeleteReview {
+            review_id: other_review,
+        },
+    )
+    .await
+    .unwrap();
+    let workspace = ops
+        .poll_events(
+            SubscribeScope::Workspace { workspace_id: ws() },
+            Since::After { seq: start },
+            Duration::from_millis(50),
+            10,
+        )
+        .await
+        .unwrap();
+    let expected = h.daemon.core().events_after(Some(start)).unwrap();
+    assert_eq!(expected.len(), 3);
+    assert_eq!(workspace.events, expected);
+}
+
+/// Stop the first unsubscribe before the daemon handles it, so a test can
+/// commit events after the poll stops reading but while its scope is active.
+struct PauseUnsubscribe<R> {
+    read: R,
+    pause: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
+}
+
+impl<R: FrameRead> FrameRead for PauseUnsubscribe<R> {
+    async fn recv(&mut self) -> Result<Option<Vec<u8>>, nitsd::codec::CodecError> {
+        let frame = self.read.recv().await?;
+        if let Some(frame) = &frame {
+            let envelope: Envelope<ClientMsg> = nitsd::codec::decode(frame)?;
+            if matches!(
+                envelope.msg,
+                ClientMsg::Request {
+                    request: Request::Unsubscribe { .. },
+                    ..
+                }
+            ) && let Some((paused, resume)) = self.pause.take()
+            {
+                paused.send(()).unwrap();
+                resume.await.unwrap();
+            }
+        }
+        Ok(frame)
+    }
+}
+
+/// Observe real outgoing events without consuming the client's queued copies.
+struct ObserveEvents<W> {
+    write: W,
+    events: mpsc::UnboundedSender<Seq>,
+}
+
+impl<W: FrameWrite> FrameWrite for ObserveEvents<W> {
+    async fn send(&mut self, frame: &[u8]) -> Result<(), nitsd::codec::CodecError> {
+        self.write.send(frame).await?;
+        let envelope: Envelope<ServerMsg> = nitsd::codec::decode(frame)?;
+        if let ServerMsg::Event { event } = envelope.msg {
+            let _ = self.events.send(event.seq);
+        }
+        Ok(())
+    }
+
+    async fn close(&mut self) -> Result<(), nitsd::codec::CodecError> {
+        self.write.close().await
+    }
+}
+
+#[tokio::test]
+async fn poll_replays_a_burst_queued_at_the_unsubscribe_boundary() {
+    let h = start(small_repo());
+    let writer = connect(&h, 1, "ada").await;
+    seed(&h, &writer).await;
+    let start = h.daemon.core().last_seq().unwrap().unwrap();
+    let first = mutate(&writer, 10, file_comment(1, "first")).await.unwrap();
+
+    let (client_io, server_io) = tokio::io::duplex(65536);
+    let (read, write) = nitsd::transport::byte_stream(server_io);
+    let (paused_tx, paused) = oneshot::channel();
+    let (resume, resume_rx) = oneshot::channel();
+    let (events, mut observed) = mpsc::unbounded_channel();
+    tokio::spawn(nitsd::connection::serve_framed(
+        Arc::clone(&h.daemon),
+        PauseUnsubscribe {
+            read,
+            pause: Some((paused_tx, resume_rx)),
+        },
+        ObserveEvents { write, events },
+    ));
+    let ops = Ops::new(
+        Client::handshake(client_io, identity(2, "bob"), ProtocolVersion::CURRENT)
+            .await
+            .unwrap(),
+    );
+    let scope = SubscribeScope::Review {
+        review_id: review_id(),
+    };
+    let polling_scope = scope.clone();
+    let poll = tokio::spawn(async move {
+        let result = ops
+            .poll_events(
+                polling_scope,
+                Since::After { seq: start },
+                Duration::from_secs(1),
+                10,
+            )
+            .await
+            .unwrap();
+        (ops, result)
+    });
+    // The poll has timed out its drain and sent Unsubscribe. The gate holds
+    // that request until all three new events have reached the transport.
+    tokio::time::timeout(Duration::from_secs(5), paused)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut expected = Vec::new();
+    for n in 2..5 {
+        let event = mutate(&writer, 10 + n, file_comment(u128::from(n), "at boundary"))
+            .await
+            .unwrap();
+        loop {
+            let sent = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if sent == event.seq {
+                break;
+            }
+        }
+        expected.push(event);
+    }
+    resume.send(()).unwrap();
+    let (ops, result) = poll.await.unwrap();
+    assert_eq!(result.events, vec![first.clone()]);
+    assert_eq!(result.last_seq, first.seq);
+    expected.push(
+        mutate(&writer, 20, file_comment(5, "after unsubscribe"))
+            .await
+            .unwrap(),
+    );
+    let next = ops
+        .poll_events(
+            scope,
+            Since::After {
+                seq: result.last_seq,
+            },
+            Duration::from_millis(50),
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(next.last_seq, expected.last().unwrap().seq);
+    assert_eq!(next.events, expected);
 }
 
 async fn open_review_streams_snapshot_trees_headers_then_chunks(t: Transport) {
@@ -794,6 +1094,8 @@ on_both_transports! {
     two_clients_one_writes_other_receives_in_order,
     reconnect_with_since_receives_exactly_the_gap,
     scopes_filter_events,
+    poll_cursor_replays_limited_batches_and_older_events,
+    polling_another_review_does_not_acknowledge_its_events,
     open_review_streams_snapshot_trees_headers_then_chunks,
     file_render_streams_requested_chunk_first_and_can_be_cancelled,
     a_large_render_does_not_delay_another_clients_mutation,
