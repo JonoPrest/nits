@@ -349,7 +349,7 @@ fn directory_review_uses_and_reports_the_daemons_detected_base() {
         .args(["review", "show", &review])
         .assert()
         .success()
-        .stdout(predicate::str::contains("name: \"master\""));
+        .stdout(predicate::str::contains("master..worktree"));
 }
 
 #[test]
@@ -892,4 +892,295 @@ fn a_legacy_ssh_context_says_how_to_migrate_it() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("nits daemon serve"));
+}
+
+/// Both workspaces and reviews deliberately have identical names. Repository
+/// identity must come from daemon metadata, even from an unrelated cwd.
+#[test]
+#[allow(clippy::too_many_lines)] // one two-repository scenario across CLI surfaces
+fn workspace_selection_is_global_and_remote_output_identifies_each_repo() {
+    let h = start();
+    let second = RepoBuilder::new()
+        .commit("base", files!["a.rs" => "fn a() {}\n"])
+        .branch("feature")
+        .commit("feature", files!["a.rs" => "fn b() {}\n"])
+        .build()
+        .unwrap();
+    let cfg_path = h.dir.path().join("remote.toml");
+    let mut cfg = nits_config::Config::default();
+    cfg.contexts.insert(
+        "build-box".into(),
+        nits_config::Context::Ws {
+            url: h.ws_url.clone(),
+        },
+    );
+    cfg.save(&cfg_path).unwrap();
+    let remote = || {
+        let mut cmd = h.nits();
+        cmd.env_remove("NITS_SOCKET")
+            .env("NITS_CONFIG", &cfg_path)
+            .current_dir(h.dir.path())
+            .args(["-c", "build-box"]);
+        cmd
+    };
+
+    let mut selections = Vec::new();
+    for (repo, name) in [(&h.repo, "atlas-api"), (&second, "atlas-worker")] {
+        let workspace = h.out(&["workspace", "add", "topic"]);
+        let repo_id = h.out(&[
+            "workspace",
+            "attach",
+            &workspace,
+            repo.path().to_str().unwrap(),
+            "--name",
+            name,
+        ]);
+        let result = remote()
+            .args([
+                "--workspace",
+                &workspace,
+                "review",
+                "create",
+                "--base",
+                "main",
+                "--head",
+                "feature",
+                "--title",
+                "Topic changes",
+            ])
+            .assert()
+            .success();
+        let review = String::from_utf8_lossy(&result.get_output().stdout)
+            .trim()
+            .to_owned();
+        selections.push((workspace, repo_id, review, name, repo.path()));
+    }
+    let listed = remote().args(["workspace", "list"]).assert().success();
+    let workspace_text = String::from_utf8_lossy(&listed.get_output().stdout);
+    for (workspace, repo_id, review, name, path) in &selections {
+        assert!(workspace_text.contains(&format!("{workspace} topic ({name})")));
+        assert!(workspace_text.contains(&format!("{repo_id} {name} {}", path.display())));
+        for args in [
+            vec!["--workspace", workspace, "review", "list"],
+            vec!["review", "--workspace", workspace, "list"],
+            vec!["review", "list", "--workspace", workspace],
+            vec!["review", "show", review],
+            vec!["review", "show", "--review", review],
+        ] {
+            remote()
+                .args(args)
+                .assert()
+                .success()
+                .stdout(predicate::str::contains(format!(
+                    "{review} [Open] Topic changes"
+                )))
+                .stdout(predicate::str::contains(format!(
+                    "workspace {workspace} topic"
+                )))
+                .stdout(predicate::str::contains(format!(
+                    "repo {repo_id} {name} ({})",
+                    path.display()
+                )))
+                .stdout(predicate::str::contains("main..feature"));
+        }
+        let json = remote()
+            .args(["--json", "--workspace", workspace, "review", "list"])
+            .assert()
+            .success();
+        let reviews: Vec<nits_protocol::Review> =
+            serde_json::from_slice(&json.get_output().stdout).unwrap();
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(reviews[0].id.to_string(), *review);
+        assert_eq!(reviews[0].workspace_id.to_string(), *workspace);
+        assert_eq!(reviews[0].targets.first().repo_id.to_string(), *repo_id);
+    }
+    // The same global selection must keep event subscriptions scoped too.
+    let first_workspace = &selections[0].0;
+    for args in [
+        vec!["--workspace", first_workspace, "events", "--since", "0"],
+        vec!["events", "--workspace", first_workspace, "--since", "0"],
+    ] {
+        remote()
+            .args(args)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(&selections[0].2))
+            .stdout(predicate::str::contains(&selections[1].2).not());
+    }
+    remote()
+        .args(["review", "list"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "nits --workspace <ID> review list",
+        ))
+        .stderr(predicate::str::contains("nits workspace list"));
+
+    // Both the old alias and primary spelling still connect to the daemon.
+    for flag in ["--daemon-url", "--ws"] {
+        h.nits()
+            .args([flag, &h.ws_url, "workspace", "list"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("atlas-api"));
+    }
+}
+
+#[test]
+fn review_argument_aliases_and_line_range_spellings_preserve_anchors_and_authorship() {
+    let h = start();
+    let workspace = h.out(&["workspace", "add", "topic"]);
+    h.out(&[
+        "workspace",
+        "attach",
+        &workspace,
+        h.repo.path().to_str().unwrap(),
+    ]);
+    let review = h.out(&[
+        "review",
+        "--workspace",
+        &workspace,
+        "create",
+        "--base",
+        "main",
+        "--head",
+        "feature",
+    ]);
+    for range in ["1:2", "1-2"] {
+        let thread = h.out(&[
+            "--agent",
+            "atlas-reviewer",
+            "comment",
+            "add",
+            "--review",
+            &review,
+            "--path",
+            "a.rs",
+            "--lines",
+            range,
+            "--side",
+            "head",
+            "--body",
+            range,
+        ]);
+        h.out(&["comment", "reply", &review, "--body", "Checked", &thread]);
+        h.out(&["comment", "resolve", &review, "--json", &thread]);
+    }
+    let json = h.out(&["--json", "review", "show", "--review", &review]);
+    let snapshot: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let comments = snapshot["comments"].as_array().unwrap();
+    for thread in snapshot["threads"].as_array().unwrap() {
+        let replies = thread["replies"].as_array().unwrap();
+        assert_eq!(replies.len(), 1);
+        let reply = comments
+            .iter()
+            .find(|comment| comment["id"] == replies[0])
+            .unwrap();
+        assert_eq!(reply["body"], "Checked");
+        assert_eq!(thread["resolution"]["type"], "Resolved");
+    }
+    for body in ["1:2", "1-2"] {
+        let comment = comments.iter().find(|c| c["body"] == body).unwrap();
+        assert_eq!(
+            comment["anchor"]["lines"],
+            serde_json::json!({"start": 1, "end": 2})
+        );
+        assert_eq!(comment["anchor"]["side"], "Head");
+        assert_eq!(comment["author"]["type"], "Agent");
+        assert_eq!(comment["author"]["name"], "atlas-reviewer");
+        assert_eq!(comment["author"]["via"], "Cli");
+    }
+    assert_eq!(
+        h.out(&["comment", "list", "--review", &review]),
+        h.out(&["comment", "list", &review])
+    );
+    assert_eq!(
+        h.out(&["files", "--review", &review]),
+        h.out(&["files", &review])
+    );
+    // Commands with a second positional retain normal clap binding even
+    // when options appear between the required review ID and path.
+    assert_eq!(
+        h.out(&["show", &review, "--side", "base", "a.rs"]),
+        h.out(&["show", &review, "a.rs", "--side", "base"])
+    );
+    assert_eq!(
+        h.out(&["diff", &review, "--context-lines", "1", "a.rs"]),
+        h.out(&["diff", &review, "a.rs", "--context-lines", "1"])
+    );
+}
+
+/// Invalid argument values must be diagnosed before a remote context is
+/// resolved or contacted, without falling back to a misleading connection error.
+#[test]
+fn argument_errors_explain_workspace_ids_review_selection_and_valid_ranges() {
+    let dir = tempfile::tempdir().unwrap();
+    let review = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    let nits = || {
+        let mut cmd = Command::cargo_bin("nits").unwrap();
+        cmd.env("NITS_CONFIG", dir.path().join("no-config.toml"))
+            .env_remove("NITS_SOCKET")
+            .env_remove("NITS_WS_URL")
+            .args(["-c", "unconfigured-remote"]);
+        cmd
+    };
+    for flag in ["--ws", "--daemon-url"] {
+        nits()
+            .args([flag, review, "review", "list"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("this looks like a workspace ID"))
+            .stderr(predicate::str::contains(format!("--workspace {review}")))
+            .stderr(predicate::str::contains("URL scheme not supported").not());
+    }
+    nits()
+        .args([
+            "--daemon-url",
+            "https://reviews.example",
+            "workspace",
+            "list",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "ws://host:port or wss://host:port",
+        ));
+    for range in [
+        "0-1",
+        "1:0",
+        "2-1",
+        "2:1",
+        "1--2",
+        "1:2:3",
+        "1-2:3",
+        "one-two",
+        "4294967296-4294967296",
+        "1",
+    ] {
+        nits()
+            .args([
+                "comment", "add", "--review", review, "--path", "a.rs", "--lines", range, "--body",
+                "Check",
+            ])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("invalid value"))
+            .stderr(predicate::str::contains("--lines"));
+    }
+    nits()
+        .args(["comment", "list"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("<REVIEW>"))
+        .stderr(predicate::str::contains("--review <REVIEW>"));
+    nits()
+        .args(["comment", "list", review, "--review", review])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
+    nits()
+        .args(["comment", "list", "--review", "not-an-id"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid value"));
 }
