@@ -800,6 +800,14 @@ fn keys_cmd(cmd: &KeysCmd) -> anyhow::Result<()> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if cli.cmd.is_none()
+        && cli.path.is_some()
+        && let Some(workspace) = cli.workspace
+    {
+        bail!(
+            "--workspace cannot select a workspace when opening a directory path; directory opening selects the repository's existing attachment.\nUse `nits --workspace {workspace} review create --repo <REPO_ID> --base <REF> --head worktree`; find repository IDs with `nits workspace list`."
+        );
+    }
     let json = cli.json;
     let cfg_path = config_path(&cli)?;
     let mut cfg = nits_config::Config::load(&cfg_path)?;

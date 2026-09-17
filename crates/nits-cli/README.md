@@ -27,6 +27,10 @@ before `review list`, `review create`, or `events`. Without it, review commands
 infer the workspace from the current directory. `nits workspace list` lists IDs,
 repository names and paths; `review list` and `review show` also identify each
 repository and its base/head refs, including when using a remote context.
+The `nits PATH` shortcut (including `--headless`) selects its workspace from the
+repository's existing attachment and rejects `--workspace`. For an explicit
+workspace, use `nits --workspace <ID> review create --repo <REPO_ID> --base <REF>
+--head worktree`; `nits workspace list` shows the repository IDs.
 
 ```console
 $ nits -c build-box --workspace <ID> review list

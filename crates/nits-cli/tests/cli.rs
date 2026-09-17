@@ -1184,3 +1184,39 @@ fn argument_errors_explain_workspace_ids_review_selection_and_valid_ranges() {
         .code(2)
         .stderr(predicate::str::contains("invalid value"));
 }
+
+#[test]
+fn directory_opening_rejects_workspace_selection_before_connecting_or_creating_state() {
+    let h = start();
+    let workspace = h.out(&["workspace", "add", "selected"]);
+    let before = h.out(&["--json", "workspace", "list"]);
+    let path = h.repo.path().to_str().unwrap();
+    for flags in [
+        Vec::new(),
+        vec!["--headless"],
+        vec!["--ui", "headless"],
+        vec!["--ui", "web"],
+        vec!["--ui", "desktop"],
+    ] {
+        for args in [
+            vec!["--workspace", &workspace, path],
+            vec![path, "--workspace", &workspace],
+        ] {
+            for remote in [false, true] {
+                let mut command = h.nits();
+                if remote {
+                    // Context lookup would fail if the selector were not rejected first.
+                    command
+                        .env_remove("NITS_SOCKET")
+                        .args(["-c", "unconfigured-remote"]);
+                }
+                command.args(&args).args(&flags).assert().failure()
+                    .stdout("")
+                    .stderr(predicate::str::contains("--workspace cannot select a workspace when opening a directory path"))
+                    .stderr(predicate::str::contains(format!("nits --workspace {workspace} review create --repo <REPO_ID> --base <REF> --head worktree")))
+                    .stderr(predicate::str::contains("nits workspace list"));
+            }
+        }
+    }
+    assert_eq!(h.out(&["--json", "workspace", "list"]), before);
+}
