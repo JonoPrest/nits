@@ -431,3 +431,144 @@ async fn bad_commands_do_not_close_the_socket_and_assets_share_the_port() {
     assert!(text.contains("<div id=\"root\">"));
     bridge.stop();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)] // One real boundary: reject, retain the draft, correct and commit.
+async fn invalid_deferral_input_reports_the_error_without_committing_and_can_be_corrected() {
+    let h = harness().await;
+    let bridge = nits_client_web::serve(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        nits_client_web::web_config(
+            h.endpoint.clone(),
+            client_info(),
+            author(),
+            IdSeed(111),
+            KvConfig::Memory,
+        ),
+    )
+    .await
+    .unwrap();
+    let mut browser = Browser::connect(bridge.addr()).await;
+    browser
+        .dispatch(&Action::OpenReview {
+            review_id: review_a(),
+        })
+        .await;
+    browser
+        .until(|model, _| model.open_review == Some(review_a()))
+        .await;
+    browser
+        .dispatch(&Action::DraftOpened {
+            anchor: nits_protocol::Anchor::Review,
+        })
+        .await;
+    browser
+        .dispatch(&Action::DraftSubmitted {
+            body: "Controller bug remains unfixed".into(),
+        })
+        .await;
+    browser
+        .until(|model, _| model.threads.first().is_some_and(|t| !t.pending))
+        .await;
+    let thread_id = browser.model.threads[0].id;
+    let observer = Client::connect_unix(
+        &h.dir.path().join("nitsd.sock"),
+        Identity {
+            client_id: ClientId::from_parts(9, 10),
+            client: client_info(),
+            author: author(),
+        },
+    )
+    .await
+    .unwrap();
+    let request = Request::ReviewSnapshot {
+        review_id: review_a(),
+    };
+    let before = observer.request(request.clone()).await.unwrap();
+    browser.dispatch(&Action::DeferOpened { thread_id }).await;
+    browser.until(|model, _| model.draft.is_some()).await;
+    let original = browser.model.draft.clone().unwrap();
+    for (reason, url, message) in [
+        (
+            "External follow-up",
+            "example.com/issues/288",
+            "Enter a complete http:// or https:// URL",
+        ),
+        (
+            "External follow-up",
+            "https://ada:secret@example.com/288",
+            "without credentials or whitespace",
+        ),
+        (
+            "bad\0reason",
+            "https://example.com/288",
+            "unsupported control characters",
+        ),
+    ] {
+        // Exactly the raw JSON that either UI adapter accepts, rather than an
+        // already validated Action fabricated by a successful mock callback.
+        browser
+            .send_raw(
+                &serde_json::json!({"cmd": "dispatch", "action": {
+                    "type": "DeferThread", "thread_id": thread_id,
+                    "reason": reason, "tracking_url": url,
+                }})
+                .to_string(),
+            )
+            .await;
+        browser
+            .until(|model, _| {
+                model
+                    .draft
+                    .as_ref()
+                    .and_then(|d| d.submission_error.as_ref())
+                    .is_some_and(|error| error.contains(message))
+            })
+            .await;
+        let mut expected = original.clone();
+        expected
+            .submission_error
+            .clone_from(&browser.model.draft.as_ref().unwrap().submission_error);
+        assert_eq!(browser.model.draft, Some(expected));
+        assert_eq!(browser.model.focus, nits_client_core::Focus::Composer);
+        assert_eq!(
+            observer.request(request.clone()).await.unwrap(),
+            before,
+            "invalid input must not emit even a partial event"
+        );
+    }
+    browser
+        .send_raw(
+            &serde_json::json!({"cmd": "dispatch", "action": {
+                "type": "DeferThread", "thread_id": thread_id,
+                "reason": "External follow-up", "tracking_url": "https://example.com/issues/288",
+            }})
+            .to_string(),
+        )
+        .await;
+    browser
+        .until(|model, _| {
+            model.draft.is_none()
+                && model.threads.iter().any(|t| {
+                    t.id == thread_id
+                        && !t.pending
+                        && matches!(t.status, nits_protocol::ThreadResolution::Deferred { .. })
+                })
+        })
+        .await;
+    let Response::ReviewSnapshot { snapshot: after } = observer.request(request).await.unwrap()
+    else {
+        panic!("snapshot")
+    };
+    let Response::ReviewSnapshot { snapshot: before } = before else {
+        panic!("snapshot")
+    };
+    assert_eq!(after.seq.get(), before.seq.get() + 1);
+    assert_eq!(after.comments, before.comments);
+    assert!(
+        matches!(&after.threads[0].resolution, nits_protocol::ThreadResolution::Deferred { reason, tracking_url: Some(url), .. }
+        if reason.to_string() == "External follow-up" && url.to_string() == "https://example.com/issues/288")
+    );
+    bridge.stop();
+    wait_for_sessions(&bridge, 0).await;
+}

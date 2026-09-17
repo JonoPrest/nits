@@ -2751,10 +2751,13 @@ fn browse_single_lines_use_visible_blob_and_capture_every_ref_kind() {
         );
         let draft = core.view().draft.clone().unwrap();
         assert_eq!(
-            draft.context,
-            Some(CommentContext::Browse {
-                reference: reference.clone()
-            })
+            draft.purpose,
+            nits_client_core::DraftPurpose::Comment {
+                intent: nits_protocol::CommentIntent::Finding,
+                context: Some(CommentContext::Browse {
+                    reference: reference.clone()
+                })
+            }
         );
         let Anchor::Lines {
             blob_oid,
@@ -3153,7 +3156,14 @@ fn browse_file_comment_shortcuts_capture_one_source_for_anchor_and_context() {
             let context = Some(CommentContext::Browse { reference });
             let draft = core.view().draft.as_ref().unwrap();
             assert_eq!(draft.anchor, anchor, "{name}, {keys:?}");
-            assert_eq!(draft.context, context, "{name}, {keys:?}");
+            assert_eq!(
+                draft.purpose,
+                nits_client_core::DraftPurpose::Comment {
+                    intent: nits_protocol::CommentIntent::Finding,
+                    context: context.clone()
+                },
+                "{name}, {keys:?}"
+            );
             assert_eq!(core.view().focus, Focus::Composer);
             assert_eq!(
                 core.handle(Input::User(Action::SetBrowseRef {
@@ -3214,7 +3224,13 @@ fn browse_file_comment_shortcuts_capture_one_source_for_anchor_and_context() {
             );
             let draft = core.view().draft.as_ref().unwrap();
             assert_eq!(draft.anchor, anchor);
-            assert_eq!(draft.context, context);
+            assert_eq!(
+                draft.purpose,
+                nits_client_core::DraftPurpose::Comment {
+                    intent: nits_protocol::CommentIntent::Finding,
+                    context
+                }
+            );
         }
     }
 }

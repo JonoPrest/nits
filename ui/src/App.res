@@ -415,6 +415,7 @@ module Shell = {
             fileCount=model.progress.total
             threadCount={Threads.openFindings(model.threads)}
             requestCount={Array.length(model.requests)}
+            deferredCount={Threads.deferredFindings(model.threads)}
             chrome=model.chrome
             dispatch
           />
@@ -451,7 +452,7 @@ module Shell = {
                 : <div className="diff-empty"> {React.string("No changed files")} </div>}
               {switch model.draft {
               | Some(draft) if View.Draft.isDocked(draft) =>
-                <Composer draft pendingRefresh=model.pendingRefresh dispatch />
+                <Composer chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch />
               | Some(_) | None => React.null
               }}
             </>
@@ -474,6 +475,16 @@ module Shell = {
               <ReviewRequests
                 requests=model.requests focus=model.focus chrome=model.chrome dispatch
               />
+              <UI.Box direction=Row gap=Sm>
+                <UI.Badge
+                  text={Int.toString(Threads.openFindings(model.threads)) ++ " open findings"}
+                />
+                <UI.Badge
+                  text={Int.toString(
+                    Threads.deferredFindings(model.threads),
+                  ) ++ " deferred · unfixed"}
+                />
+              </UI.Box>
               <Threads
                 title="Conversation"
                 threads=model.threads
@@ -485,8 +496,8 @@ module Shell = {
                 pendingRefresh=model.pendingRefresh
               />
               {switch model.draft {
-              | Some(draft) if draft.replyTo == None =>
-                <Composer draft pendingRefresh=model.pendingRefresh dispatch />
+              | Some(draft) if View.Draft.thread(draft) == None =>
+                <Composer chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch />
               | Some(_) | None => React.null
               }}
             </>
@@ -521,7 +532,7 @@ module Shell = {
               // Browse composes inline too; only a draft with no row of
               // its own docks here.
               | Some(draft) if View.Draft.isDocked(draft) =>
-                <Composer draft pendingRefresh=model.pendingRefresh dispatch />
+                <Composer chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch />
               | Some(_) | None => React.null
               }}
             </>

@@ -107,7 +107,7 @@ describe("InlineThread", () => {
     expect(Screen.getByText("This should be a newtype."))->toBeTruthy
     FireEvent.click(Screen.getByText("Reply (r)"))
     expect(dispatch)->toHaveBeenLastCalledWith(Action.ReplyOpened({threadId: thread.id}))
-    FireEvent.click(Screen.getByText("Resolve (x)"))
+    FireEvent.click(Screen.getByText("Resolve finding"))
     expect(dispatch)->toHaveBeenLastCalledWith(Action.ResolveThread({threadId: thread.id}))
     // Clicking the card focuses the thread by its list index.
     FireEvent.click(Screen.getByText("This should be a newtype."))
@@ -2140,9 +2140,8 @@ describe("Commented lines and the inline composer", () => {
         lines: {start: 9, end_: 9},
         contextHash: "0",
       }),
-      intent: Finding,
-      context: None,
-      replyTo: None,
+      submissionError: None,
+      purpose: Comment({intent: Finding, context: None}),
     }
     expect(View.Draft.isDocked(draft))->toBe(false)
     let {container} = mount(~diff=diff(~drafted=true), ~draft=Some(draft), ~dispatch=fn())
@@ -2158,7 +2157,11 @@ describe("Commented lines and the inline composer", () => {
   })
 
   test("a review-level draft still docks", () => {
-    let draft: View.Draft.t = {anchor: Review({}), intent: Finding, context: None, replyTo: None}
+    let draft: View.Draft.t = {
+      anchor: Review({}),
+      submissionError: None,
+      purpose: Comment({intent: Finding, context: None}),
+    }
     expect(View.Draft.isDocked(draft))->toBe(true)
   })
 })
@@ -2189,9 +2192,8 @@ describe("The shell's composer placement", () => {
       lines: {start: 9, end_: 9},
       contextHash: "0",
     }),
-    intent: Finding,
-    context: None,
-    replyTo: None,
+    submissionError: None,
+    purpose: Comment({intent: Finding, context: None}),
   }
 
   let withDraft = (~tab: View.Tab.t, ~draft): View.ViewModel.t => {
@@ -2232,7 +2234,11 @@ describe("The shell's composer placement", () => {
   })
 
   test("a review-level draft still docks, in both tabs", () => {
-    let review: View.Draft.t = {anchor: Review({}), intent: Finding, context: None, replyTo: None}
+    let review: View.Draft.t = {
+      anchor: Review({}),
+      submissionError: None,
+      purpose: Comment({intent: Finding, context: None}),
+    }
     [View.Tab.FilesChanged, Browse]->Array.forEach(
       tab => {
         let {container} = shell(withDraft(~tab, ~draft=Some(review)))
@@ -2256,7 +2262,7 @@ describe("Informational conversation", () => {
     let note = {
       ...base,
       id: "summary",
-      status: Informational,
+      status: Informational({}),
       place: Review({}),
       suggestion: false,
       comments: [
@@ -2271,7 +2277,12 @@ describe("Informational conversation", () => {
     }
     let findings = [base, {...base, id: "second"}, {...base, id: "third"}]
     expect(Threads.openFindings([...findings, note]))->toBe(3)
-    expect(Threads.openFindings([{...base, status: Resolved}, note]))->toBe(0)
+    expect(
+      Threads.openFindings([
+        {...base, status: Resolved({by: base.author, at: base.created})},
+        note,
+      ]),
+    )->toBe(0)
     let dispatch = fn()
     let chrome: array<View.Hint.t> = [{command: Reply, keys: "R", label: "reply"}]
     let {container} = render(
@@ -2298,7 +2309,7 @@ describe("Informational conversation", () => {
         indexOffset=0
         dispatch
         chrome
-        draft={{intent: Finding, anchor: Review({}), context: None, replyTo: Some(note.id)}}
+        draft={{submissionError: None, purpose: Reply({threadId: note.id}), anchor: Review({})}}
       />,
     )
     expect(Screen.getByPlaceholderText("Reply…"))->toBeTruthy
@@ -2310,7 +2321,11 @@ describe("Informational conversation", () => {
     let model = {
       ...Fixtures.parse(View.ViewModel.schema, "client", "ViewModel", "default"),
       tab: Conversation,
-      draft: Some({intent: Informational, anchor: Review({}), context: None, replyTo: None}),
+      draft: Some({
+        submissionError: None,
+        purpose: Comment({intent: Informational, context: None}),
+        anchor: Review({}),
+      }),
     }
     let dispatch = fn()
     let core: Core.t = {
@@ -2368,11 +2383,166 @@ describe("Review requests", () => {
     expect(Element.querySelector(container, ".review-request"))->toBeNull
   })
 
-  test("conversation counts requests separately from open findings", () => {
+  test("conversation counts requests and deferred findings separately from open findings", () => {
     let {container} = render(
-      <Tabs tab=Conversation fileCount=0 threadCount=0 requestCount=2 chrome=[] dispatch={fn()} />,
+      <Tabs
+        tab=Conversation
+        fileCount=0
+        threadCount=0
+        requestCount=2
+        deferredCount=3
+        chrome=[]
+        dispatch={fn()}
+      />,
     )
     expect(Element.textContent(container))->toContain("0 open")
     expect(Element.textContent(container))->toContain("2 requests")
+    expect(Element.textContent(container))->toContain("3 deferred")
   })
+})
+
+describe("Deferred findings", () => {
+  test(
+    "keeps an unfixed Browse finding visible with provenance, attribution, follow-up and reopen",
+    () => {
+      let base = Fixtures.parse(View.ThreadView.schema, "client", "ThreadView", "default")
+      let deferred = {
+        ...base,
+        context: Some(Browse({reference: Tag({name: "v1"})})),
+        status: Deferred({
+          reason: "Controller issue #288 per scope decision",
+          trackingUrl: Some("https://example.com/issues/288"),
+          by: base.author,
+          at: base.created,
+        }),
+      }
+      let note = {...base, id: "note", status: Informational({})}
+      expect(Threads.openFindings([base, deferred, note]))->toBe(1)
+      expect(Threads.deferredFindings([base, deferred, note]))->toBe(1)
+      let dispatch = fn()
+      let chrome: array<View.Hint.t> = [
+        {keys: "q", command: ToggleResolved, label: "reopen"},
+        {keys: "D", command: DeferFinding, label: "defer"},
+      ]
+      let {container, rerender} = render(
+        <Threads
+          title="Conversation"
+          threads=[deferred]
+          focus={Thread({index: 0})}
+          indexOffset=0
+          chrome
+          dispatch
+        />,
+      )
+      expect(Screen.getByText("Controller issue #288 per scope decision"))->toBeTruthy
+      expect(Screen.getByText("This should be a newtype."))->toBeTruthy
+      expect(Screen.getByText("Deferred · unfixed"))->toBeTruthy
+      expect(Screen.getByText("browse @tag:v1"))->toBeTruthy
+      let link = Element.querySelector(container, "a[href]")->Nullable.getExn
+      expect(Element.getAttribute(link, "href"))->toEqual(
+        Nullable.make("https://example.com/issues/288"),
+      )
+      expect(Element.getAttribute(link, "rel"))->toEqual(Nullable.make("noopener noreferrer"))
+      let reopen = Screen.getByText("Reopen finding")
+      expect(Element.getAttribute(reopen, "title"))->toEqual(Nullable.make("reopen (q)"))
+      FireEvent.click(reopen)
+      expect(dispatch)->toHaveBeenLastCalledWith(Action.UnresolveThread({threadId: base.id}))
+      rerender(
+        <Threads
+          title="Conversation"
+          threads=[base]
+          focus={Thread({index: 0})}
+          indexOffset=0
+          chrome
+          dispatch
+        />,
+      )
+      let defer = Screen.getByText("Defer finding")
+      expect(Element.getAttribute(defer, "title"))->toEqual(Nullable.make("defer (D)"))
+      FireEvent.click(defer)
+      expect(dispatch)->toHaveBeenLastCalledWith(Action.DeferOpened({threadId: base.id}))
+      rerender(
+        <Threads
+          title="Conversation"
+          threads=[note]
+          focus={Thread({index: 0})}
+          indexOffset=0
+          chrome
+          dispatch
+        />,
+      )
+      expect(Array.length(Screen.queryAllByText("Defer finding")))->toBe(0)
+      expect(Array.length(Screen.queryAllByText("Reopen finding")))->toBe(0)
+    },
+  )
+
+  test(
+    "deferral composer requires a reason, includes optional URL and supports keyboard submission",
+    () => {
+      let draft: View.Draft.t = {
+        anchor: Review({}),
+        submissionError: None,
+        purpose: Defer({threadId: "finding"}),
+      }
+      let dispatch = fn()
+      let _ = render(<Composer draft pendingRefresh=false dispatch />)
+      let reason = Screen.getByPlaceholderText(
+        "Reason for deferring this unfixed finding (required)…",
+      )
+      FireEvent.keyDown(reason, {"key": "Enter", "ctrlKey": true})
+      expect(dispatch)->not_->toHaveBeenCalled
+      FireEvent.change(reason, {"target": {"value": "Controller issue #288 per scope decision"}})
+      let url = Screen.getByPlaceholderText("External tracking URL (optional HTTP(S))")
+      FireEvent.change(url, {"target": {"value": "https://example.com/issues/288"}})
+      FireEvent.keyDown(url, {"key": "Enter", "ctrlKey": true})
+      expect(dispatch)->toHaveBeenLastCalledWith(
+        Action.DeferThread({
+          threadId: "finding",
+          reason: "Controller issue #288 per scope decision",
+          trackingUrl: Some("https://example.com/issues/288"),
+        }),
+      )
+      FireEvent.keyDown(reason, {"key": "Escape", "ctrlKey": false})
+      expect(dispatch)->toHaveBeenLastCalledWith(Action.DraftDiscarded({}))
+    },
+  )
+})
+
+test("deferral rejection is visible and keeps both inputs available for correction", () => {
+  let draft: View.Draft.t = {
+    anchor: Review({}),
+    purpose: Defer({threadId: "finding"}),
+    submissionError: None,
+  }
+  let dispatch = fn()
+  let {container, rerender} = render(<Composer draft pendingRefresh=false dispatch />)
+  let reason = Screen.getByPlaceholderText(
+    "Reason for deferring this unfixed finding (required)…",
+  )
+  let url = Screen.getByPlaceholderText("External tracking URL (optional HTTP(S))")
+  FireEvent.change(reason, {"target": {"value": "External follow-up"}})
+  FireEvent.change(url, {"target": {"value": "example.com/issues/288"}})
+  FireEvent.click(Screen.getByText("Submit"))
+  // A rejected action returns this Draft patch; the real Rust bridge test
+  // verifies the parse failure, patch delivery, and absence of a committed event.
+  let message = "Invalid tracking URL. Enter a complete http:// or https:// URL."
+  rerender(
+    <Composer draft={{...draft, submissionError: Some(message)}} pendingRefresh=false dispatch />,
+  )
+  let alert = Element.querySelector(container, "[role='alert']")->Nullable.getExn
+  expect(Element.textContent(alert))->toContain(message)
+  expect(Element.value(reason))->toBe("External follow-up")
+  expect(Element.value(url))->toBe("example.com/issues/288")
+  FireEvent.change(url, {"target": {"value": "https://example.com/issues/288"}})
+  FireEvent.keyDown(url, {"key": "Enter", "ctrlKey": true})
+  expect(dispatch)->toHaveBeenLastCalledWith(
+    Action.DeferThread({
+      threadId: "finding",
+      reason: "External follow-up",
+      trackingUrl: Some("https://example.com/issues/288"),
+    }),
+  )
+  rerender(<Composer draft pendingRefresh=false dispatch />)
+  expect(Element.querySelector(container, "[role='alert']"))->toBeNull
+  expect(Element.value(reason))->toBe("External follow-up")
 })

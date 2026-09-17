@@ -44,6 +44,13 @@ type t =
   | @as("Reply") Reply({@as("thread_id") threadId: threadId, body: string})
   | @as("EditComment") EditComment({@as("comment_id") commentId: commentId, body: string})
   | @as("DeleteComment") DeleteComment({@as("comment_id") commentId: commentId})
+  | @as("DeferOpened") DeferOpened({@as("thread_id") threadId: threadId})
+  | @as("DeferThread")
+  DeferThread({
+      @as("thread_id") threadId: threadId,
+      reason: string,
+      @as("tracking_url") trackingUrl: @s.null option<string>,
+    })
   | @as("ResolveThread") ResolveThread({@as("thread_id") threadId: threadId})
   | @as("UnresolveThread") UnresolveThread({@as("thread_id") threadId: threadId})
   | @as("ApplySuggestion") ApplySuggestion({@as("comment_id") commentId: commentId})

@@ -194,6 +194,12 @@ pub enum Mutation {
         review_id: ReviewId,
         comment_id: CommentId,
     },
+    DeferThread {
+        review_id: ReviewId,
+        thread_id: ThreadId,
+        reason: crate::DeferralReason,
+        tracking_url: Option<crate::TrackingUrl>,
+    },
     ResolveThread {
         review_id: ReviewId,
         thread_id: ThreadId,

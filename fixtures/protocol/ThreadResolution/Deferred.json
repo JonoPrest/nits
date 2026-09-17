@@ -1,0 +1,11 @@
+{
+  "at": 1700000009000,
+  "by": {
+    "machine": "laptop",
+    "name": "ada",
+    "type": "Human"
+  },
+  "reason": "Deferred to controller issue per scope decision",
+  "tracking_url": "https://example.com/issues/288",
+  "type": "Deferred"
+}

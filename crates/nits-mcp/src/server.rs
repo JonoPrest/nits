@@ -612,6 +612,7 @@ impl Server {
         })
     }
 
+    #[allow(clippy::too_many_lines)] // one exhaustive dispatch over typed mutating calls
     async fn call_mutating(&mut self, call: MutatingCall) -> Result<Value, ToolError> {
         match call {
             MutatingCall::EnsureDirectoryReview(p) => ok(self
@@ -660,6 +661,22 @@ impl Server {
                     .await?;
                 ok(tools::Replied {
                     comment_id,
+                    thread_id: p.thread_id,
+                    seq: event.seq,
+                })
+            }
+            MutatingCall::Defer(p) => {
+                let event = self
+                    .ops_mut()?
+                    .mutate(Mutation::DeferThread {
+                        review_id: p.review_id,
+                        thread_id: p.thread_id,
+                        reason: p.reason,
+                        tracking_url: p.tracking_url,
+                    })
+                    .await?;
+                ok(tools::Deferred {
+                    review_id: p.review_id,
                     thread_id: p.thread_id,
                     seq: event.seq,
                 })

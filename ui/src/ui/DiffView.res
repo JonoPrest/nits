@@ -107,7 +107,7 @@ let make = (
   | Thread({index}) => Some(index)
   | _ => None
   }
-  let replyTo = draft->Option.flatMap(d => d.replyTo)
+  let replyTo = draft->Option.flatMap(d => View.Draft.thread(d))
   let title = diff.file.path
   let stats = switch diff.content {
   | Text({additions, deletions}) =>
@@ -235,8 +235,8 @@ let make = (
                 onExpand={(gap, dir) => dispatch(ExpandGap({file: diff.file, gap, dir}))}
               />
               {switch (r.drafted, draft) {
-              | (Some((Anchor, _)), Some({replyTo: None} as d)) =>
-                <Composer draft=d pendingRefresh dispatch />
+              | (Some((Anchor, _)), Some({purpose: Comment(_)} as d)) =>
+                <Composer chrome draft=d pendingRefresh dispatch />
               | (Some(_), _) | (None, _) => React.null
               }}
               {r.threads
@@ -247,10 +247,11 @@ let make = (
                 let thread = threads->Array.getUnsafe(ti)
                 let composer = switch (replyTo, draft) {
                 | (Some(id), Some(d)) if id == thread.id =>
-                  <Composer draft=d pendingRefresh dispatch />
+                  <Composer chrome draft=d pendingRefresh dispatch />
                 | _ => React.null
                 }
                 <InlineThread
+                  chrome
                   key=thread.id
                   thread
                   focused={focusedThread == Some(ti)}

@@ -54,7 +54,6 @@ let base = (): View.DiffView.t => {
 }
 
 let draft = (diff: View.DiffView.t): View.Draft.t => {
-  intent: Finding,
   anchor: Lines({
     repoId: diff.file.repoId,
     path: diff.file.path,
@@ -63,8 +62,8 @@ let draft = (diff: View.DiffView.t): View.Draft.t => {
     lines: {start: 1, end_: 2},
     contextHash: "0000000000000000",
   }),
-  context: Some(Browse({reference: Tag({name: "v1"})})),
-  replyTo: None,
+  submissionError: None,
+  purpose: Comment({intent: Finding, context: Some(Browse({reference: Tag({name: "v1"})}))}),
 }
 
 let chrome: array<View.Hint.t> = [{keys: "c", command: Comment, label: "comment"}]
@@ -152,7 +151,7 @@ test(
     let dispatch = fn()
     let diff = base()
     let thread = Fixtures.parse(View.ThreadView.schema, "client", "ThreadView", "default")
-    let thread = {...thread, context: draft(diff).context, outdated: false}
+    let thread = {...thread, context: Some(Browse({reference: Tag({name: "v1"})})), outdated: false}
     let placed = {
       ...diff,
       rows: diff.rows->Array.map(row => {

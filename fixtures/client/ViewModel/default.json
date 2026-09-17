@@ -246,9 +246,11 @@
       "side": "Head",
       "type": "Lines"
     },
-    "context": null,
-    "intent": "Finding",
-    "reply_to": "01HF7YAVYG0000000000000005"
+    "purpose": {
+      "thread_id": "01HF7YAVYG0000000000000005",
+      "type": "Reply"
+    },
+    "submission_error": null
   },
   "focus": {
     "row": 121,
@@ -736,7 +738,9 @@
       },
       "replies": 1,
       "root": "01HF7YAVYG0000000000000005",
-      "status": "Open",
+      "status": {
+        "type": "Open"
+      },
       "suggestion": true,
       "summary": "This should be a newtype."
     }

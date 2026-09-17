@@ -141,7 +141,7 @@ async fn respond_asset(stream: &mut TcpStream, head: &RequestHead) -> std::io::R
 #[derive(Debug, serde::Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
-    Dispatch { action: Action },
+    Dispatch { action: serde_json::Value },
     Key { chord: KeyChord },
     Attach,
 }
@@ -438,7 +438,7 @@ async fn client<S>(
             msg = rx.next() => match msg {
                 Some(Ok(Message::Text(text))) => {
                     let alive = match serde_json::from_str::<Command>(&text) {
-                        Ok(Command::Dispatch { action }) => handle.dispatch(action),
+                        Ok(Command::Dispatch { action }) => handle.dispatch_json(action),
                         Ok(Command::Key { chord }) => handle.key(chord),
                         Ok(Command::Attach) => handle.attach(),
                         Err(e) => {

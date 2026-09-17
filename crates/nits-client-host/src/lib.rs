@@ -271,6 +271,9 @@ pub struct Handle {
 #[derive(Debug)]
 enum Command {
     Dispatch(Action),
+    InvalidAction {
+        reason: String,
+    },
     /// A key chord outside a text input; the core resolves it (§6.4).
     Key(KeyChord),
     /// Emit every section (a UI that just attached).
@@ -281,6 +284,22 @@ impl Handle {
     /// Queue an action for the core. Returns `false` once the host is gone.
     pub fn dispatch(&self, action: Action) -> bool {
         self.actions.send(Command::Dispatch(action)).is_ok()
+    }
+
+    /// Parse untrusted UI input once, retaining validation failures in the active
+    /// editor. Both browser and desktop adapters use this same boundary.
+    pub fn dispatch_json(&self, action: serde_json::Value) -> bool {
+        match serde_json::from_value::<Action>(action) {
+            Ok(action) => self.dispatch(action),
+            Err(error) => {
+                tracing::warn!(%error, "invalid UI action");
+                self.actions
+                    .send(Command::InvalidAction {
+                        reason: error.to_string(),
+                    })
+                    .is_ok()
+            }
+        }
     }
 
     /// Queue a key chord for the core's keymap.
@@ -363,6 +382,7 @@ impl Host {
                 () = shutdown.cancelled() => break,
                 cmd = actions.recv() => match cmd {
                     Some(Command::Dispatch(action)) => self.feed(Input::User(action), &incoming_tx),
+                    Some(Command::InvalidAction { reason }) => self.feed(Input::InvalidAction { reason }, &incoming_tx),
                     Some(Command::Key(chord)) => self.feed(Input::Key(chord), &incoming_tx),
                     Some(Command::Attach) => {
                         if self.patches.send(self.core.view().full_patches()).is_err() {

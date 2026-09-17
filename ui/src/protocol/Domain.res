@@ -268,6 +268,13 @@ module ThreadResolution = {
   type t =
     | @as("Open") Open({})
     | @as("Resolved") Resolved({by: Author.t, at: timestamp})
+    | @as("Deferred")
+    Deferred({
+        reason: string,
+        @as("tracking_url") trackingUrl: @s.null option<string>,
+        by: Author.t,
+        at: timestamp,
+      })
     | @as("Informational") Informational({})
   @@warning("+27")
 }

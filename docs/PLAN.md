@@ -220,3 +220,13 @@ Goal: usable desktop app.
 
 ## Later
 - Browser build (`nits-client-wasm`, daemon serves `ui/`), TUI, cross-machine sync, GitHub export.
+
+## Finding dispositions (#73)
+
+- Implemented explicit reversible deferral of open findings, with validated reason,
+  optional HTTP(S) external tracking URL and durable actor/time attribution.
+- Core, protocol, MCP, CLI and keyboard-first UI share the same lifecycle. Fresh
+  clients distinguish deferred unfixed work from open current-scope findings,
+  resolved findings and informational conversation.
+- Schema 4 → 5 preserves historical event bodies and rebuilds materialized views;
+  protocol 0.9 carries the new disposition and composer purpose.

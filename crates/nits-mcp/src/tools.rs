@@ -80,7 +80,7 @@ pub enum ToolCall {
     ))]
     GetFile(GetFile),
     #[strum_discriminants(strum(
-        message = "Comment threads on a review, including resolution state, comments and attribution, plus a separate collection of durable review requests."
+        message = "Comment threads on a review, including Open current-scope findings, Deferred unfixed follow-ups with reason/link/actor/time, Resolved findings, and Informational notes, plus comments and attribution, and a separate collection of durable review requests."
     ))]
     ListComments(ByReview),
     #[strum_discriminants(strum(
@@ -97,6 +97,10 @@ pub enum ToolCall {
         message = "Mark a thread resolved (or reopen it with `resolved: false`)."
     ))]
     Resolve(Resolve),
+    #[strum_discriminants(strum(
+        message = "Defer an open finding outside the current review scope, recording a required reason and optional external HTTP(S) tracking URL. The finding remains unfixed and visible; this implies no approval or deployment safety. Use resolve with resolved:false to reopen it. Informational notes cannot be deferred."
+    ))]
+    Defer(Defer),
     #[strum_discriminants(strum(
         message = "Ask a named agent to review. Subscribers with scope `AwaitingAgent` for that name are notified. Use the recipient's `get_session_identity` `author.name` unchanged as `agent`."
     ))]
@@ -138,6 +142,7 @@ pub enum MutatingCall {
     Suggest(Suggest),
     Reply(Reply),
     Resolve(Resolve),
+    Defer(Defer),
     RequestReview(RequestReview),
 }
 
@@ -201,6 +206,7 @@ impl ToolCall {
             ToolCall::AddComment(p) => Call::Mutating(MutatingCall::AddComment(p)),
             ToolCall::Suggest(p) => Call::Mutating(MutatingCall::Suggest(p)),
             ToolCall::Reply(p) => Call::Mutating(MutatingCall::Reply(p)),
+            ToolCall::Defer(p) => Call::Mutating(MutatingCall::Defer(p)),
             ToolCall::Resolve(p) => Call::Mutating(MutatingCall::Resolve(p)),
             ToolCall::RequestReview(p) => Call::Mutating(MutatingCall::RequestReview(p)),
             ToolCall::GetSessionIdentity(GetSessionIdentity {}) => {
@@ -252,6 +258,7 @@ impl ToolName {
             ToolName::AddComment => (schema_for!(AddComment), schema_for!(NewThread)),
             ToolName::Suggest => (schema_for!(Suggest), schema_for!(NewThread)),
             ToolName::Reply => (schema_for!(Reply), schema_for!(Replied)),
+            ToolName::Defer => (schema_for!(Defer), schema_for!(Deferred)),
             ToolName::Resolve => (schema_for!(Resolve), schema_for!(Resolved)),
             ToolName::RequestReview => (schema_for!(RequestReview), schema_for!(Requested)),
             ToolName::SubscribeEvents => (schema_for!(SubscribeEvents), schema_for!(Events)),
@@ -595,6 +602,23 @@ pub struct Resolve {
     /// Default `true`.
     #[serde(default = "yes")]
     pub resolved: bool,
+}
+
+/// A finding explicitly acknowledged outside the current scope.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Defer {
+    pub review_id: ReviewId,
+    pub thread_id: ThreadId,
+    pub reason: nits_protocol::DeferralReason,
+    pub tracking_url: Option<nits_protocol::TrackingUrl>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Deferred {
+    pub review_id: ReviewId,
+    pub thread_id: ThreadId,
+    pub seq: Seq,
 }
 
 fn yes() -> bool {
@@ -985,6 +1009,7 @@ mod tests {
                 ToolName::AddComment | ToolName::Suggest | ToolName::Reply => {
                     Some(&["comment_id", "thread_id", "seq"])
                 }
+                ToolName::Defer => Some(&["review_id", "thread_id", "seq"]),
                 ToolName::Resolve => Some(&["review_id", "thread_id", "resolution", "seq"]),
                 ToolName::RequestReview => Some(&["request_id", "review_id", "agent", "seq"]),
                 ToolName::ListContexts

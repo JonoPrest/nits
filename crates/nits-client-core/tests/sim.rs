@@ -546,6 +546,19 @@ fn informational_notes_converge_with_concurrent_replies_and_reconnect_without_op
             )))
         );
         assert_eq!(
+            sim.act(
+                peer,
+                Action::DeferThread {
+                    thread_id: note,
+                    reason: "External follow-up".parse().unwrap(),
+                    tracking_url: None
+                }
+            ),
+            Err(CoreError::Mutation(MutationError::InformationalThread(
+                note
+            )))
+        );
+        assert_eq!(
             sim.act(peer, Action::UnresolveThread { thread_id: note }),
             Err(CoreError::Mutation(MutationError::InformationalThread(
                 note
@@ -770,4 +783,113 @@ fn browse_comment_arrives_remotely_inline_and_converges() {
         );
         assert_eq!(view.threads[0].summary, "from browse");
     }
+    // Deferral changes disposition only: a fresh client retains both the captured
+    // Browse source and the separate durable request after the live update.
+    let thread_id = sim.client(A).view().threads[0].id;
+    let requests = sim.daemon_snapshot().requests.clone();
+    sim.act(
+        A,
+        Action::DeferThread {
+            thread_id,
+            reason: "Fix tracked in the controller repository".parse().unwrap(),
+            tracking_url: Some("https://example.com/issues/288".parse().unwrap()),
+        },
+    )
+    .unwrap();
+    sim.settle();
+    sim.converged().unwrap();
+    for peer in [A, B] {
+        let view = sim.client(peer).view();
+        assert!(matches!(
+            view.threads[0].status,
+            ThreadResolution::Deferred { .. }
+        ));
+        assert_eq!(
+            view.threads[0].context,
+            Some(CommentContext::Browse {
+                reference: reference.clone()
+            })
+        );
+        assert_eq!(view.requests, requests);
+        assert_eq!(
+            view.diff.as_ref().unwrap().rows[0].threads[0].thread,
+            thread_id
+        );
+    }
+    let mut fresh = Sim::new(sim.daemon_snapshot().clone(), vec![human("later reviewer")]);
+    fresh.connect_and_open(A).unwrap();
+    assert_eq!(fresh.client(A).view().threads, sim.client(A).view().threads);
+    assert_eq!(fresh.client(A).view().requests, requests);
+    sim.act(B, Action::UnresolveThread { thread_id }).unwrap();
+    sim.settle();
+    sim.converged().unwrap();
+    assert_eq!(
+        sim.client(A).view().threads[0].status,
+        ThreadResolution::Open
+    );
+    assert_eq!(
+        sim.client(A).view().threads[0].context,
+        Some(CommentContext::Browse { reference })
+    );
+}
+
+#[test]
+fn competing_deferrals_preserve_winning_metadata_and_reopen_converges() {
+    let mut sim = two_clients_one_thread();
+    let thread_id = thread_id(&sim);
+    let defer = |reason: &str| Action::DeferThread {
+        thread_id,
+        reason: reason.parse().unwrap(),
+        tracking_url: Some("https://example.com/issues/288".parse().unwrap()),
+    };
+    sim.act(A, defer("External controller fix")).unwrap();
+    sim.act(B, defer("Another scope decision")).unwrap();
+    assert!(sim.deliver_up(A));
+    assert!(sim.deliver_up(B));
+    sim.settle();
+    sim.converged().unwrap();
+    assert!(sim.client(B).view().last_error.is_some());
+    assert_eq!(sim.client(B).pending_count(), 0);
+    let disposition = &sim.daemon_snapshot().threads[0].resolution;
+    assert!(
+        matches!(disposition, ThreadResolution::Deferred { reason, by, .. } if reason.to_string() == "External controller fix" && by == &human("ada"))
+    );
+    for peer in [A, B] {
+        assert_eq!(&sim.client(peer).view().threads[0].status, disposition);
+        assert!(!matches!(
+            sim.client(peer).view().threads[0].status,
+            ThreadResolution::Open
+        ));
+    }
+    let mut fresh = Sim::new(sim.daemon_snapshot().clone(), vec![human("later reviewer")]);
+    fresh.connect_and_open(A).unwrap();
+    assert_eq!(&fresh.client(A).view().threads[0].status, disposition);
+    assert_eq!(fresh.client(A).view().threads[0].comments[0].body, "root");
+    sim.act(
+        B,
+        Action::Reply {
+            thread_id,
+            body: "Bug remains unfixed".into(),
+        },
+    )
+    .unwrap();
+    sim.act(A, Action::UnresolveThread { thread_id }).unwrap();
+    sim.settle();
+    sim.converged().unwrap();
+    assert_eq!(
+        sim.daemon_snapshot().threads[0].resolution,
+        ThreadResolution::Open
+    );
+    assert_eq!(sim.daemon_snapshot().comments.len(), 2);
+    // A stale deferral loses to resolution; optimistic pending state rolls back.
+    sim.act(A, Action::ResolveThread { thread_id }).unwrap();
+    sim.act(B, defer("External again")).unwrap();
+    assert!(sim.deliver_up(A));
+    assert!(sim.deliver_up(B));
+    sim.settle();
+    sim.converged().unwrap();
+    assert!(matches!(
+        sim.daemon_snapshot().threads[0].resolution,
+        ThreadResolution::Resolved { .. }
+    ));
 }

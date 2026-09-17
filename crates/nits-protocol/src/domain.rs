@@ -459,9 +459,16 @@ pub struct Comment {
 #[strum_discriminants(name(ThreadResolutionKind), derive(EnumIter, Hash))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ThreadResolution {
-    /// Conversation without an actionable lifecycle; cannot be resolved or reopened.
+    /// Conversation without an actionable lifecycle; cannot be resolved, deferred or reopened.
     Informational,
     Open,
+    /// A real, unfixed finding acknowledged outside the current review scope.
+    Deferred {
+        reason: crate::DeferralReason,
+        tracking_url: Option<crate::TrackingUrl>,
+        by: Author,
+        at: Timestamp,
+    },
     Resolved {
         by: Author,
         at: Timestamp,

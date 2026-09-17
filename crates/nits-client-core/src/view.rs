@@ -51,15 +51,33 @@ pub enum ConnectionView {
     },
 }
 
-/// A comment editor is open at `anchor`. Its text stays in the host.
-/// `reply_to` makes it a reply in that thread (the anchor is the root's).
+/// An editor is open at `anchor`. Its purpose distinguishes new comments,
+/// replies and finding deferrals; text stays in the host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Draft {
-    pub intent: nits_protocol::CommentIntent,
+    /// Rejected wire input leaves the editor open for correction. Text stays in the host.
+    pub submission_error: Option<String>,
     pub anchor: Anchor,
-    pub context: Option<nits_protocol::CommentContext>,
-    pub reply_to: Option<ThreadId>,
+    pub purpose: DraftPurpose,
+}
+
+/// The editor's operation; thread actions always carry a target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, strum::EnumDiscriminants)]
+#[strum_discriminants(name(DraftPurposeKind), derive(Hash, strum::EnumIter))]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum DraftPurpose {
+    Comment {
+        intent: nits_protocol::CommentIntent,
+        /// Capture provenance when opening the editor, independent of later navigation.
+        context: Option<nits_protocol::CommentContext>,
+    },
+    Reply {
+        thread_id: ThreadId,
+    },
+    Defer {
+        thread_id: ThreadId,
+    },
 }
 
 /// The file the user is looking at and where. Rows are indices into the

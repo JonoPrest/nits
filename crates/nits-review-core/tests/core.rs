@@ -1540,3 +1540,112 @@ fn browse_comments_pin_arbitrary_ref_blobs_through_review_refresh_and_restart() 
         assert_eq!(original.state, CommentState::Live);
     }
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // one complete finding lifecycle and informational control
+fn deferred_finding_retains_discussion_and_is_reversible_without_affecting_notes() {
+    let w = world();
+    let review = review_id(1);
+    w.core
+        .create_review(&human(), review, ws(), "review".into(), targets())
+        .unwrap();
+    let finding = w
+        .core
+        .add_comment(
+            &agent(),
+            review,
+            cid(1),
+            CommentKind::Note,
+            Anchor::Review,
+            "Controller wire format is wrong".into(),
+            None,
+        )
+        .unwrap();
+    let note = w
+        .core
+        .add_comment(
+            &agent(),
+            review,
+            cid(2),
+            CommentKind::Informational,
+            Anchor::Review,
+            "Review in progress".into(),
+            None,
+        )
+        .unwrap();
+    let reason: nits_protocol::DeferralReason =
+        "Deferred to controller issue #288 per scope decision"
+            .parse()
+            .unwrap();
+    let url: nits_protocol::TrackingUrl =
+        "https://example.com/controller/issues/288".parse().unwrap();
+    w.core
+        .defer_thread(
+            &other_human(),
+            review,
+            finding.thread_id,
+            reason.clone(),
+            Some(url.clone()),
+        )
+        .unwrap();
+    let thread = |id| {
+        w.core
+            .threads(review)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap()
+    };
+    let expected = ThreadResolution::Deferred {
+        reason: reason.clone(),
+        tracking_url: Some(url),
+        by: other_human().author,
+        at: other_human().now,
+    };
+    assert_eq!(thread(finding.thread_id).resolution, expected);
+    let before = w.core.last_seq().unwrap();
+    for thread in [finding.thread_id, note.thread_id] {
+        assert!(
+            w.core
+                .defer_thread(&human(), review, thread, reason.clone(), None)
+                .is_err()
+        );
+    }
+    assert_eq!(w.core.last_seq().unwrap(), before);
+    w.core
+        .reply(
+            &agent(),
+            review,
+            finding.thread_id,
+            cid(3),
+            CommentKind::Note,
+            "Tracked externally; bug remains".into(),
+        )
+        .unwrap();
+    assert_eq!(thread(finding.thread_id).resolution, expected);
+    assert_eq!(thread(finding.thread_id).replies, vec![cid(3)]);
+    w.core
+        .unresolve_thread(&human(), review, finding.thread_id)
+        .unwrap();
+    assert_eq!(thread(finding.thread_id).resolution, ThreadResolution::Open);
+    w.core
+        .defer_thread(&agent(), review, finding.thread_id, reason.clone(), None)
+        .unwrap();
+    w.core
+        .resolve_thread(&human(), review, finding.thread_id)
+        .unwrap();
+    assert!(matches!(
+        thread(finding.thread_id).resolution,
+        ThreadResolution::Resolved { .. }
+    ));
+    assert!(
+        w.core
+            .defer_thread(&agent(), review, finding.thread_id, reason, None)
+            .is_err()
+    );
+    assert_eq!(
+        thread(note.thread_id).resolution,
+        ThreadResolution::Informational
+    );
+    assert_eq!(w.core.comments(review).unwrap().len(), 3);
+}

@@ -7,6 +7,7 @@ let make = (
   ~fileCount: int,
   ~threadCount: int,
   ~requestCount: int=0,
+  ~deferredCount: int=0,
   ~chrome: array<View.Hint.t>,
   ~dispatch: Action.t => unit,
 ) => {
@@ -30,6 +31,9 @@ let make = (
         | Some(n) => <UI.Badge text={Int.toString(n) ++ (target == Conversation ? " open" : "")} />
         | None => React.null
         }}
+        {target == Conversation && deferredCount > 0
+          ? <UI.Badge text={Int.toString(deferredCount) ++ " deferred"} />
+          : React.null}
       </button>
     active ? Attrs.withData(el, [("data-active", "true")]) : el
   }

@@ -594,7 +594,9 @@ expression: core.view()
       "created": 2001,
       "summary": "Is `new` the right name?",
       "replies": 0,
-      "status": "Open",
+      "status": {
+        "type": "Open"
+      },
       "place": {
         "type": "Lines",
         "file": {
@@ -634,7 +636,9 @@ expression: core.view()
       "created": 2002,
       "summary": "Looks good overall.",
       "replies": 0,
-      "status": "Open",
+      "status": {
+        "type": "Open"
+      },
       "place": {
         "type": "Review"
       },
@@ -669,7 +673,9 @@ expression: core.view()
       "created": 2002,
       "summary": "Looks good overall.",
       "replies": 0,
-      "status": "Open",
+      "status": {
+        "type": "Open"
+      },
       "place": {
         "type": "Review"
       },
@@ -1041,7 +1047,12 @@ expression: core.view()
     {
       "keys": "x",
       "command": "ToggleResolved",
-      "label": "resolve"
+      "label": "resolve / reopen"
+    },
+    {
+      "keys": "D",
+      "command": "DeferFinding",
+      "label": "defer finding"
     },
     {
       "keys": "d",
