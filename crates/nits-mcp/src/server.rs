@@ -7,8 +7,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use nits_protocol::{
-    AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, Human, Mutation, NonEmpty,
-    RenderOpts, RepoPath, ReviewTarget, Since,
+    AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, Human, LineNo, LineRange, Mutation,
+    NonEmpty, RenderContent, RenderOpts, RepoPath, ReviewTarget, Since,
 };
 use nitsd::client::{Client, ClientError, Identity};
 use nitsd::ops::{Ops, OpsError};
@@ -414,21 +414,7 @@ impl Server {
                     text,
                 })
             }
-            QueryCall::GetFile(p) => {
-                let path = RepoPath::new(p.path)?;
-                let (repo_id, blob_oid, header, chunks) =
-                    ops.file_at(p.review_id, p.repo_id, &path, p.side).await?;
-                let text = text::render_blob(&header, &chunks);
-                ok(tools::FileText {
-                    repo_id,
-                    path,
-                    side: p.side,
-                    blob_oid,
-                    lang: header.lang,
-                    content: header.content,
-                    text,
-                })
-            }
+            QueryCall::GetFile(p) => self.get_file(p).await,
             QueryCall::ListComments(p) => {
                 let snap = ops.snapshot(p.review_id).await?;
                 ok(tools::Comments {
@@ -448,6 +434,55 @@ impl Server {
                 })
             }
         }
+    }
+
+    async fn get_file(&self, p: tools::GetFile) -> Result<Value, ToolError> {
+        let ops = self.ops()?;
+        let path = p.path;
+        let (repo_id, blob_oid, header, chunks) =
+            ops.file_at(p.review_id, p.repo_id, &path, p.side).await?;
+        let lines = match header.content {
+            RenderContent::Binary => {
+                if p.lines.is_some() {
+                    return Err(ToolError::Invalid(
+                        "binary files have no source lines; omit start_line and end_line".into(),
+                    ));
+                }
+                None
+            }
+            RenderContent::Text { total_rows, .. } => {
+                let returned_range = match LineNo::new(total_rows) {
+                    Some(last) => {
+                        let start = p.lines.map_or(LineNo::FIRST, LineRange::start);
+                        let end = p.lines.map_or(last, |range| range.end().min(last));
+                        if start <= end {
+                            Some(LineRange::new(start, end)?)
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                };
+                Some(tools::FileLines {
+                    total_lines: total_rows,
+                    returned_range,
+                })
+            }
+        };
+        let text = match p.lines {
+            Some(range) => text::render_blob_range(&header, &chunks, range),
+            None => text::render_blob(&header, &chunks),
+        };
+        ok(tools::FileText {
+            repo_id,
+            path,
+            side: p.side,
+            blob_oid,
+            lang: header.lang,
+            content: header.content,
+            lines,
+            text,
+        })
     }
 
     async fn call_mutating(&mut self, call: MutatingCall) -> Result<Value, ToolError> {
