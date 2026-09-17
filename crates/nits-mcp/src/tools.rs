@@ -137,15 +137,15 @@ impl ToolName {
             ToolName::ListReviews => (schema_for!(ListReviews), schema_for!(Reviews)),
             ToolName::GetReview => (schema_for!(ByReview), schema_for!(ReviewDetail)),
             ToolName::CreateReview => (schema_for!(CreateReview), schema_for!(Created)),
-            ToolName::UpdateReview => (schema_for!(UpdateReview), schema_for!(Committed)),
+            ToolName::UpdateReview => (schema_for!(UpdateReview), schema_for!(Updated)),
             ToolName::GetDiff => (schema_for!(GetDiff), schema_for!(DiffText)),
             ToolName::GetFile => (schema_for!(GetFile), schema_for!(FileText)),
             ToolName::ListComments => (schema_for!(ByReview), schema_for!(Comments)),
             ToolName::AddComment => (schema_for!(AddComment), schema_for!(NewThread)),
             ToolName::Suggest => (schema_for!(Suggest), schema_for!(NewThread)),
             ToolName::Reply => (schema_for!(Reply), schema_for!(Replied)),
-            ToolName::Resolve => (schema_for!(Resolve), schema_for!(Committed)),
-            ToolName::RequestReview => (schema_for!(RequestReview), schema_for!(Committed)),
+            ToolName::Resolve => (schema_for!(Resolve), schema_for!(Resolved)),
+            ToolName::RequestReview => (schema_for!(RequestReview), schema_for!(Requested)),
             ToolName::SubscribeEvents => (schema_for!(SubscribeEvents), schema_for!(Events)),
         }
     }
@@ -207,7 +207,8 @@ pub struct TargetSpec {
     pub head: RefSpec,
 }
 
-/// Create a review over one or more repos. Returns the new review. Without
+/// Create a review over one or more repos. Returns its ID and committed
+/// sequence; use `get_review` for its contents and resolved targets. Without
 /// `workspace_id`: the workspace containing this server's working directory.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -342,6 +343,8 @@ pub struct RequestReview {
 /// Long-poll for events. Returns events matching the scope after
 /// `since_seq`, waiting up to `timeout_ms` for at least one. Pass the
 /// returned `last_seq` back as `since_seq` to continue.
+/// Mutation results also return a `seq`: use it as `since_seq` for later
+/// events, or use an earlier cursor to include the mutation's full event.
 /// `review_id`, `workspace_id`, and `awaiting_agent` are mutually exclusive:
 /// provide at most one non-null scope filter, or omit all for every event.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -436,15 +439,41 @@ pub struct ReviewDetail {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Created {
-    pub review: Review,
-    pub resolved: Option<NonEmpty<ResolvedTarget>>,
-    pub event: Event,
+    pub review_id: ReviewId,
+    /// Committed mutation sequence; pass as `subscribe_events.since_seq` for later events.
+    pub seq: Seq,
 }
 
-/// The committed event.
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct Committed {
-    pub event: Event,
+pub struct Updated {
+    pub review_id: ReviewId,
+    pub status: ReviewStatus,
+    /// Committed mutation sequence; pass as `subscribe_events.since_seq` for later events.
+    pub seq: Seq,
+}
+
+/// Thread state acknowledged by `resolve`, without event provenance.
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
+pub enum Resolution {
+    Open,
+    Resolved,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Resolved {
+    pub review_id: ReviewId,
+    pub thread_id: ThreadId,
+    pub resolution: Resolution,
+    /// Committed mutation sequence; pass as `subscribe_events.since_seq` for later events.
+    pub seq: Seq,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Requested {
+    pub review_id: ReviewId,
+    pub agent: String,
+    /// Committed mutation sequence; pass as `subscribe_events.since_seq` for later events.
+    pub seq: Seq,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -481,13 +510,16 @@ pub struct Comments {
 pub struct NewThread {
     pub comment_id: CommentId,
     pub thread_id: ThreadId,
-    pub event: Event,
+    /// Committed mutation sequence; pass as `subscribe_events.since_seq` for later events.
+    pub seq: Seq,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Replied {
     pub comment_id: CommentId,
-    pub event: Event,
+    pub thread_id: ThreadId,
+    /// Committed mutation sequence; pass as `subscribe_events.since_seq` for later events.
+    pub seq: Seq,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -530,6 +562,64 @@ mod tests {
             input.get("required"),
             Some(&serde_json::json!(["review_id", "path"]))
         );
+    }
+
+    #[test]
+    fn mutation_schemas_are_focused_and_only_subscriptions_advertise_events() {
+        for tool in all() {
+            let expected_fields: Option<&[&str]> = match tool.name {
+                ToolName::CreateReview => Some(&["review_id", "seq"]),
+                ToolName::UpdateReview => Some(&["review_id", "status", "seq"]),
+                ToolName::AddComment | ToolName::Suggest | ToolName::Reply => {
+                    Some(&["comment_id", "thread_id", "seq"])
+                }
+                ToolName::Resolve => Some(&["review_id", "thread_id", "resolution", "seq"]),
+                ToolName::RequestReview => Some(&["review_id", "agent", "seq"]),
+                ToolName::ListWorkspaces
+                | ToolName::ListReviews
+                | ToolName::GetReview
+                | ToolName::GetDiff
+                | ToolName::GetFile
+                | ToolName::ListComments
+                | ToolName::SubscribeEvents => None,
+            };
+            let schema = serde_json::to_string(&tool.output_schema).unwrap();
+            assert_eq!(
+                schema.contains("EventBody"),
+                tool.name == ToolName::SubscribeEvents,
+                "{}: heterogeneous events belong only to subscriptions",
+                tool.name
+            );
+            if let Some(fields) = expected_fields {
+                let expected: std::collections::BTreeSet<_> = fields.iter().copied().collect();
+                let properties = tool
+                    .output_schema
+                    .get("properties")
+                    .unwrap()
+                    .as_object()
+                    .unwrap();
+                let actual = properties.keys().map(String::as_str).collect();
+                assert_eq!(expected, actual, "{}", tool.name);
+                let required = tool
+                    .output_schema
+                    .get("required")
+                    .unwrap()
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|field| field.as_str().unwrap())
+                    .collect();
+                assert_eq!(expected, required, "{}", tool.name);
+                assert!(
+                    schema.len() < 2500,
+                    "{} output schema grew to {} bytes",
+                    tool.name,
+                    schema.len()
+                );
+                assert!(!schema.contains("WorkspaceCreated"), "{}", tool.name);
+                assert!(!schema.contains("SuggestionApplied"), "{}", tool.name);
+            }
+        }
     }
 
     #[test]

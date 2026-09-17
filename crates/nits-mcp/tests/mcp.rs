@@ -7,7 +7,8 @@ use nits_mcp::jsonrpc::{Incoming, Outgoing};
 use nits_mcp::server::AgentIdentity;
 use nits_mcp::{Endpoint, Server};
 use nits_protocol::{
-    Author, BuildInfo, ClientId, ClientSeq, Human, Mutation, RepoId, Request, Response, WorkspaceId,
+    Author, BuildInfo, ClientId, ClientSeq, Human, Mutation, RepoId, Request, Response, ReviewId,
+    Seq, ThreadId, WorkspaceId,
 };
 use nits_review_core::DataDir;
 use nits_test_support::{RepoBuilder, TestRepo, files};
@@ -157,7 +158,23 @@ async fn call(s: &mut Server, name: &str, args: Value) -> Value {
         "tool error: {}",
         result["content"][0]["text"]
     );
+    let text: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, result["structuredContent"]);
     result["structuredContent"].clone()
+}
+
+/// Match a compact receipt to the authoritative event persisted by the daemon.
+fn committed(h: &Harness, receipt: &Value) -> Value {
+    let seq: Seq = serde_json::from_value(receipt["seq"].clone()).unwrap();
+    let event = h
+        .daemon
+        .core()
+        .events_after(None)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.seq == seq)
+        .expect("receipt sequence must name a committed event");
+    serde_json::to_value(event).unwrap()
 }
 
 async fn call_err(s: &mut Server, name: &str, args: Value) -> String {
@@ -308,13 +325,18 @@ async fn tools_round_trip_through_core() {
         json!({ "workspace_id": ws, "title": "agent review", "targets": main_feature(&rid) }),
     )
     .await;
-    let review_id = created["review"]["id"].as_str().unwrap().to_string();
-    assert!(created["resolved"].is_array(), "targets resolved on create");
+    let review_id = created["review_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        created,
+        json!({ "review_id": review_id, "seq": created["seq"] })
+    );
+    assert_eq!(committed(&h, &created)["body"]["type"], "ReviewCreated");
 
     let reviews = call(&mut s, "list_reviews", json!({ "workspace_id": ws })).await;
     assert_eq!(reviews["reviews"][0]["title"], json!("agent review"));
 
     let review = call(&mut s, "get_review", json!({ "review_id": review_id })).await;
+    assert!(review["resolved"].is_array(), "targets resolved on create");
     let paths: Vec<&str> = review["files"]
         .as_array()
         .unwrap()
@@ -357,7 +379,16 @@ async fn tools_round_trip_through_core() {
         json!({ "review_id": review_id, "title": "renamed", "status": "Archived" }),
     )
     .await;
-    assert_eq!(updated["event"]["body"]["type"], json!("ReviewUpdated"));
+    assert_eq!(
+        updated,
+        json!({
+            "review_id": review_id, "status": "Archived", "seq": updated["seq"]
+        })
+    );
+    assert_eq!(committed(&h, &updated)["body"]["type"], "ReviewUpdated");
+    let review = call(&mut s, "get_review", json!({ "review_id": review_id })).await;
+    assert_eq!(review["review"]["status"], "Archived");
+    assert_eq!(review["review"]["title"], "renamed");
 }
 
 #[tokio::test]
@@ -373,7 +404,7 @@ async fn agent_comments_carry_provenance_and_thread_ops_work() {
         json!({ "workspace_id": ws, "title": "r", "targets": main_feature(&rid) }),
     )
     .await;
-    let review_id = created["review"]["id"].as_str().unwrap().to_string();
+    let review_id = created["review_id"].as_str().unwrap().to_string();
 
     let line = call(
         &mut s,
@@ -390,10 +421,10 @@ async fn agent_comments_carry_provenance_and_thread_ops_work() {
     )
     .await;
     assert_eq!(
-        whole["event"]["body"]["comment"]["anchor"]["type"],
+        committed(&h, &whole)["body"]["comment"]["anchor"]["type"],
         json!("Review")
     );
-    call(
+    let suggestion = call(
         &mut s,
         "suggest",
         json!({
@@ -402,24 +433,30 @@ async fn agent_comments_carry_provenance_and_thread_ops_work() {
         }),
     )
     .await;
+    assert_eq!(suggestion["comment_id"], suggestion["thread_id"]);
+    assert_eq!(
+        committed(&h, &suggestion)["body"]["comment"]["kind"]["type"],
+        "Suggestion"
+    );
     let reply = call(
         &mut s,
         "reply",
         json!({ "review_id": review_id, "thread_id": thread_id, "body": "ack" }),
     )
     .await;
-    assert_eq!(reply["event"]["body"]["type"], json!("CommentCreated"));
-    assert_eq!(
-        reply["event"]["body"]["comment"]["thread_id"],
-        json!(thread_id)
-    );
-    call(
-        &mut s,
-        "resolve",
-        json!({ "review_id": review_id, "thread_id": thread_id }),
-    )
-    .await;
-
+    assert_eq!(reply["thread_id"], thread_id);
+    assert_ne!(reply["comment_id"], reply["thread_id"]);
+    for result in [&line, &whole, &suggestion, &reply] {
+        let event = committed(&h, result);
+        assert_eq!(
+            result,
+            &json!({
+                "comment_id": event["body"]["comment"]["id"],
+                "thread_id": event["body"]["comment"]["thread_id"],
+                "seq": event["seq"]
+            })
+        );
+    }
     let comments = call(&mut s, "list_comments", json!({ "review_id": review_id })).await;
     let all = comments["comments"].as_array().unwrap();
     assert_eq!(all.len(), 4);
@@ -439,23 +476,13 @@ async fn agent_comments_carry_provenance_and_thread_ops_work() {
         json!("0000000000000000"),
         "daemon replaced the placeholder hash"
     );
-    let resolved = comments["threads"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["id"] == json!(thread_id))
-        .unwrap();
-    assert_eq!(resolved["resolution"]["type"], json!("Resolved"));
-    assert_eq!(resolved["replies"].as_array().unwrap().len(), 1);
-
-    // Same log the human sees, with the same authorship.
-    let last = h.daemon.core().last_seq().unwrap().unwrap();
-    let events = h.daemon.core().events_after(None).unwrap();
-    assert_eq!(events.last().unwrap().seq, last);
-    assert!(matches!(
-        events.last().unwrap().author,
-        Author::Agent { .. }
-    ));
+    assert_thread_resolution(
+        &mut s,
+        &h,
+        review_id.parse().unwrap(),
+        thread_id.parse().unwrap(),
+    )
+    .await;
 
     // Agents cannot mark viewed: the tool is not even offered.
     let out = s
@@ -467,6 +494,166 @@ async fn agent_comments_carry_provenance_and_thread_ops_work() {
         .await
         .unwrap();
     assert_eq!(out.error.unwrap().code, -32602);
+}
+
+async fn assert_thread_resolution(
+    s: &mut Server,
+    h: &Harness,
+    review_id: ReviewId,
+    thread_id: ThreadId,
+) {
+    let resolved = call(
+        s,
+        "resolve",
+        json!({ "review_id": review_id, "thread_id": thread_id }),
+    )
+    .await;
+
+    assert_eq!(
+        resolved,
+        json!({
+            "review_id": review_id, "thread_id": thread_id,
+            "resolution": "Resolved", "seq": resolved["seq"]
+        })
+    );
+    assert_eq!(committed(h, &resolved)["body"]["type"], "ThreadResolved");
+
+    let comments = call(s, "list_comments", json!({ "review_id": review_id })).await;
+    let resolved = comments["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == json!(thread_id))
+        .unwrap();
+    assert_eq!(resolved["resolution"]["type"], json!("Resolved"));
+    assert_eq!(resolved["replies"].as_array().unwrap().len(), 1);
+
+    let reopened = call(
+        s,
+        "resolve",
+        json!({ "review_id": review_id, "thread_id": thread_id, "resolved": false }),
+    )
+    .await;
+    assert_eq!(
+        reopened,
+        json!({
+            "review_id": review_id, "thread_id": thread_id,
+            "resolution": "Open", "seq": reopened["seq"]
+        })
+    );
+    assert_eq!(committed(h, &reopened)["body"]["type"], "ThreadUnresolved");
+    let comments = call(s, "list_comments", json!({ "review_id": review_id })).await;
+    let thread = comments["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|thread| thread["id"] == json!(thread_id))
+        .unwrap();
+    assert_eq!(thread["resolution"]["type"], "Open");
+
+    // Same log the human sees, with the same authorship.
+    let last = h.daemon.core().last_seq().unwrap().unwrap();
+    let events = h.daemon.core().events_after(None).unwrap();
+    assert_eq!(events.last().unwrap().seq, last);
+    assert!(matches!(
+        events.last().unwrap().author,
+        Author::Agent { .. }
+    ));
+}
+
+#[tokio::test]
+async fn mutation_receipts_resume_full_events_including_follow_up_events() {
+    let h = start();
+    let c = human(&h).await;
+    let (ws, rid) = seed(&h, &c).await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    let created = call(
+        &mut s,
+        "create_review",
+        json!({ "workspace_id": ws, "title": "r", "targets": [{
+            "repo_id": rid, "base": { "type": "Head" }, "head": { "type": "WorkingTree" }
+        }] }),
+    )
+    .await;
+    let review_id = &created["review_id"];
+    let created_event = committed(&h, &created);
+    assert_eq!(created_event["body"]["review"]["id"], *review_id);
+    let targets = call(
+        &mut s,
+        "subscribe_events",
+        json!({ "review_id": review_id, "since_seq": created["seq"], "timeout_ms": 1000 }),
+    )
+    .await;
+    assert_eq!(targets["events"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        targets["events"][0]["body"]["type"],
+        "ReviewTargetsResolved"
+    );
+    assert_eq!(targets["last_seq"], targets["events"][0]["seq"]);
+
+    // A large comment must not be echoed by either MCP result representation.
+    let body = "A detailed review note. ".repeat(1000);
+    let comment = call(
+        &mut s,
+        "add_comment",
+        json!({ "review_id": review_id, "path": "a.rs", "start_line": 1, "body": body }),
+    )
+    .await;
+    assert!(serde_json::to_vec(&comment).unwrap().len() < 200);
+    let replay = call(
+        &mut s,
+        "subscribe_events",
+        json!({ "review_id": review_id, "since_seq": targets["last_seq"], "timeout_ms": 1000 }),
+    )
+    .await;
+    assert_eq!(replay["events"], json!([committed(&h, &comment)]));
+    assert_eq!(replay["events"][0]["body"]["comment"]["body"], body);
+    assert_eq!(replay["events"][0]["author"]["type"], "Agent");
+    assert_eq!(replay["last_seq"], comment["seq"]);
+
+    let archived = call(
+        &mut s,
+        "update_review",
+        json!({ "review_id": review_id, "title": "r", "status": "Archived" }),
+    )
+    .await;
+    let after_comment = call(
+        &mut s,
+        "subscribe_events",
+        json!({ "review_id": review_id, "since_seq": comment["seq"], "timeout_ms": 1000 }),
+    )
+    .await;
+    assert_eq!(after_comment["events"], json!([committed(&h, &archived)]));
+
+    // Reopening commits a status event followed by target resolution and
+    // reanchoring. Returning a snapshot's later watermark would skip them.
+    h.repo.write_file("a.rs", b"fn changed() {}\n").unwrap();
+    let reopened = call(
+        &mut s,
+        "update_review",
+        json!({ "review_id": review_id, "title": "r", "status": "Open" }),
+    )
+    .await;
+    assert_eq!(reopened["status"], "Open");
+    let follow_up = call(
+        &mut s,
+        "subscribe_events",
+        json!({ "review_id": review_id, "since_seq": reopened["seq"], "timeout_ms": 1000 }),
+    )
+    .await;
+    let events = follow_up["events"].as_array().unwrap();
+    let kinds: Vec<_> = events.iter().map(|event| &event["body"]["type"]).collect();
+    assert_eq!(
+        kinds,
+        [&json!("ReviewTargetsResolved"), &json!("CommentReanchored")]
+    );
+    let seq: Seq = serde_json::from_value(reopened["seq"].clone()).unwrap();
+    assert_eq!(
+        follow_up["events"],
+        json!(h.daemon.core().events_after(Some(seq)).unwrap())
+    );
+    assert_eq!(follow_up["last_seq"], events.last().unwrap()["seq"]);
 }
 
 #[tokio::test]
@@ -482,7 +669,7 @@ async fn subscribe_events_rejects_conflicting_scopes() {
         json!({ "workspace_id": ws, "title": "r", "targets": main_feature(&rid) }),
     )
     .await;
-    let review_id = &created["review"]["id"];
+    let review_id = &created["review_id"];
     for arguments in [
         json!({ "review_id": review_id, "workspace_id": ws, "timeout_ms": 1 }),
         json!({ "review_id": review_id, "awaiting_agent": "reviewer-a", "timeout_ms": 1 }),
@@ -535,7 +722,7 @@ async fn subscribe_events_preserves_each_single_scope_and_all_events() {
             json!({ "workspace_id": workspace, "title": title, "targets": main_feature(&repo) }),
         )
         .await;
-        reviews.push(created["review"]["id"].clone());
+        reviews.push(created["review_id"].clone());
     }
     let since = h.daemon.core().last_seq().unwrap().unwrap();
     let mut events = Vec::new();
@@ -551,7 +738,13 @@ async fn subscribe_events_preserves_each_single_scope_and_all_events() {
             json!({ "review_id": review, "agent": agent, "note": "please review" }),
         )
         .await;
-        events.push(requested["event"].clone());
+        assert_eq!(
+            requested,
+            json!({
+                "review_id": review, "agent": agent, "seq": requested["seq"]
+            })
+        );
+        events.push(committed(&h, &requested));
     }
     let updated = call(
         &mut s,
@@ -559,7 +752,7 @@ async fn subscribe_events_preserves_each_single_scope_and_all_events() {
         json!({ "review_id": reviews[0], "title": "renamed", "status": "Open" }),
     )
     .await;
-    events.push(updated["event"].clone());
+    events.push(committed(&h, &updated));
 
     for (mut arguments, expected) in [
         (json!({}), events.clone()),
@@ -602,7 +795,7 @@ async fn subscribe_events_long_polls_and_resumes() {
         json!({ "workspace_id": ws, "title": "r", "targets": main_feature(&rid) }),
     )
     .await;
-    let review_id = created["review"]["id"].as_str().unwrap().to_string();
+    let review_id = created["review_id"].as_str().unwrap().to_string();
     let rid_typed: nits_protocol::ReviewId = review_id.parse().unwrap();
 
     // Nothing yet: returns empty at the deadline.
