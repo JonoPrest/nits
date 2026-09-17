@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use nits_protocol::{
     AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, Human, Mutation, NonEmpty,
-    RenderOpts, RepoPath, ReviewTarget, Since, SubscribeScope,
+    RenderOpts, RepoPath, ReviewTarget, Since,
 };
 use nitsd::client::{Client, ClientError, Identity};
 use nitsd::ops::{Ops, OpsError};
@@ -402,15 +402,9 @@ impl Server {
                 })
             }
             QueryCall::SubscribeEvents(p) => {
-                let scope = match (p.review_id, p.workspace_id, p.awaiting_agent) {
-                    (Some(review_id), _, _) => SubscribeScope::Review { review_id },
-                    (None, Some(workspace_id), _) => SubscribeScope::Workspace { workspace_id },
-                    (None, None, Some(agent)) => SubscribeScope::AwaitingAgent { agent },
-                    (None, None, None) => SubscribeScope::All,
-                };
                 let since = p.since_seq.map_or(Since::Now, |seq| Since::After { seq });
                 let polled = ops
-                    .poll_events(scope, since, Duration::from_millis(p.timeout_ms), p.max)
+                    .poll_events(p.scope, since, Duration::from_millis(p.timeout_ms), p.max)
                     .await?;
                 ok(tools::Events {
                     events: polled.events,
