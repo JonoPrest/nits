@@ -666,7 +666,9 @@ mod tests {
                 | ToolName::GetDiff
                 | ToolName::GetFile
                 | ToolName::ListComments
-                | ToolName::SubscribeEvents => None,
+                | ToolName::SubscribeEvents
+                | ToolName::GetSessionIdentity
+                | ToolName::SetSessionIdentity => None,
             };
             let schema = serde_json::to_string(&tool.output_schema).unwrap();
             assert_eq!(

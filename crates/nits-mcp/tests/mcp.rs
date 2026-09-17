@@ -371,7 +371,7 @@ async fn session_identity_changes_future_authorship_and_preserves_other_sessions
         json!({ "workspace_id": ws, "title": "r", "targets": main_feature(&rid) }),
     )
     .await;
-    let review_id = &created["review"]["id"];
+    let review_id = &created["review_id"];
     let before = call(
         &mut s,
         "add_comment",
@@ -421,13 +421,13 @@ async fn session_identity_changes_future_authorship_and_preserves_other_sessions
         json!({ "review_id": review_id, "body": "other" }),
     )
     .await;
-    assert_eq!(before["event"]["author"], original["author"]);
-    assert_eq!(after["event"]["author"], updated["author"]);
-    assert_eq!(reply["event"]["author"], updated["author"]);
-    assert_eq!(other_comment["event"]["author"], other_identity["author"]);
-    assert_ne!(before["event"]["client_id"], after["event"]["client_id"]);
+    let after_event = committed(&h, &after);
+    assert_ne!(
+        committed(&h, &before)["client_id"],
+        after_event["client_id"]
+    );
     assert_eq!(
-        after["event"]["client_seq"], 1,
+        after_event["client_seq"], 1,
         "new connection has its own mutation sequence"
     );
 
@@ -449,7 +449,7 @@ async fn session_identity_changes_future_authorship_and_preserves_other_sessions
         assert_eq!(comment["author"], identity["author"]);
         let event = persisted
             .iter()
-            .find(|event| json!(event.seq) == result["event"]["seq"])
+            .find(|event| json!(event.seq) == result["seq"])
             .unwrap();
         assert_eq!(json!(event.author), identity["author"]);
     }
@@ -477,8 +477,8 @@ async fn session_name_routes_requests_across_model_updates() {
     )
     .await;
     let since = h.daemon.core().last_seq().unwrap().unwrap();
-    let invitation = call(&mut requester, "request_review", json!({ "review_id": created["review"]["id"], "agent": identity["author"]["name"], "note": "please review" })).await;
-    call(&mut requester, "request_review", json!({ "review_id": created["review"]["id"], "agent": "another-agent", "note": "other work" })).await;
+    let invitation = call(&mut requester, "request_review", json!({ "review_id": created["review_id"], "agent": identity["author"]["name"], "note": "please review" })).await;
+    call(&mut requester, "request_review", json!({ "review_id": created["review_id"], "agent": "another-agent", "note": "other work" })).await;
     let model_update = call(
         &mut reviewer,
         "set_session_identity",
@@ -487,8 +487,8 @@ async fn session_name_routes_requests_across_model_updates() {
     .await;
     assert_eq!(model_update["author"]["name"], identity["author"]["name"]);
     let polled = call(&mut reviewer, "subscribe_events", json!({ "awaiting_agent": model_update["author"]["name"], "since_seq": since, "timeout_ms": 1000 })).await;
-    assert_eq!(polled["events"], json!([invitation["event"]]));
-    assert_eq!(polled["last_seq"], invitation["event"]["seq"]);
+    assert_eq!(polled["events"], json!([committed(&h, &invitation)]));
+    assert_eq!(polled["last_seq"], invitation["seq"]);
     let resumed = call(&mut reviewer, "subscribe_events", json!({ "awaiting_agent": model_update["author"]["name"], "since_seq": polled["last_seq"], "timeout_ms": 10 })).await;
     assert_eq!(resumed["events"], json!([]));
 }
@@ -573,12 +573,13 @@ async fn identity_survives_reconnect_and_failed_update_leaves_it_unchanged() {
     let comment = call(
         &mut s,
         "add_comment",
-        json!({ "review_id": created["review"]["id"], "body": "after reconnect" }),
+        json!({ "review_id": created["review_id"], "body": "after reconnect" }),
     )
     .await;
-    assert_eq!(comment["event"]["author"], identity["author"]);
-    assert_ne!(created["event"]["client_id"], comment["event"]["client_id"]);
-    assert_eq!(comment["event"]["client_seq"], 1);
+    let event = committed(&h, &comment);
+    assert_eq!(event["author"], identity["author"]);
+    assert_ne!(committed(&h, &created)["client_id"], event["client_id"]);
+    assert_eq!(event["client_seq"], 1);
     let persisted = h.daemon.core().events_after(None).unwrap();
     assert_eq!(&persisted[..previous_events.len()], previous_events);
     assert_eq!(json!(persisted.last().unwrap().author), identity["author"]);
