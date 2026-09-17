@@ -452,6 +452,27 @@ impl Server {
 
     async fn call_mutating(&mut self, call: MutatingCall) -> Result<Value, ToolError> {
         match call {
+            MutatingCall::EnsureDirectoryReview(p) => ok(self
+                .ops_mut()?
+                .ensure_directory_review(p.path, p.base, p.head)
+                .await?),
+            MutatingCall::UpdateReviewTarget(p) => {
+                let event = self
+                    .ops_mut()?
+                    .mutate(Mutation::UpdateReviewTarget {
+                        review_id: p.review_id,
+                        update: nits_protocol::ReviewTargetUpdate {
+                            repo_id: p.repo_id,
+                            revision: p.revision,
+                        },
+                    })
+                    .await?;
+                ok(tools::TargetUpdated {
+                    review_id: p.review_id,
+                    repo_id: p.repo_id,
+                    seq: event.seq,
+                })
+            }
             MutatingCall::CreateReview(p) => self.create_review(p).await,
             MutatingCall::UpdateReview(p) => {
                 let event = self

@@ -3642,6 +3642,7 @@ fn response_name(r: &Response) -> &'static str {
         Response::Workspaces { .. } => "Workspaces",
         Response::Reviews { .. } => "Reviews",
         Response::DefaultBase { .. } => "DefaultBase",
+        Response::DirectoryReview { .. } => "DirectoryReview",
         Response::Review { .. } => "Review",
         Response::ReviewSnapshot { .. } => "ReviewSnapshot",
         Response::Files { .. } => "Files",

@@ -229,6 +229,12 @@ pub enum Mutation {
 #[strum_discriminants(name(RequestKind), derive(EnumIter, Hash))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum Request {
+    /// Ensure an open directory review beside the daemon. The supplied IDs
+    /// are allocated only when the checkout or matching review is unknown.
+    EnsureDirectoryReview {
+        client_seq: ClientSeq,
+        options: EnsureDirectoryReview,
+    },
     ListWorkspaces,
     ListReviews {
         workspace_id: WorkspaceId,
@@ -352,6 +358,7 @@ impl Request {
             | Request::ListReviews { .. }
             | Request::ListRefs { .. }
             | Request::DefaultBase { .. }
+            | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
             | Request::ReviewSnapshot { .. }
             | Request::ListFiles { .. }
@@ -387,6 +394,9 @@ pub struct ReviewSnapshot {
 #[strum_discriminants(name(ResponseKind), derive(EnumIter, Hash))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum Response {
+    DirectoryReview {
+        review: DirectoryReview,
+    },
     Workspaces {
         workspaces: Vec<Workspace>,
     },
@@ -537,4 +547,43 @@ pub enum ViewSection {
     Hints,
     Help,
     Draft,
+}
+
+/// Bootstrap parameters. Paths are interpreted on the daemon's machine;
+/// omitted refs reuse an existing open working-tree review or select its
+/// detected base and a working-tree head. Explicit refs must match on reuse.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EnsureDirectoryReview {
+    pub workspace_id: WorkspaceId,
+    pub repo_id: RepoId,
+    pub review_id: ReviewId,
+    pub path: String,
+    pub base: Option<RefSpec>,
+    pub head: Option<RefSpec>,
+}
+
+/// Whether bootstrap found a matching open review or allocated one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum DirectoryReviewOutcome {
+    Created,
+    Reused,
+}
+
+/// The selected directory review and its requested (unresolved) refs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryReview {
+    pub workspace_id: WorkspaceId,
+    pub repo_id: RepoId,
+    pub review_id: ReviewId,
+    pub base: RefSpec,
+    pub head: RefSpec,
+    pub outcome: DirectoryReviewOutcome,
+    /// First committed bootstrap event, or current log position on reuse.
+    /// Pass to `subscribe_events` to receive subsequent events.
+    pub seq: Seq,
 }

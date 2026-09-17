@@ -374,6 +374,7 @@ impl Sim {
                     | Request::ListReviews { .. }
                     | Request::ListRefs { .. }
                     | Request::DefaultBase { .. }
+                    | Request::EnsureDirectoryReview { .. }
                     | Request::GetReview { .. }
                     | Request::ListFiles { .. }
                     | Request::ResolveTargets { .. }
@@ -474,6 +475,7 @@ impl Sim {
             ),
             Request::ListReviews { .. }
             | Request::DefaultBase { .. }
+            | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
             | Request::ResolveTargets { .. }
             | Request::ListCommits { .. }

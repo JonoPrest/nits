@@ -10,9 +10,9 @@ use anyhow::{Context as _, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use nits_config::Context;
 use nits_protocol::{
-    AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, Event, EventBody, Mutation,
-    NonEmpty, RefSpec, RenderOpts, RepoId, RepoPath, ReviewId, ReviewTarget, Seq, Side, Since,
-    SubscribeScope, ThreadId, WorkspaceId,
+    AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, DirectoryReviewOutcome, Event,
+    EventBody, Mutation, NonEmpty, RefSpec, RenderOpts, RepoId, RepoPath, ReviewId, ReviewTarget,
+    Seq, Side, Since, SubscribeScope, ThreadId, WorkspaceId,
 };
 use nitsd::client::Identity;
 use nitsd::contexts::{self, Status};
@@ -558,13 +558,6 @@ struct Shown<'a> {
     files: &'a [nits_protocol::FileChange],
 }
 
-/// Whether opening a directory allocated a review or found an open one.
-#[derive(Debug, Serialize)]
-enum DirectoryReviewOutcome {
-    Created,
-    Reused,
-}
-
 /// The review selected for the requested directory and its owning entities.
 #[derive(Debug, Serialize)]
 struct DirectoryReview {
@@ -865,128 +858,37 @@ async fn print_headless_review(
     )
 }
 
-/// The review for `path`'s repo: locate (attaching workspace+repo on
-/// first use), then find or create the working-tree review. On a remote
-/// context nothing local is consulted: the path goes to the daemon
-/// verbatim (it must be the repo root on that machine). Base detection is
-/// always performed by that daemon beside the repository.
+/// Bootstrap paths on the selected daemon, including remote contexts.
 async fn directory_review(
     ops: &mut Ops,
     ctx: &Context,
     path: &Path,
 ) -> anyhow::Result<DirectoryReview> {
-    let local = matches!(ctx, Context::Local { .. });
-    let root = if local {
-        repo_root(path)
-            .with_context(|| format!("{} is not inside a git repository", path.display()))?
+    // Relative local paths belong to the invoking shell; remote paths belong
+    // to the daemon. No remote path is inspected on the client machine.
+    let path = if matches!(ctx, Context::Local { .. }) && path.is_relative() {
+        std::env::current_dir()?.join(path)
     } else {
         path.to_path_buf()
     };
-    let dir_name = root
-        .file_name()
-        .map_or_else(|| "repo".into(), |n| n.to_string_lossy().into_owned());
-    let located = if local {
-        match ops.locate(&root).await {
-            Ok(l) => l,
-            Err(nitsd::ops::OpsError::Invalid(_)) => {
-                // First time here: a workspace named after the directory.
-                let (ws_id, _) = ops.create_workspace(dir_name.clone()).await?;
-                let path = root.to_string_lossy().into_owned();
-                ops.attach_repo(ws_id, path, dir_name.clone()).await?;
-                ops.locate(&root).await?
-            }
-            Err(e) => return Err(e.into()),
-        }
-    } else {
-        // `locate` canonicalises locally, so match the daemon's stored
-        // paths by string; attach if unknown (the daemon canonicalises
-        // and checks it is a git work tree on its machine).
-        let wanted = root.to_string_lossy().into_owned();
-        let find = |workspaces: &[nits_protocol::Workspace]| {
-            workspaces.iter().find_map(|ws| {
-                ws.repos
-                    .iter()
-                    .find(|r| r.path == wanted)
-                    .map(|r| nitsd::ops::Located {
-                        workspace: ws.clone(),
-                        repo: r.clone(),
-                    })
-            })
-        };
-        if let Some(l) = find(&ops.workspaces().await?) {
-            l
-        } else {
-            let (ws_id, _) = ops.create_workspace(dir_name.clone()).await?;
-            ops.attach_repo(ws_id, wanted.clone(), dir_name.clone())
-                .await?;
-            find(&ops.workspaces().await?).ok_or_else(|| {
-                anyhow::anyhow!("attached {wanted} but the daemon reports it at a different path; pass that path")
-            })?
-        }
+    let review = ops
+        .ensure_directory_review(path.to_string_lossy().into_owned(), None, None)
+        .await?;
+    let created = match review.outcome {
+        DirectoryReviewOutcome::Created => "created, ",
+        DirectoryReviewOutcome::Reused => "",
     };
-    working_tree_review(ops, &located, &dir_name).await
-}
-
-/// The open review whose head is this repo's working tree, created if
-/// missing using the daemon-detected parent branch as its base.
-async fn working_tree_review(
-    ops: &mut Ops,
-    located: &nitsd::ops::Located,
-    dir_name: &str,
-) -> anyhow::Result<DirectoryReview> {
-    let reviews = ops.reviews(located.workspace.id).await?;
-    let existing = reviews.iter().find(|r| {
-        r.status == nits_protocol::ReviewStatus::Open
-            && r.targets
-                .iter()
-                .any(|t| t.repo_id == located.repo.id && t.head == RefSpec::WorkingTree)
-    });
-    let (review_id, outcome) = if let Some(r) = existing {
-        let base = r
-            .targets
-            .iter()
-            .find(|target| target.repo_id == located.repo.id && target.head == RefSpec::WorkingTree)
-            .map_or_else(|| "unknown".into(), |target| ref_label(&target.base));
-        eprintln!("review: {} \"{}\" (base: {base})", r.id, r.title);
-        (r.id, DirectoryReviewOutcome::Reused)
-    } else {
-        let base = ops.default_base(located.repo.id).await?;
-        let base_label = ref_label(&base);
-        let target = nits_protocol::ReviewTarget {
-            repo_id: located.repo.id,
-            base,
-            head: RefSpec::WorkingTree,
-        };
-        let (id, _) = ops
-            .create_review(
-                located.workspace.id,
-                dir_name.to_owned(),
-                nits_protocol::NonEmpty::singleton(target),
-            )
-            .await?;
-        eprintln!("review: {id} \"{dir_name}\" (created, base: {base_label})");
-        (id, DirectoryReviewOutcome::Created)
-    };
+    eprintln!(
+        "review: {} ({created}base: {})",
+        review.review_id,
+        ref_label(&review.base)
+    );
     Ok(DirectoryReview {
-        review_id,
-        workspace_id: located.workspace.id,
-        repo_id: located.repo.id,
-        outcome,
+        review_id: review.review_id,
+        workspace_id: review.workspace_id,
+        repo_id: review.repo_id,
+        outcome: review.outcome,
     })
-}
-
-/// Walk up to the nearest `.git` (a dir in a main checkout, a file in a
-/// linked worktree); each worktree is its own root.
-fn repo_root(from: &Path) -> Option<PathBuf> {
-    let mut dir = from.to_path_buf();
-    loop {
-        if dir.join(".git").exists() {
-            return std::fs::canonicalize(dir).ok();
-        }
-        if !dir.pop() {
-            return None;
-        }
-    }
 }
 
 async fn workspace(ops: &mut Ops, cmd: WorkspaceCmd, json: bool) -> anyhow::Result<()> {
