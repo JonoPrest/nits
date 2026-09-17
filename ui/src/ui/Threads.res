@@ -3,13 +3,14 @@
 open View
 
 let openFindings = (threads: array<ThreadView.t>) =>
-  threads->Array.filter(t => t.status == Open)->Array.length
+  threads->Array.filter(t => t.status == Open({}))->Array.length
 
 let statusText = (status: ThreadStatus.t) =>
   switch status {
-  | Open => "open finding"
-  | Resolved => "resolved finding"
-  | Informational => "informational"
+  | Open(_) => "open finding"
+  | Resolved(_) => "resolved finding"
+  | Informational(_) => "informational"
+  | Deferred(_) => "deferred finding · unfixed"
   }
 
 let authorName = (a: Domain.Author.t) =>
@@ -48,6 +49,78 @@ module Context = {
     }
 }
 
+let isResolved = (status: ThreadStatus.t) =>
+  switch status {
+  | Resolved(_) => true
+  | _ => false
+  }
+let deferredFindings = (threads: array<ThreadView.t>) =>
+  threads
+  ->Array.filter(t =>
+    switch t.status {
+    | Deferred(_) => true
+    | _ => false
+    }
+  )
+  ->Array.length
+
+module Disposition = {
+  @react.component
+  let make = (~status: ThreadStatus.t) =>
+    switch status {
+    | Deferred({reason, trackingUrl, by, at}) =>
+      <UI.Box gap=Sm>
+        <UI.Badge text="Deferred · unfixed" />
+        <p> {React.string(reason)} </p>
+        <span title={Stepper.absolute(at)}>
+          {React.string("Recorded by " ++ authorName(by) ++ " · " ++ Stepper.relative(at))}
+        </span>
+        {switch trackingUrl {
+        | Some(url) =>
+          <div className="thread-body">
+            <UI.Markdown.Link href=url>
+              {React.string("External follow-up: " ++ url)}
+            </UI.Markdown.Link>
+          </div>
+        | None => React.null
+        }}
+        <p>
+          {React.string(
+            "Outside current review scope. This does not approve the review or indicate deployment safety.",
+          )}
+        </p>
+      </UI.Box>
+    | Open(_) | Resolved(_) | Informational(_) => React.null
+    }
+}
+
+module FindingActions = {
+  @react.component
+  let make = (~thread: ThreadView.t, ~chrome: array<Hint.t>, ~dispatch: Action.t => unit) =>
+    switch thread.status {
+    | Informational(_) => React.null
+    | Open(_) =>
+      <>
+        <UI.Button
+          label="Resolve finding"
+          title=?{Chrome.tip(chrome, ToggleResolved)}
+          onClick={() => dispatch(ResolveThread({threadId: thread.id}))}
+        />
+        <UI.Button
+          label="Defer finding"
+          title=?{Chrome.tip(chrome, DeferFinding)}
+          onClick={() => dispatch(DeferOpened({threadId: thread.id}))}
+        />
+      </>
+    | Resolved(_) | Deferred(_) =>
+      <UI.Button
+        label="Reopen finding"
+        title=?{Chrome.tip(chrome, ToggleResolved)}
+        onClick={() => dispatch(UnresolveThread({threadId: thread.id}))}
+      />
+    }
+}
+
 module Item = {
   @react.component
   let make = (
@@ -58,13 +131,13 @@ module Item = {
     ~onOriginal: unit => unit,
     ~chrome: array<Hint.t>,
     ~onReply: unit => unit,
-    ~onResolve: unit => unit,
+    ~dispatch: Action.t => unit,
     ~composer: React.element,
   ) => {
     let (focusRef, onKeyDown) = ThreadFocus.use(~focused)
     let flags =
       [
-        thread.status == Resolved ? "resolved" : "",
+        isResolved(thread.status) ? "resolved" : "",
         thread.outdated ? "outdated" : "",
         thread.pending ? "pending" : "",
       ]->Array.filter(s => s != "")
@@ -110,19 +183,12 @@ module Item = {
               ->React.array}
             </ul>
           : <div className="thread-summary"> {React.string(thread.summary)} </div>}
+        <Disposition status=thread.status />
         <div onClick={ev => ReactEvent.Mouse.stopPropagation(ev)}>
           {composer != React.null
             ? composer
             : <UI.Button label="Reply" title=?{Chrome.tip(chrome, Reply)} onClick=onReply />}
-          {switch thread.status {
-          | Informational => React.null
-          | Open | Resolved =>
-            <UI.Button
-              label={thread.status == Resolved ? "Reopen finding" : "Resolve finding"}
-              title=?{Chrome.tip(chrome, ToggleResolved)}
-              onClick=onResolve
-            />
-          }}
+          <FindingActions thread chrome dispatch />
         </div>
         {thread.suggestion
           ? <UI.Button label="Apply suggestion (a)" kind=Primary onClick=onApply />
@@ -182,17 +248,12 @@ let make = (
               }}
               chrome
               composer={switch draft {
-              | Some(draft) if draft.replyTo == Some(t.id) =>
-                <Composer draft pendingRefresh dispatch />
+              | Some(draft) if View.Draft.thread(draft) == Some(t.id) =>
+                <Composer chrome draft pendingRefresh dispatch />
               | Some(_) | None => React.null
               }}
               onReply={() => dispatch(ReplyOpened({threadId: t.id}))}
-              onResolve={() =>
-                dispatch(
-                  t.status == Resolved
-                    ? UnresolveThread({threadId: t.id})
-                    : ResolveThread({threadId: t.id}),
-                )}
+              dispatch
               onApply={() => dispatch(ApplySuggestion({commentId: t.root}))}
               onOriginal={() => dispatch(OpenOriginalDiff({threadId: t.id}))}
             />

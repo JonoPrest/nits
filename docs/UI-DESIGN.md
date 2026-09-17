@@ -134,6 +134,15 @@ recipient, note and creation time. Their count is separate from open findings.
 returns to the current review diff. Requests imply no approval or completion;
 there is no acknowledged/completed lifecycle or revision checkpoint yet.
 
+Deferred findings remain visible and explicitly labelled **deferred · unfixed**,
+with their reason, optional external follow-up link, and recording actor/time.
+Conversation shows separate counts for current-scope open findings and deferred
+findings; its tab shows separate open and deferred badges. From a focused open
+finding, `D` opens a reason/link composer (`ctrl+enter` submits, `esc` cancels).
+`x` reopens a deferred finding for the current scope. These controls and their
+hints derive from the keymap. Deferral never indicates approval or deployment
+safety, and informational notes have no defer action.
+
 ## Browse
 
 A third tab for reading code without a diff: full file tree (every file,

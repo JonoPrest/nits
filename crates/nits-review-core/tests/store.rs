@@ -992,3 +992,149 @@ fn malformed_legacy_envelopes_return_migration_errors_without_panicking() {
         }
     }
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // migration, rebuild and restart are one persistence scenario
+fn schema_four_history_migrates_then_deferrals_survive_rebuild_and_restart() {
+    use redb::{ReadableDatabase, ReadableTable};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("deferrals.redb");
+    let historical = {
+        let store = Store::open(&path).unwrap();
+        store
+            .append(new_event(EventBody::WorkspaceCreated {
+                workspace: workspace(),
+            }))
+            .unwrap();
+        store
+            .append(new_event(EventBody::ReviewCreated { review: review(1) }))
+            .unwrap();
+        for (id, thread) in [(1, 1), (2, 1), (3, 3)] {
+            let mut c = comment(1, id, thread, 1);
+            if id == 3 {
+                c.anchor = Anchor::Review;
+                c.kind = CommentKind::Informational;
+            } else {
+                c.context = Some(nits_protocol::CommentContext::Browse {
+                    reference: nits_protocol::RefSpec::Tag { name: "v1".into() },
+                });
+            }
+            store
+                .append(new_event(EventBody::CommentCreated { comment: c }))
+                .unwrap();
+        }
+        store
+            .append(new_event(EventBody::ReviewRequested {
+                review_id: review_id(1),
+                agent: "review-agent".into(),
+                note: "Inspect the retained Browse finding".into(),
+            }))
+            .unwrap();
+        (
+            store.events_after(None).unwrap(),
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+        )
+    };
+    // A real previous-schema log, with informational history and a reply.
+    {
+        let db = redb::Database::open(&path).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut log = txn
+                .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
+                .unwrap();
+            let rows: Vec<_> = log
+                .iter()
+                .unwrap()
+                .map(|entry| {
+                    let (seq, bytes) = entry.unwrap();
+                    let mut json: serde_json::Value =
+                        serde_json::from_slice(bytes.value()).unwrap();
+                    json["schema"] = serde_json::json!(4);
+                    (seq.value(), serde_json::to_vec(&json).unwrap())
+                })
+                .collect();
+            for (seq, bytes) in rows {
+                log.insert(seq, bytes.as_slice()).unwrap();
+            }
+        }
+        txn.commit().unwrap();
+    }
+    stamp_schema(&path, 4);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.events_after(None).unwrap(), historical.0);
+    assert_eq!(
+        store.review_snapshot(review_id(1)).unwrap().unwrap(),
+        historical.1
+    );
+    assert_eq!(store.schema_version().unwrap(), SchemaVersion::CURRENT);
+    let event = new_event(EventBody::ThreadDeferred {
+        review_id: review_id(1),
+        thread_id: thread_of(comment_id(1)),
+        reason: "Controller issue #288 per scope decision".parse().unwrap(),
+        tracking_url: Some("https://example.com/issues/288".parse().unwrap()),
+    });
+    store.append(event).unwrap();
+    let expected = store.dump_views().unwrap();
+    let events = store.events_after(None).unwrap();
+    store.rebuild_views().unwrap();
+    assert_eq!(store.dump_views().unwrap(), expected);
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.dump_views().unwrap(), expected);
+    assert_eq!(store.events_after(None).unwrap(), events);
+    let restored = store.review_snapshot(review_id(1)).unwrap().unwrap();
+    assert_eq!(restored.requests, historical.1.requests);
+    assert_eq!(restored.comments, historical.1.comments);
+    let threads = store.threads(review_id(1)).unwrap();
+    let finding = threads
+        .iter()
+        .find(|t| t.id == thread_of(comment_id(1)))
+        .unwrap();
+    assert!(
+        matches!(&finding.resolution, nits_protocol::ThreadResolution::Deferred { reason, tracking_url: Some(url), by, at }
+        if reason.to_string() == "Controller issue #288 per scope decision" && url.to_string() == "https://example.com/issues/288" && by == &human() && *at == Timestamp::from_millis(1_700_000_000_000))
+    );
+    assert_eq!(finding.replies, vec![comment_id(2)]);
+    assert!(
+        threads
+            .iter()
+            .any(|t| t.resolution == nits_protocol::ThreadResolution::Informational)
+    );
+    store
+        .append(new_event(EventBody::ThreadUnresolved {
+            review_id: review_id(1),
+            thread_id: thread_of(comment_id(1)),
+        }))
+        .unwrap();
+    store.rebuild_views().unwrap();
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        store
+            .threads(review_id(1))
+            .unwrap()
+            .iter()
+            .find(|t| t.id == thread_of(comment_id(1)))
+            .unwrap()
+            .resolution,
+        nits_protocol::ThreadResolution::Open
+    );
+    let reopened_history = store.events_after(None).unwrap();
+    assert_eq!(
+        &reopened_history[..events.len()],
+        events.as_slice(),
+        "reopening preserves the original deferral and its attribution in history"
+    );
+    drop(store);
+    let db = redb::Database::open(&path).unwrap();
+    let read = db.begin_read().unwrap();
+    let log = read
+        .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
+        .unwrap();
+    for entry in log.iter().unwrap() {
+        let (_, bytes) = entry.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(bytes.value()).unwrap();
+        assert_eq!(json["schema"], serde_json::json!(SchemaVersion::CURRENT));
+    }
+}

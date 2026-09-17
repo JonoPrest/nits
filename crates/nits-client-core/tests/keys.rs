@@ -399,8 +399,9 @@ fn every_action_is_reachable_from_a_binding() {
     // choice, a scroll position — though `Open` also produces Viewport).
     let host_only: BTreeSet<ActionKind> = [
         ActionKind::DraftSubmitted,
-        ActionKind::Reply,        // `r` opens a reply draft; the text is host's
-        ActionKind::EditComment,  // edit text is host's
+        ActionKind::DeferThread, // reason and optional URL are host editor input
+        ActionKind::Reply,       // `r` opens a reply draft; the text is host's
+        ActionKind::EditComment, // edit text is host's
         ActionKind::CreateReview, // title and targets come from a form
         ActionKind::ListReviews,
         ActionKind::FileSearch,   // produced (with an empty query) — see below
@@ -2777,13 +2778,25 @@ fn informational_and_review_finding_composers_have_keyboard_commands() {
     press(&mut core, "space i").unwrap();
     let draft = core.view().draft.as_ref().unwrap();
     assert_eq!(draft.anchor, Anchor::Review);
-    assert_eq!(draft.intent, CommentIntent::Informational);
+    assert_eq!(
+        draft.purpose,
+        nits_client_core::DraftPurpose::Comment {
+            intent: CommentIntent::Informational,
+            context: None
+        }
+    );
     assert_eq!(core.view().focus, Focus::Composer);
     press(&mut core, "esc").unwrap();
     press(&mut core, "space f").unwrap();
     let draft = core.view().draft.as_ref().unwrap();
     assert_eq!(draft.anchor, Anchor::Review);
-    assert_eq!(draft.intent, CommentIntent::Finding);
+    assert_eq!(
+        draft.purpose,
+        nits_client_core::DraftPurpose::Comment {
+            intent: CommentIntent::Finding,
+            context: None
+        }
+    );
     press(&mut core, "esc").unwrap();
     press(&mut core, "space i").unwrap();
     core.handle(Input::User(Action::DraftSubmitted {
@@ -2810,8 +2823,62 @@ fn informational_and_review_finding_composers_have_keyboard_commands() {
     assert!(nits_client_core::resolve_command(&core, Command::ToggleResolved).is_err());
     press(&mut core, "r").unwrap();
     assert_eq!(
-        core.view().draft.as_ref().unwrap().reply_to,
-        Some(core.view().threads[index].id)
+        core.view().draft.as_ref().unwrap().purpose,
+        nits_client_core::DraftPurpose::Reply {
+            thread_id: core.view().threads[index].id
+        }
+    );
+}
+
+#[test]
+fn finding_deferral_has_keyboard_composer_and_reopen_action() {
+    let mut core = ready();
+    core.handle(Input::User(Action::SetFocus {
+        focus: Focus::Thread { index: 0 },
+    }))
+    .unwrap();
+    let thread_id = core.view().threads[0].id;
+    assert!(
+        core.view()
+            .hints
+            .iter()
+            .any(|hint| hint.command == Command::DeferFinding && hint.keys == "D")
+    );
+    assert_eq!(
+        press(&mut core, "D").unwrap(),
+        vec![Effect::Render(nits_client_core::ViewDelta {
+            sections: vec![
+                ViewSection::Draft,
+                ViewSection::Focus,
+                ViewSection::Diff,
+                ViewSection::Hints
+            ]
+        })]
+    );
+    assert_eq!(
+        core.view().draft.as_ref().unwrap().purpose,
+        nits_client_core::DraftPurpose::Defer { thread_id }
+    );
+    assert_eq!(core.view().focus, Focus::Composer);
+    press(&mut core, "esc").unwrap();
+    assert!(core.view().draft.is_none());
+    assert_eq!(core.view().focus, Focus::Thread { index: 0 });
+    press(&mut core, "D").unwrap();
+    core.handle(Input::User(Action::DeferThread {
+        thread_id,
+        reason: "Controller follow-up".parse().unwrap(),
+        tracking_url: None,
+    }))
+    .unwrap();
+    assert!(core.view().draft.is_none());
+    assert!(matches!(
+        core.view().threads[0].status,
+        nits_protocol::ThreadResolution::Deferred { .. }
+    ));
+    assert!(nits_client_core::resolve_command(&core, Command::DeferFinding).is_err());
+    assert_eq!(
+        nits_client_core::resolve_command(&core, Command::ToggleResolved).unwrap(),
+        Action::UnresolveThread { thread_id }
     );
 }
 

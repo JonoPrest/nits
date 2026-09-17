@@ -249,6 +249,21 @@ pub(super) fn apply(t: &mut Write<'_>, event: &Event) -> Result<(), StoreError> 
                 index_anchor(t, *review_id, &c)?;
             }
         }
+        EventBody::ThreadDeferred {
+            review_id,
+            thread_id,
+            reason,
+            tracking_url,
+        } => {
+            let mut th = load_thread(t, seq, *review_id, *thread_id)?;
+            th.resolution = ThreadResolution::Deferred {
+                reason: reason.clone(),
+                tracking_url: tracking_url.clone(),
+                by: event.author.clone(),
+                at: event.ts,
+            };
+            save_thread(t, &th)?;
+        }
         EventBody::ThreadResolved {
             review_id,
             thread_id,

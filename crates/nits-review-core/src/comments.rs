@@ -236,6 +236,39 @@ impl Core {
         Ok(())
     }
 
+    /// Record an unfixed finding outside the current scope. Reopen before
+    /// changing a recorded deferral, so concurrent deferrals cannot overwrite it.
+    pub fn defer_thread(
+        &self,
+        ctx: &Ctx,
+        review: ReviewId,
+        thread: ThreadId,
+        reason: nits_protocol::DeferralReason,
+        tracking_url: Option<nits_protocol::TrackingUrl>,
+    ) -> Result<(), CoreError> {
+        match self.thread(review, thread)?.resolution {
+            ThreadResolution::Open => {}
+            ThreadResolution::Informational => {
+                return Err(CoreError::invalid(
+                    "informational threads cannot be deferred",
+                ));
+            }
+            ThreadResolution::Deferred { .. } | ThreadResolution::Resolved { .. } => {
+                return Err(CoreError::invalid("reopen the finding before deferring it"));
+            }
+        }
+        self.append(
+            ctx,
+            EventBody::ThreadDeferred {
+                review_id: review,
+                thread_id: thread,
+                reason,
+                tracking_url,
+            },
+        )?;
+        Ok(())
+    }
+
     pub fn resolve_thread(
         &self,
         ctx: &Ctx,

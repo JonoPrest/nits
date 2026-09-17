@@ -323,6 +323,7 @@ fn event_workspace(body: &EventBody) -> Option<WorkspaceId> {
         | EventBody::CommentEdited { .. }
         | EventBody::CommentDeleted { .. }
         | EventBody::CommentReanchored { .. }
+        | EventBody::ThreadDeferred { .. }
         | EventBody::ThreadResolved { .. }
         | EventBody::ThreadUnresolved { .. }
         | EventBody::FileViewed { .. }
@@ -344,6 +345,7 @@ fn event_review(body: &EventBody) -> Option<ReviewId> {
         | EventBody::CommentEdited { review_id, .. }
         | EventBody::CommentDeleted { review_id, .. }
         | EventBody::CommentReanchored { review_id, .. }
+        | EventBody::ThreadDeferred { review_id, .. }
         | EventBody::ThreadResolved { review_id, .. }
         | EventBody::ThreadUnresolved { review_id, .. }
         | EventBody::FileViewed { review_id, .. }

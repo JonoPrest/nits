@@ -40,23 +40,32 @@ module ConnectionView = {
   @@warning("+27")
 }
 
+module DraftPurpose = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t =
+    | @as("Comment")
+    Comment({
+        intent: Domain.CommentIntent.t,
+        context: @s.null option<Domain.CommentContext.t>,
+      })
+    | @as("Reply") Reply({@as("thread_id") threadId: threadId})
+    | @as("Defer") Defer({@as("thread_id") threadId: threadId})
+  @@warning("+27")
+}
+
 module Draft = {
   @schema
-  type t = {
-    intent: Domain.CommentIntent.t,
-    anchor: Domain.Anchor.t,
-    context: @s.null option<Domain.CommentContext.t>,
-    @as("reply_to") replyTo: @s.null option<threadId>,
-  }
-
-  /// Whether this draft docks at the bottom of the tab. A reply renders
-  /// in its thread's card and a line comment under its own row; only a
-  /// draft with no row of its own — review- or file-level — has nowhere
-  /// inline to sit.
-  let isDocked = (draft: t): bool =>
-    switch (draft.replyTo, draft.anchor) {
-    | (Some(_), _) | (None, Lines(_)) => false
-    | (None, Review(_) | File(_)) => true
+  type t = {anchor: Domain.Anchor.t, purpose: DraftPurpose.t}
+  let thread = (draft: t) =>
+    switch draft.purpose {
+    | Reply({threadId}) | Defer({threadId}) => Some(threadId)
+    | Comment(_) => None
+    }
+  let isDocked = (draft: t) =>
+    switch (draft.purpose, draft.anchor) {
+    | (Comment(_), Review(_) | File(_)) => true
+    | (Comment(_), Lines(_)) | (Reply(_) | Defer(_), _) => false
     }
 }
 
@@ -336,10 +345,7 @@ module CommentView = {
   }
 }
 
-module ThreadStatus = {
-  @schema
-  type t = Open | Resolved | Informational
-}
+module ThreadStatus = Domain.ThreadResolution
 
 module ThreadView = {
   @schema
@@ -429,6 +435,7 @@ module Command = {
     | Delete
     | ApplySuggestion
     | ToggleResolved
+    | DeferFinding
     | FileSearch
     | ToggleLayout
     | ToggleWhitespace

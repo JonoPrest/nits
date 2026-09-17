@@ -55,6 +55,13 @@ module EventBody = {
         anchor: Anchor.t,
         state: CommentState.t,
       })
+    | @as("ThreadDeferred")
+    ThreadDeferred({
+        @as("review_id") reviewId: reviewId,
+        @as("thread_id") threadId: threadId,
+        reason: string,
+        @as("tracking_url") trackingUrl: @s.null option<string>,
+      })
     | @as("ThreadResolved")
     ThreadResolved({
         @as("review_id") reviewId: reviewId,

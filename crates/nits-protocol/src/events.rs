@@ -90,6 +90,12 @@ pub enum EventBody {
         anchor: Anchor,
         state: CommentState,
     },
+    ThreadDeferred {
+        review_id: ReviewId,
+        thread_id: ThreadId,
+        reason: crate::DeferralReason,
+        tracking_url: Option<crate::TrackingUrl>,
+    },
     ThreadResolved {
         review_id: ReviewId,
         thread_id: ThreadId,
@@ -147,6 +153,7 @@ impl EventBody {
             | EventBody::CommentEdited { review_id, .. }
             | EventBody::CommentDeleted { review_id, .. }
             | EventBody::CommentReanchored { review_id, .. }
+            | EventBody::ThreadDeferred { review_id, .. }
             | EventBody::ThreadResolved { review_id, .. }
             | EventBody::ThreadUnresolved { review_id, .. }
             | EventBody::FileViewed { review_id, .. }
@@ -173,6 +180,7 @@ impl EventBody {
             | EventBody::CommentEdited { .. }
             | EventBody::CommentDeleted { .. }
             | EventBody::CommentReanchored { .. }
+            | EventBody::ThreadDeferred { .. }
             | EventBody::ThreadResolved { .. }
             | EventBody::ThreadUnresolved { .. }
             | EventBody::FileViewed { .. }

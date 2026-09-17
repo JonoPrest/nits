@@ -33,6 +33,7 @@ const MIGRATIONS: &[Migration] = &[
     migrate_1_to_2,
     migrate_2_to_3,
     migrate_3_to_4,
+    migrate_4_to_5,
 ];
 
 /// Schema 3 materializes every historical `ReviewRequested`. The event format is
@@ -68,6 +69,22 @@ fn migrate_1_to_2(txn: &WriteTransaction) -> Result<(), String> {
         }
         for (seq, bytes) in events {
             tables.events.insert(seq, bytes.as_slice())?;
+        }
+        tables.clear_views()?;
+        tables.clear_view_seq()?;
+        Ok(())
+    }
+    migrate(txn).map_err(|error| error.to_string())
+}
+
+/// Schema 5 admits deferred findings. Schema 4 already has current comment
+/// provenance; preserve its events and rebuild every materialized view.
+fn migrate_4_to_5(txn: &WriteTransaction) -> Result<(), String> {
+    fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
+        let mut tables = tables::Write::open(txn)?;
+        for (_, mut stored) in tables.all_events()? {
+            stored.schema = SchemaVersion::new(5);
+            tables.put_event(&stored)?;
         }
         tables.clear_views()?;
         tables.clear_view_seq()?;

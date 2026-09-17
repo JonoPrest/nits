@@ -152,6 +152,13 @@ module Mutation = {
         @as("review_id") reviewId: reviewId,
         @as("comment_id") commentId: commentId,
       })
+    | @as("DeferThread")
+    DeferThread({
+        @as("review_id") reviewId: reviewId,
+        @as("thread_id") threadId: threadId,
+        reason: string,
+        @as("tracking_url") trackingUrl: @s.null option<string>,
+      })
     | @as("ResolveThread")
     ResolveThread({
         @as("review_id") reviewId: reviewId,

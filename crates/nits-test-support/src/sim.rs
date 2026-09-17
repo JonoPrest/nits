@@ -634,6 +634,7 @@ fn rpc_error(e: &MutationError) -> RpcError {
         | MutationError::DuplicateComment(_)
         | MutationError::AlreadyResolved(_)
         | MutationError::NotResolved(_)
+        | MutationError::NotOpen(_)
         | MutationError::Unsupported(_) => RpcError::Invalid {
             reason: e.to_string(),
         },

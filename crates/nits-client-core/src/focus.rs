@@ -570,6 +570,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 | Command::Reply
                 | Command::Delete
                 | Command::ApplySuggestion
+                | Command::DeferFinding
                 | Command::ToggleResolved
                 | Command::FileSearch
                 | Command::ToggleLayout
@@ -1049,13 +1050,25 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             }
             Ok(Action::ApplySuggestion { comment_id: t.root })
         }
+        Command::DeferFinding => {
+            let Focus::Thread { index } = focus else {
+                return Err(nothing());
+            };
+            let t = view.threads.get(index).ok_or_else(nothing)?;
+            if matches!(t.status, crate::diff::ThreadStatus::Open) {
+                Ok(Action::DeferOpened { thread_id: t.id })
+            } else {
+                Err(nothing())
+            }
+        }
         Command::ToggleResolved => {
             let Focus::Thread { index } = focus else {
                 return Err(nothing());
             };
             let t = view.threads.get(index).ok_or_else(nothing)?;
             match t.status {
-                crate::diff::ThreadStatus::Resolved => {
+                crate::diff::ThreadStatus::Resolved { .. }
+                | crate::diff::ThreadStatus::Deferred { .. } => {
                     Ok(Action::UnresolveThread { thread_id: t.id })
                 }
                 crate::diff::ThreadStatus::Open => Ok(Action::ResolveThread { thread_id: t.id }),

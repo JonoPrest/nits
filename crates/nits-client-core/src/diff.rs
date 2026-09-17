@@ -38,13 +38,8 @@ pub enum ThreadPlace {
     },
 }
 
-/// Actionable status, kept separate from location and comment content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::EnumIter)]
-pub enum ThreadStatus {
-    Open,
-    Resolved,
-    Informational,
-}
+/// The complete domain disposition, including actor/time and follow-up metadata.
+pub type ThreadStatus = ThreadResolution;
 
 /// One thread as the thread list shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,11 +232,7 @@ fn thread_view(snapshot: &ReviewSnapshot, t: &Thread, pending: &PendingIds) -> O
         created: root.created,
         summary: root.body.lines().next().unwrap_or_default().to_owned(),
         replies: u32::try_from(t.replies.len()).unwrap_or(u32::MAX),
-        status: match t.resolution {
-            ThreadResolution::Open => ThreadStatus::Open,
-            ThreadResolution::Resolved { .. } => ThreadStatus::Resolved,
-            ThreadResolution::Informational => ThreadStatus::Informational,
-        },
+        status: t.resolution.clone(),
         place: place_of(anchor),
         outdated,
         pending: pending.comments.iter().any(in_thread) || pending.threads.contains(&t.id),

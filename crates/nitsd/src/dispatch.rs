@@ -152,6 +152,7 @@ pub async fn single(
     }
 }
 
+#[allow(clippy::too_many_lines)] // one exhaustive mapping from each mutation to Core
 fn apply(core: &Core, ctx: &nits_review_core::Ctx, m: Mutation) -> Result<(), CoreError> {
     match m {
         Mutation::CreateWorkspace { workspace_id, name } => {
@@ -217,6 +218,12 @@ fn apply(core: &Core, ctx: &nits_review_core::Ctx, m: Mutation) -> Result<(), Co
             review_id,
             comment_id,
         } => core.delete_comment(ctx, review_id, comment_id)?,
+        Mutation::DeferThread {
+            review_id,
+            thread_id,
+            reason,
+            tracking_url,
+        } => core.defer_thread(ctx, review_id, thread_id, reason, tracking_url)?,
         Mutation::ResolveThread {
             review_id,
             thread_id,

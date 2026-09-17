@@ -320,6 +320,20 @@ enum CommentCmd {
         #[arg(long)]
         body: String,
     },
+    /// Acknowledge an unfixed finding outside the current review scope.
+    Defer {
+        review: ReviewId,
+        thread: ThreadId,
+        #[arg(long)]
+        reason: nits_protocol::DeferralReason,
+        #[arg(long)]
+        tracking_url: Option<nits_protocol::TrackingUrl>,
+    },
+    /// Return a resolved or deferred finding to current-scope work.
+    Reopen {
+        review: ReviewId,
+        thread: ThreadId,
+    },
     Resolve {
         review: ReviewId,
         thread: ThreadId,
@@ -783,6 +797,9 @@ fn event_line(e: &Event) -> String {
         EventBody::CommentEdited { comment_id, .. } => format!("comment edited {comment_id}"),
         EventBody::CommentDeleted { comment_id, .. } => format!("comment deleted {comment_id}"),
         EventBody::CommentReanchored { .. } => "comments re-anchored".into(),
+        EventBody::ThreadDeferred {
+            thread_id, reason, ..
+        } => format!("thread deferred (unfixed) {thread_id}: {reason}"),
         EventBody::ThreadResolved { thread_id, .. } => format!("thread resolved {thread_id}"),
         EventBody::ThreadUnresolved { thread_id, .. } => format!("thread reopened {thread_id}"),
         EventBody::FileViewed { path, .. } => format!("viewed {path}"),
@@ -1343,6 +1360,7 @@ async fn content(ops: &Ops, cmd: Cmd, json: bool) -> anyhow::Result<()> {
     }
 }
 
+#[allow(clippy::too_many_lines)] // keep the typed comment subcommands together
 async fn comment(ops: &mut Ops, cmd: CommentCmd, json: bool) -> anyhow::Result<()> {
     match cmd {
         CommentCmd::Add(a) => {
@@ -1379,6 +1397,31 @@ async fn comment(ops: &mut Ops, cmd: CommentCmd, json: bool) -> anyhow::Result<(
             let (id, event) = ops.reply(review, thread, body).await?;
             emit(json, &event, || id.to_string())
         }
+        CommentCmd::Defer {
+            review,
+            thread,
+            reason,
+            tracking_url,
+        } => {
+            let event = ops
+                .mutate(Mutation::DeferThread {
+                    review_id: review,
+                    thread_id: thread,
+                    reason,
+                    tracking_url,
+                })
+                .await?;
+            emit(json, &event, String::new)
+        }
+        CommentCmd::Reopen { review, thread } => {
+            let event = ops
+                .mutate(Mutation::UnresolveThread {
+                    review_id: review,
+                    thread_id: thread,
+                })
+                .await?;
+            emit(json, &event, String::new)
+        }
         CommentCmd::Resolve { review, thread } => {
             let event = ops
                 .mutate(Mutation::ResolveThread {
@@ -1395,10 +1438,23 @@ async fn comment(ops: &mut Ops, cmd: CommentCmd, json: bool) -> anyhow::Result<(
                 for t in &snap.threads {
                     let state = match t.resolution {
                         nits_protocol::ThreadResolution::Open => "open",
+                        nits_protocol::ThreadResolution::Deferred { .. } => "deferred (unfixed)",
                         nits_protocol::ThreadResolution::Informational => "informational",
                         nits_protocol::ThreadResolution::Resolved { .. } => "resolved",
                     };
                     let _ = writeln!(out, "thread {} [{state}]", t.id);
+                    if let nits_protocol::ThreadResolution::Deferred {
+                        reason,
+                        tracking_url,
+                        by,
+                        at,
+                    } = &t.resolution
+                    {
+                        let _ = writeln!(out, "  Deferred by {by:?} at {at:?}: {reason}");
+                        if let Some(url) = tracking_url {
+                            let _ = writeln!(out, "  Follow-up: {url}");
+                        }
+                    }
                     for id in std::iter::once(&t.root).chain(t.replies.iter()) {
                         if let Some(c) = snap.comments.iter().find(|c| c.id == *id) {
                             let who = match &c.author {
@@ -1658,6 +1714,51 @@ async fn daemon_cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deferred_cli_validates_reason_and_external_url_before_connecting() {
+        let review = ReviewId::from_parts(1, 1).to_string();
+        let thread = ThreadId::from_parts(1, 2).to_string();
+        for reason in ["", " "] {
+            assert!(
+                Cli::try_parse_from([
+                    "nits", "comment", "defer", &review, &thread, "--reason", reason
+                ])
+                .is_err()
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "nits",
+                "comment",
+                "defer",
+                &review,
+                &thread,
+                "--reason",
+                "External fix",
+                "--tracking-url",
+                "javascript:alert(1)"
+            ])
+            .is_err()
+        );
+        let cli = Cli::try_parse_from([
+            "nits",
+            "comment",
+            "defer",
+            &review,
+            &thread,
+            "--reason",
+            "External fix",
+            "--tracking-url",
+            "https://example.com/issues/288",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Some(Cmd::Comment(CommentCmd::Defer { .. }))
+        ));
+        assert!(Cli::try_parse_from(["nits", "comment", "reopen", &review, &thread]).is_ok());
+    }
 
     /// clap's own consistency check over the whole command tree.
     #[test]

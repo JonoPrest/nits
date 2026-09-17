@@ -27,6 +27,8 @@ use nits_protocol::version::*;
 /// Why a fixture could not be built or serialised.
 #[derive(Debug, thiserror::Error)]
 pub enum FixtureError {
+    #[error("invalid fixture text: {0}")]
+    Invalid(String),
     #[error("invalid fixture value: {0}")]
     Invariant(#[from] InvariantError),
     #[error("line number 0 in fixture")]
@@ -878,6 +880,18 @@ enum_fixture!(
     [
         ThreadResolution::Open,
         ThreadResolution::Informational,
+        ThreadResolution::Deferred {
+            reason: "Deferred to controller issue per scope decision"
+                .parse()
+                .map_err(FixtureError::Invalid)?,
+            tracking_url: Some(
+                "https://example.com/issues/288"
+                    .parse()
+                    .map_err(FixtureError::Invalid)?
+            ),
+            by: human_author(),
+            at: ts(9)
+        },
         ThreadResolution::Resolved {
             by: human_author(),
             at: ts(9)
@@ -1054,6 +1068,18 @@ enum_fixture!(
             state: CommentState::Outdated {
                 last_good_anchor: lines_anchor()?
             },
+        },
+        EventBody::ThreadDeferred {
+            review_id: review_id(),
+            thread_id: thread_id(),
+            reason: "Deferred to controller issue per scope decision"
+                .parse()
+                .map_err(FixtureError::Invalid)?,
+            tracking_url: Some(
+                "https://example.com/issues/288"
+                    .parse()
+                    .map_err(FixtureError::Invalid)?
+            )
         },
         EventBody::ThreadResolved {
             review_id: review_id(),
@@ -1383,6 +1409,18 @@ enum_fixture!(
         Mutation::DeleteComment {
             review_id: review_id(),
             comment_id: comment_id()
+        },
+        Mutation::DeferThread {
+            review_id: review_id(),
+            thread_id: thread_id(),
+            reason: "Deferred to controller issue per scope decision"
+                .parse()
+                .map_err(FixtureError::Invalid)?,
+            tracking_url: Some(
+                "https://example.com/issues/288"
+                    .parse()
+                    .map_err(FixtureError::Invalid)?
+            )
         },
         Mutation::ResolveThread {
             review_id: review_id(),

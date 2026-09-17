@@ -38,7 +38,7 @@ pub enum MutationError {
     DuplicateComment(CommentId),
     #[error("informational notes require a review-level anchor")]
     InformationalAnchor,
-    #[error("informational thread {0} cannot be resolved or reopened")]
+    #[error("informational thread {0} has no finding disposition")]
     InformationalThread(ThreadId),
     #[error("no thread {0}")]
     UnknownThread(ThreadId),
@@ -46,6 +46,8 @@ pub enum MutationError {
     UnknownComment(CommentId),
     #[error("only the author may change comment {0}")]
     NotAuthor(CommentId),
+    #[error("reopen finding {0} before deferring it")]
+    NotOpen(ThreadId),
     #[error("thread {0} is already resolved")]
     AlreadyResolved(ThreadId),
     #[error("thread {0} is not resolved")]
@@ -174,6 +176,23 @@ pub fn local_event(
                 comment_id: *comment_id,
             })
         }
+        Mutation::DeferThread {
+            review_id,
+            thread_id,
+            reason,
+            tracking_url,
+        } => match thread(*thread_id)?.resolution {
+            ThreadResolution::Open => Ok(EventBody::ThreadDeferred {
+                review_id: *review_id,
+                thread_id: *thread_id,
+                reason: reason.clone(),
+                tracking_url: tracking_url.clone(),
+            }),
+            ThreadResolution::Informational => Err(MutationError::InformationalThread(*thread_id)),
+            ThreadResolution::Resolved { .. } | ThreadResolution::Deferred { .. } => {
+                Err(MutationError::NotOpen(*thread_id))
+            }
+        },
         Mutation::ResolveThread {
             review_id,
             thread_id,
@@ -186,10 +205,12 @@ pub fn local_event(
                 ThreadResolution::Resolved { .. } => {
                     Err(MutationError::AlreadyResolved(*thread_id))
                 }
-                ThreadResolution::Open => Ok(EventBody::ThreadResolved {
-                    review_id: *review_id,
-                    thread_id: *thread_id,
-                }),
+                ThreadResolution::Open | ThreadResolution::Deferred { .. } => {
+                    Ok(EventBody::ThreadResolved {
+                        review_id: *review_id,
+                        thread_id: *thread_id,
+                    })
+                }
             }
         }
         Mutation::UnresolveThread {
@@ -202,10 +223,12 @@ pub fn local_event(
                     Err(MutationError::InformationalThread(*thread_id))
                 }
                 ThreadResolution::Open => Err(MutationError::NotResolved(*thread_id)),
-                ThreadResolution::Resolved { .. } => Ok(EventBody::ThreadUnresolved {
-                    review_id: *review_id,
-                    thread_id: *thread_id,
-                }),
+                ThreadResolution::Resolved { .. } | ThreadResolution::Deferred { .. } => {
+                    Ok(EventBody::ThreadUnresolved {
+                        review_id: *review_id,
+                        thread_id: *thread_id,
+                    })
+                }
             }
         }
         Mutation::UpdateReview {
@@ -374,6 +397,23 @@ pub fn apply_body(
             c.state = state.clone();
             vec![ViewSection::Threads]
         }
+        EventBody::ThreadDeferred {
+            review_id,
+            thread_id,
+            reason,
+            tracking_url,
+        } if mine(*review_id) => {
+            let Some(t) = snapshot.threads.iter_mut().find(|t| t.id == *thread_id) else {
+                return Vec::new();
+            };
+            t.resolution = ThreadResolution::Deferred {
+                reason: reason.clone(),
+                tracking_url: tracking_url.clone(),
+                by: meta.author.clone(),
+                at: meta.ts,
+            };
+            vec![ViewSection::Threads]
+        }
         EventBody::ThreadResolved {
             review_id,
             thread_id,
@@ -440,6 +480,7 @@ pub fn apply_body(
         | EventBody::CommentEdited { .. }
         | EventBody::CommentDeleted { .. }
         | EventBody::CommentReanchored { .. }
+        | EventBody::ThreadDeferred { .. }
         | EventBody::ThreadResolved { .. }
         | EventBody::ThreadUnresolved { .. }
         | EventBody::FileViewed { .. }

@@ -346,6 +346,7 @@ async fn tools_list_is_json_rpc_conformant() {
             "suggest",
             "reply",
             "resolve",
+            "defer",
             "request_review",
             "subscribe_events",
             "get_session_identity",
@@ -2194,4 +2195,84 @@ async fn fresh_mcp_discovers_disconnected_requests_and_hands_off_to_live_events(
     .await;
     assert_eq!(reopened["requests"].as_array().unwrap().len(), 2);
     assert_eq!(reopened["requests"][0], requests[0]);
+}
+
+#[tokio::test]
+async fn deferred_followup_is_discoverable_to_fresh_clients_and_can_be_reopened() {
+    let h = start();
+    let c = human(&h).await;
+    let (ws, rid) = seed(&h, &c).await;
+    let mut author = server_with_session(&h, "scope-reviewer");
+    init(&mut author).await;
+    let created = call(
+        &mut author,
+        "create_review",
+        json!({"workspace_id":ws, "title":"review", "targets":main_feature(&rid)}),
+    )
+    .await;
+    let review = &created["review_id"];
+    let finding = call(
+        &mut author,
+        "add_comment",
+        json!({"review_id":review, "body":"Controller wire-format bug"}),
+    )
+    .await;
+    let thread = &finding["thread_id"];
+    let deferred = call(&mut author, "defer", json!({"review_id":review, "thread_id":thread, "reason":"Deferred to controller issue #288 per scope decision", "tracking_url":"https://example.com/controller/issues/288"})).await;
+    let event = committed(&h, &deferred);
+    let resolution = json!({"type":"Deferred", "reason":"Deferred to controller issue #288 per scope decision", "tracking_url":"https://example.com/controller/issues/288", "by":event["author"], "at":event["ts"]});
+    assert_eq!(resolution["by"]["session_id"], "scope-reviewer");
+    let mut fresh = server_with_session(&h, "later-reviewer");
+    init(&mut fresh).await;
+    for tool in ["list_comments", "get_review"] {
+        let snapshot = call(&mut fresh, tool, json!({"review_id":review})).await;
+        assert_eq!(snapshot["threads"][0]["resolution"], resolution);
+        assert_eq!(
+            snapshot["comments"][0]["body"],
+            "Controller wire-format bug"
+        );
+    }
+    let reply = call(
+        &mut fresh,
+        "reply",
+        json!({"review_id":review,"thread_id":thread,"body":"Following the external issue"}),
+    )
+    .await;
+    let events = call(
+        &mut fresh,
+        "subscribe_events",
+        json!({"review_id":review,"since_seq":finding["seq"],"timeout_ms":10}),
+    )
+    .await;
+    assert_eq!(events["events"][0]["body"]["type"], "ThreadDeferred");
+    let note = call(
+        &mut fresh,
+        "add_comment",
+        json!({"review_id":review,"intent":"Informational","body":"Status summary"}),
+    )
+    .await;
+    let before = h.daemon.core().last_seq().unwrap();
+    let error = call_err(
+        &mut fresh,
+        "defer",
+        json!({"review_id":review,"thread_id":note["thread_id"],"reason":"Scope decision"}),
+    )
+    .await;
+    assert!(error.contains("informational"));
+    assert_eq!(h.daemon.core().last_seq().unwrap(), before);
+    call(
+        &mut fresh,
+        "resolve",
+        json!({"review_id":review,"thread_id":thread,"resolved":false}),
+    )
+    .await;
+    let snapshot = call(&mut fresh, "list_comments", json!({"review_id":review})).await;
+    let reopened = snapshot["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == *thread)
+        .unwrap();
+    assert_eq!(reopened["resolution"]["type"], "Open");
+    assert_eq!(reopened["replies"], json!([reply["comment_id"]]));
 }

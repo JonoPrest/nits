@@ -138,6 +138,7 @@ registry!(
     Mode,
     ConnectionView,
     Draft,
+    DraftPurpose,
     PendingEvent,
     OpenReview,
     OpenFile,
@@ -156,7 +157,6 @@ registry!(
     RowPlace,
     CommentView,
     ThreadView,
-    ThreadStatus,
     ThreadPlace,
     CommitStepper,
     StepperCommit,
@@ -291,14 +291,31 @@ enum_fixture!(
         },
     ]
 );
+enum_fixture!(
+    DraftPurpose,
+    DraftPurposeKind,
+    "DraftPurpose",
+    [
+        DraftPurpose::Comment {
+            intent: nits_protocol::CommentIntent::Finding,
+            context: None
+        },
+        DraftPurpose::Reply {
+            thread_id: thread_id()?
+        },
+        DraftPurpose::Defer {
+            thread_id: thread_id()?
+        },
+    ]
+);
 struct_fixture!(
     Draft,
     "Draft",
     Draft {
-        intent: nits_protocol::CommentIntent::Finding,
-        context: None,
+        purpose: DraftPurpose::Reply {
+            thread_id: thread_id()?
+        },
         anchor: proto_named::<Anchor>("Lines")?,
-        reply_to: Some(thread_id()?),
     }
 );
 struct_fixture!(
@@ -646,7 +663,7 @@ struct_fixture!(
 );
 unit_enum_fixture!(Context, "Context");
 unit_enum_fixture!(Command, "Command");
-unit_enum_fixture!(ThreadStatus, "ThreadStatus");
+
 struct_fixture!(
     Override,
     "Override",
@@ -717,6 +734,20 @@ enum_fixture!(
         },
         Action::DeleteComment {
             comment_id: comment_id()?,
+        },
+        Action::DeferOpened {
+            thread_id: thread_id()?
+        },
+        Action::DeferThread {
+            thread_id: thread_id()?,
+            reason: "Deferred to controller issue per scope decision"
+                .parse()
+                .map_err(FixtureError::Invalid)?,
+            tracking_url: Some(
+                "https://example.com/issues/288"
+                    .parse()
+                    .map_err(FixtureError::Invalid)?
+            )
         },
         Action::ResolveThread {
             thread_id: thread_id()?,

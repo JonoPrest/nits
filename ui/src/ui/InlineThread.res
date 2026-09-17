@@ -7,6 +7,7 @@ open View
 @react.component
 let make = (
   ~thread: ThreadView.t,
+  ~chrome: array<Hint.t>=[],
   ~focused: bool,
   ~index: int,
   ~composer: React.element,
@@ -15,7 +16,7 @@ let make = (
   let (focusRef, onKeyDown) = ThreadFocus.use(~focused)
   let flags =
     [
-      thread.status == Resolved ? "resolved" : "",
+      Threads.isResolved(thread.status) ? "resolved" : "",
       thread.outdated ? "outdated" : "",
       thread.pending ? "pending" : "",
     ]->Array.filter(s => s != "")
@@ -50,6 +51,7 @@ let make = (
         </div>
       )
       ->React.array}
+      <Threads.Disposition status=thread.status />
       {switch composer {
       | c if c != React.null => c
       | _ =>
@@ -65,18 +67,7 @@ let make = (
                 onClick={() => dispatch(ApplySuggestion({commentId: thread.root}))}
               />
             : React.null}
-          {thread.status == Informational
-            ? React.null
-            : <UI.Button
-                label={thread.status == Resolved ? "Unresolve (x)" : "Resolve (x)"}
-                kind=Ghost
-                onClick={() =>
-                  dispatch(
-                    thread.status == Resolved
-                      ? UnresolveThread({threadId: thread.id})
-                      : ResolveThread({threadId: thread.id}),
-                  )}
-              />}
+          <Threads.FindingActions thread chrome dispatch />
         </div>
       }}
     </div>,

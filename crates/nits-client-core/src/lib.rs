@@ -76,9 +76,9 @@ pub use ref_selector::{
     RefOption, RefSelectorSide, RefSelectorStatus, RefSelectorStatusKind, RefSelectorView,
 };
 pub use view::{
-    ConnectionView, ConnectionViewKind, ContentSearchView, Draft, Landing, LastKey, Layout,
-    OpenFile, OpenReview, PendingEvent, ScrollAlign, ScrollIntent, Tab, ViewDelta, ViewModel,
-    ViewPrefs, VisualView,
+    ConnectionView, ConnectionViewKind, ContentSearchView, Draft, DraftPurpose, DraftPurposeKind,
+    Landing, LastKey, Layout, OpenFile, OpenReview, PendingEvent, ScrollAlign, ScrollIntent, Tab,
+    ViewDelta, ViewModel, ViewPrefs, VisualView,
 };
 
 pub use nits_protocol as protocol;
@@ -188,6 +188,14 @@ pub enum Action {
     },
     DeleteComment {
         comment_id: CommentId,
+    },
+    DeferOpened {
+        thread_id: ThreadId,
+    },
+    DeferThread {
+        thread_id: ThreadId,
+        reason: nits_protocol::DeferralReason,
+        tracking_url: Option<nits_protocol::TrackingUrl>,
     },
     ResolveThread {
         thread_id: ThreadId,
@@ -1116,7 +1124,10 @@ impl ClientCore {
         // Informational conversation has no resolution lifecycle. Its focused
         // hint bar (including custom prefix continuations) must reflect that.
         hints.retain(|hint| {
-            hint.command != Command::ToggleResolved || focus::resolve(self, hint.command).is_ok()
+            !matches!(
+                hint.command,
+                Command::ToggleResolved | Command::DeferFinding
+            ) || focus::resolve(self, hint.command).is_ok()
         });
         if hints != self.view.hints {
             self.view.hints = hints;
@@ -1158,7 +1169,8 @@ impl ClientCore {
                 EventBody::CommentEdited { comment_id, .. }
                 | EventBody::CommentDeleted { comment_id, .. }
                 | EventBody::CommentReanchored { comment_id, .. } => ids.comments.push(*comment_id),
-                EventBody::ThreadResolved { thread_id, .. }
+                EventBody::ThreadDeferred { thread_id, .. }
+                | EventBody::ThreadResolved { thread_id, .. }
                 | EventBody::ThreadUnresolved { thread_id, .. } => ids.threads.push(*thread_id),
                 EventBody::ReviewCreated { .. }
                 | EventBody::ReviewUpdated { .. }
@@ -1919,10 +1931,11 @@ impl ClientCore {
                 };
                 self.visual_anchor = None;
                 self.view.draft = Some(Draft {
-                    intent: nits_protocol::CommentIntent::Finding,
-                    context: self.comment_context(&anchor),
+                    purpose: DraftPurpose::Comment {
+                        intent: nits_protocol::CommentIntent::Finding,
+                        context: self.comment_context(&anchor),
+                    },
                     anchor,
-                    reply_to: None,
                 });
                 self.enter(Focus::Composer);
                 Ok(vec![render(&[ViewSection::Draft, ViewSection::Focus])])
@@ -1949,10 +1962,11 @@ impl ClientCore {
                 };
                 self.visual_anchor = None;
                 self.view.draft = Some(Draft {
-                    intent: nits_protocol::CommentIntent::Finding,
-                    context: self.context_for_render(&source),
+                    purpose: DraftPurpose::Comment {
+                        intent: nits_protocol::CommentIntent::Finding,
+                        context: self.context_for_render(&source),
+                    },
                     anchor,
-                    reply_to: None,
                 });
                 self.enter(Focus::Composer);
                 Ok(vec![render(&[ViewSection::Draft, ViewSection::Focus])])
@@ -2481,7 +2495,10 @@ impl ClientCore {
                     anchor: Anchor::Review,
                 })?;
                 if let Some(draft) = &mut self.view.draft {
-                    draft.intent = nits_protocol::CommentIntent::Informational;
+                    draft.purpose = DraftPurpose::Comment {
+                        intent: nits_protocol::CommentIntent::Informational,
+                        context: None,
+                    };
                 }
                 Ok(effects)
             }
@@ -2494,10 +2511,11 @@ impl ClientCore {
                 }
                 self.visual_anchor = None;
                 self.view.draft = Some(Draft {
-                    intent: nits_protocol::CommentIntent::Finding,
-                    context: self.comment_context(&anchor),
+                    purpose: DraftPurpose::Comment {
+                        intent: nits_protocol::CommentIntent::Finding,
+                        context: self.comment_context(&anchor),
+                    },
                     anchor,
-                    reply_to: None,
                 });
                 self.enter(Focus::Composer);
                 Ok(vec![render(&[ViewSection::Draft, ViewSection::Focus])])
@@ -2517,10 +2535,8 @@ impl ClientCore {
                     .and_then(|t| open.snapshot.comments.iter().find(|c| c.id == t.root))
                     .ok_or(CoreError::UnknownThread(thread_id))?;
                 self.view.draft = Some(Draft {
-                    intent: nits_protocol::CommentIntent::Finding,
+                    purpose: DraftPurpose::Reply { thread_id },
                     anchor: root.anchor.clone(),
-                    context: root.context.clone(),
-                    reply_to: Some(thread_id),
                 });
                 self.enter(Focus::Composer);
                 Ok(vec![render(&[ViewSection::Draft, ViewSection::Focus])])
@@ -2570,26 +2586,25 @@ impl ClientCore {
                 self.require_subscribed()?;
                 let review_id = review.snapshot.review.id;
                 let anchor = draft.anchor.clone();
-                let reply_to = draft.reply_to;
+                let purpose = draft.purpose.clone();
                 let comment_id = self.ids.comment_id(self.now);
-                let mutation = if let Some(thread_id) = reply_to {
-                    Mutation::Reply {
+                let mutation = match purpose {
+                    DraftPurpose::Defer { .. } => return Err(CoreError::NoDraft),
+                    DraftPurpose::Reply { thread_id } => Mutation::Reply {
                         review_id,
                         thread_id,
                         comment_id,
                         kind: CommentKind::Note,
                         body,
-                    }
-                } else {
-                    let context = draft.context.clone();
-                    Mutation::AddComment {
+                    },
+                    DraftPurpose::Comment { intent, context } => Mutation::AddComment {
                         review_id,
                         comment_id,
-                        kind: draft.intent.into(),
+                        kind: intent.into(),
                         anchor,
                         body,
                         context,
-                    }
+                    },
                 };
                 let mut effects = self.mutate(mutation)?;
                 self.view.draft = None;
@@ -2623,6 +2638,68 @@ impl ClientCore {
                     review_id,
                     comment_id,
                 })
+            }
+            Action::DeferOpened { thread_id } => {
+                let Some(open) = &self.view.review else {
+                    return Err(CoreError::NoOpenReview);
+                };
+                if self.view.draft.is_some() {
+                    return Err(CoreError::DraftAlreadyOpen);
+                }
+                let thread = open
+                    .snapshot
+                    .threads
+                    .iter()
+                    .find(|t| t.id == thread_id)
+                    .ok_or(CoreError::UnknownThread(thread_id))?;
+                match thread.resolution {
+                    nits_protocol::ThreadResolution::Open => {}
+                    nits_protocol::ThreadResolution::Informational => {
+                        return Err(CoreError::Mutation(MutationError::InformationalThread(
+                            thread_id,
+                        )));
+                    }
+                    nits_protocol::ThreadResolution::Resolved { .. }
+                    | nits_protocol::ThreadResolution::Deferred { .. } => {
+                        return Err(CoreError::Mutation(MutationError::NotOpen(thread_id)));
+                    }
+                }
+                let root = open
+                    .snapshot
+                    .comments
+                    .iter()
+                    .find(|c| c.id == thread.root)
+                    .ok_or(CoreError::UnknownThread(thread_id))?;
+                self.view.draft = Some(Draft {
+                    anchor: root.anchor.clone(),
+                    purpose: DraftPurpose::Defer { thread_id },
+                });
+                self.enter(Focus::Composer);
+                Ok(vec![render(&[ViewSection::Draft, ViewSection::Focus])])
+            }
+            Action::DeferThread {
+                thread_id,
+                reason,
+                tracking_url,
+            } => {
+                let review_id = self.open_review_id()?;
+                let mut effects = self.mutate(Mutation::DeferThread {
+                    review_id,
+                    thread_id,
+                    reason,
+                    tracking_url,
+                })?;
+                if self
+                    .view
+                    .draft
+                    .as_ref()
+                    .is_some_and(|d| d.purpose == (DraftPurpose::Defer { thread_id }))
+                {
+                    self.view.draft = None;
+                    self.leave();
+                    effects.extend(self.drain_deferred());
+                }
+                Ok(effects)
             }
             Action::ResolveThread { thread_id } => {
                 let review_id = self.open_review_id()?;
@@ -3779,6 +3856,7 @@ impl ClientCore {
             | EventBody::CommentEdited { .. }
             | EventBody::CommentDeleted { .. }
             | EventBody::CommentReanchored { .. }
+            | EventBody::ThreadDeferred { .. }
             | EventBody::ThreadResolved { .. }
             | EventBody::ThreadUnresolved { .. }
             | EventBody::FileViewed { .. }
