@@ -128,6 +128,17 @@ pub struct OpenReview {
 }
 
 impl OpenReview {
+    /// The retained historical source, only while it is the open viewport.
+    /// Current files can share its path without sharing its navigation state.
+    #[must_use]
+    pub fn original_render(&self) -> Option<&RenderKey> {
+        self.original.as_ref().filter(|original| {
+            self.open_file
+                .as_ref()
+                .is_some_and(|file| file.render == **original)
+        })
+    }
+
     #[must_use]
     pub fn new(snapshot: ReviewSnapshot) -> Self {
         Self {

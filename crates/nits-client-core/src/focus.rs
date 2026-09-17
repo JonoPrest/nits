@@ -109,6 +109,8 @@ pub enum NoTarget {
     NoOpenFile,
     #[error("no review is open")]
     NoOpenReview,
+    #[error("the original context is read-only; return to the current diff to comment")]
+    ReadOnlyOriginal,
 }
 
 /// The tree in display order: every node whose ancestors are expanded.
@@ -356,6 +358,9 @@ fn collapsed_of(view: &ViewModel, render: &crate::cache::RenderKey) -> bool {
 fn adjacent_file(core: &ClientCore, forward: bool) -> Result<Action, NoTarget> {
     let view = core.view();
     let open = view.review.as_ref().ok_or(NoTarget::NoOpenReview)?;
+    if open.original_render().is_some() {
+        return Err(NoTarget::AtEdge);
+    }
     let cur = open
         .open_file
         .as_ref()
@@ -393,6 +398,7 @@ fn open_file_collapsed(core: &ClientCore) -> bool {
     let view = core.view();
     view.review
         .as_ref()
+        .filter(|open| open.original_render().is_none())
         .and_then(|o| o.open_file.as_ref())
         .is_some_and(|f| collapsed_of(view, &f.render))
 }
@@ -943,6 +949,15 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                     Action::MarkViewed { file }
                 }
             })
+        }
+        Command::Comment | Command::CommentOnFile
+            if matches!(focus, Focus::Diff { .. })
+                && view
+                    .review
+                    .as_ref()
+                    .is_some_and(|open| open.original_render().is_some()) =>
+        {
+            Err(NoTarget::ReadOnlyOriginal)
         }
         Command::Comment if in_visual => {
             let (Some(anchor), Focus::Diff { row, .. }) = (core.visual_anchor(), focus) else {

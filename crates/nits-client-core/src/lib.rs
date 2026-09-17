@@ -1160,13 +1160,21 @@ impl ClientCore {
         } else {
             self.keymap.pending_hints(focus.context(), &self.chords)
         };
-        // Informational conversation has no resolution lifecycle. Its focused
-        // hint bar (including custom prefix continuations) must reflect that.
+        // Informational conversation has no resolution lifecycle, and original
+        // content cannot start file/line comments. The focused hint bar
+        // (including custom prefix continuations) reflects these restrictions.
         hints.retain(|hint| {
-            !matches!(
+            (!matches!(
                 hint.command,
                 Command::ToggleResolved | Command::DeferFinding
-            ) || focus::resolve(self, hint.command).is_ok()
+            ) || focus::resolve(self, hint.command).is_ok())
+                && !(matches!(hint.command, Command::Comment | Command::CommentOnFile)
+                    && self
+                        .view
+                        .review
+                        .as_ref()
+                        .is_some_and(|open| open.original_render().is_some())
+                    && focus::resolve(self, hint.command).is_err())
         });
         if hints != self.view.hints {
             self.view.hints = hints;
@@ -1577,14 +1585,18 @@ impl ClientCore {
             return Err(CoreError::NoOpenReview);
         };
         let review_id = open.snapshot.review.id;
-        let Some(i) = open
-            .files
-            .iter()
-            .position(|k| k.repo_id == file.repo_id && k.path == file.path)
+        let Some(old) = open
+            .original_render()
+            .filter(|k| k.repo_id == file.repo_id && k.path == file.path)
+            .or_else(|| {
+                open.files
+                    .iter()
+                    .find(|k| k.repo_id == file.repo_id && k.path == file.path)
+            })
+            .cloned()
         else {
             return Err(CoreError::UnknownFile(file.clone()));
         };
-        let old = open.files[i].clone();
         let key = RenderKey {
             opts: opts(&old.opts),
             ..old.clone()
@@ -1610,7 +1622,13 @@ impl ClientCore {
         let Some(open) = &mut self.view.review else {
             return Err(CoreError::NoOpenReview);
         };
-        open.files[i] = key.clone();
+        if open.original_render() == Some(&old) {
+            // The historical pane owns its render options. Re-keying it
+            // must not replace the current review's change at this path.
+            open.original = Some(key.clone());
+        } else if let Some(render) = open.files.iter_mut().find(|render| **render == old) {
+            *render = key.clone();
+        }
         // Keep viewing the file over the same rows; the render's row count
         // grows, so the window is re-evaluated when the header lands.
         if let Some(f) = &mut open.open_file
@@ -1656,6 +1674,16 @@ impl ClientCore {
             expanded: opts.expanded.opened(gap, dir, EXPAND_STEP),
             ..opts.clone()
         })
+    }
+
+    /// Line/file composers belong to the current source. The retained source
+    /// is read-only; rejecting here also protects direct mouse/host actions.
+    fn require_commentable_context(&self) -> Result<(), CoreError> {
+        let open = self.view.review.as_ref().ok_or(CoreError::NoOpenReview)?;
+        if open.original_render().is_some() {
+            return Err(NoTarget::ReadOnlyOriginal.into());
+        }
+        Ok(())
     }
 
     /// The line the cursor is on in `render`, if that is the open file.
@@ -1926,6 +1954,7 @@ impl ClientCore {
                 start_line,
                 end_line,
             } => {
+                self.require_commentable_context()?;
                 let Some(open) = &self.view.review else {
                     return Err(CoreError::NoOpenReview);
                 };
@@ -1992,6 +2021,7 @@ impl ClientCore {
                 Ok(vec![render(&[ViewSection::Draft, ViewSection::Focus])])
             }
             Action::CommentFile { file } => {
+                self.require_commentable_context()?;
                 if self.view.review.is_none() {
                     return Err(CoreError::NoOpenReview);
                 }
@@ -2557,6 +2587,12 @@ impl ClientCore {
             Action::DraftOpened { anchor } => {
                 if self.view.review.is_none() {
                     return Err(CoreError::NoOpenReview);
+                }
+                match &anchor {
+                    Anchor::File { .. } | Anchor::Lines { .. } => {
+                        self.require_commentable_context()?;
+                    }
+                    Anchor::Review => {}
                 }
                 if self.view.draft.is_some() {
                     return Err(CoreError::DraftAlreadyOpen);
