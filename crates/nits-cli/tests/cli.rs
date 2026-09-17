@@ -2015,3 +2015,50 @@ fn request_check_and_delta_are_available_from_cli_with_explicit_revision_selecti
         requested["seq"]
     );
 }
+
+#[test]
+fn branch_request_capture_and_current_checkpoint_delta_use_the_same_new_head() {
+    let h = start();
+    let ws = h.out(&["workspace", "add", "rounds"]);
+    h.out(&["workspace", "attach", &ws, h.repo.path().to_str().unwrap()]);
+    let review = h.out(&[
+        "review",
+        "create",
+        "--workspace",
+        &ws,
+        "--base",
+        "main",
+        "--head",
+        "feature",
+    ]);
+    h.repo.write_file("a.rs", b"fn a() { 2; }\n").unwrap();
+    h.repo.git(&["commit", "-qam", "H2"]).unwrap();
+    let h2 = h.repo.git(&["rev-parse", "feature"]).unwrap();
+    let request: serde_json::Value =
+        serde_json::from_str(&h.out(&["--json", "review", "request", &review, "review-agent"]))
+            .unwrap();
+    let checked: serde_json::Value = serde_json::from_str(&h.out(&[
+        "--json",
+        "review",
+        "check",
+        &review,
+        "--request",
+        &request["seq"].to_string(),
+    ]))
+    .unwrap();
+    let state: serde_json::Value =
+        serde_json::from_str(&h.out(&["--json", "review", "show", &review])).unwrap();
+    assert_eq!(state["resolved"][0]["head"]["source"]["oid"], h2.trim());
+    assert_eq!(state["resolved"], request["body"]["targets"]["targets"]);
+    assert_eq!(state["latest_checkpoints"][0]["freshness"], "Current");
+    assert_eq!(
+        h.out(&[
+            "--json",
+            "files",
+            &review,
+            "--since-checkpoint",
+            &checked["seq"].to_string()
+        ]),
+        "[]"
+    );
+}

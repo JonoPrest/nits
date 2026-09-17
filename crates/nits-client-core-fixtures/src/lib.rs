@@ -993,6 +993,7 @@ enum_fixture!(
         ViewPatch::Conversation {
             requests: vec![proto::<ReviewRequest>()?],
             checkpoints: vec![proto::<ReviewerCheckpoint>()?],
+            check_current_ready: true,
             conversation: vec![local::<ThreadView>()?],
         },
         ViewPatch::CommitStepper {
@@ -1070,6 +1071,7 @@ struct_fixture!(
         conversation: Vec::new(),
         requests: vec![proto::<ReviewRequest>()?],
         checkpoints: vec![proto::<ReviewerCheckpoint>()?],
+        check_current_ready: true,
         stepper: Some(local::<CommitStepper>()?),
         focus: Focus::Diff {
             row: 121,

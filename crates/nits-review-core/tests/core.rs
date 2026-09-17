@@ -1858,6 +1858,82 @@ fn captured_commit_provenance_survives_force_push_and_garbage_collection() {
 }
 
 #[test]
+fn requesting_a_moved_branch_updates_current_targets_and_reanchors() {
+    let w = world();
+    let id = review_id(70);
+    w.core
+        .create_review(&human(), id, ws(), "rounds".into(), targets())
+        .unwrap();
+    let old_blob = head_blob(&w.core, id, rid(1), "src/main.rs");
+    w.core
+        .add_comment(
+            &human(),
+            id,
+            cid(70),
+            CommentKind::Note,
+            lines_anchor(rid(1), p("src/main.rs"), Side::Head, old_blob, 8, 8).unwrap(),
+            "g".into(),
+            None,
+        )
+        .unwrap();
+    let before = w.core.review_snapshot(id).unwrap();
+    let shifted = format!("// shifted\n{}", SRC.replace("let h = 8;", "let h = 80;"));
+    w.a.write_file("src/main.rs", shifted.as_bytes()).unwrap();
+    w.a.git(&["commit", "-qam", "next round"]).unwrap();
+    let request_id = w
+        .core
+        .request_review(&human(), id, "review-agent".into(), "next round".into())
+        .unwrap();
+    let snapshot = w.core.review_snapshot(id).unwrap();
+    let nits_protocol::RequestedTargets::Captured { targets } = &snapshot.requests[0].targets
+    else {
+        panic!("captured")
+    };
+    assert_eq!(snapshot.resolved.as_ref(), Some(targets));
+    assert_ne!(snapshot.resolved, before.resolved);
+    assert_eq!(snapshot.review, before.review);
+    let Anchor::Lines {
+        lines, blob_oid, ..
+    } = &snapshot.comments[0].anchor
+    else {
+        panic!("lines")
+    };
+    assert_eq!(lines.start().get(), 9);
+    assert_ne!(*blob_oid, old_blob);
+    assert_eq!(snapshot.comments[0].state, CommentState::Live);
+    let checked = w
+        .core
+        .record_checkpoint(
+            &agent(),
+            id,
+            targets.clone(),
+            Some(nits_protocol::ReviewRound::Request { request_id }),
+        )
+        .unwrap();
+    let checked_snapshot = w.core.review_snapshot(id).unwrap();
+    assert_eq!(
+        nits_protocol::latest_checkpoints(
+            &checked_snapshot.checkpoints,
+            checked_snapshot.resolved.as_ref()
+        )[0]
+        .freshness,
+        nits_protocol::CheckpointFreshness::Current
+    );
+    assert!(
+        w.core
+            .files_scoped(
+                id,
+                &DiffScope::SinceCheckpoint {
+                    checkpoint_id: checked
+                }
+            )
+            .unwrap()
+            .0
+            .is_empty()
+    );
+}
+
+#[test]
 fn checking_a_displayed_worktree_after_refresh_uses_its_retained_target_event() {
     let w = world();
     let id = review_id(69);

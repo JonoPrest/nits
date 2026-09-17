@@ -718,6 +718,7 @@ expression: core.view()
   ],
   "requests": [],
   "checkpoints": [],
+  "check_current_ready": false,
   "stepper": null,
   "focus": {
     "type": "Help"

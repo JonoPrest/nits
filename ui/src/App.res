@@ -508,7 +508,12 @@ module Shell = {
                   onClick={() => dispatch(RunCommand({command: ReviewFinding}))}
                 />
               </UI.Box>
-              <ReviewCheckpoints checkpoints=model.checkpoints chrome=model.chrome dispatch />
+              <ReviewCheckpoints
+                checkpoints=model.checkpoints
+                checkCurrentReady=model.checkCurrentReady
+                chrome=model.chrome
+                dispatch
+              />
               <ReviewRequests
                 requests=model.requests focus=model.focus chrome=model.chrome dispatch
               />

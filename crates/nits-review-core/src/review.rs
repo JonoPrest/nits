@@ -316,7 +316,7 @@ impl Core {
         Ok((resolved, changed))
     }
 
-    fn resolve_review_targets(
+    pub(crate) fn resolve_review_targets(
         &self,
         review: &Review,
     ) -> Result<NonEmpty<ResolvedTarget>, CoreError> {
@@ -332,7 +332,7 @@ impl Core {
         NonEmpty::new(resolved).map_err(|e| CoreError::invalid(e.to_string()))
     }
 
-    fn record_resolved_targets(
+    pub(crate) fn record_resolved_targets(
         &self,
         ctx: &Ctx,
         rec: &ReviewRecord,

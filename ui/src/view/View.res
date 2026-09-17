@@ -552,6 +552,7 @@ module ViewModel = {
     conversation: array<ThreadView.t>,
     requests: array<Domain.ReviewRequest.t>,
     checkpoints: array<Domain.ReviewerCheckpoint.t>,
+    @as("check_current_ready") checkCurrentReady: bool,
     stepper: @s.null option<CommitStepper.t>,
     focus: Focus.t,
     tab: Tab.t,
@@ -608,6 +609,7 @@ module ViewModel = {
     conversation: [],
     requests: [],
     checkpoints: [],
+    checkCurrentReady: false,
     stepper: None,
     focus: ReviewList({index: 0}),
     tab: FilesChanged,
@@ -675,6 +677,7 @@ module ViewPatch = {
         conversation: array<ThreadView.t>,
         requests: array<Domain.ReviewRequest.t>,
         checkpoints: array<Domain.ReviewerCheckpoint.t>,
+        @as("check_current_ready") checkCurrentReady: bool,
       })
     | @as("CommitStepper") CommitStepper({stepper: @s.null option<CommitStepper.t>})
     | @as("RefSelector")
@@ -730,11 +733,12 @@ module ViewPatch = {
     | Tree({tree}) => {...model, tree}
     | Diff({diff, diffs, prefs, visual}) => {...model, diff, diffs, prefs, visual}
     | Threads({threads}) => {...model, threads}
-    | Conversation({conversation, requests, checkpoints}) => {
+    | Conversation({conversation, requests, checkpoints, checkCurrentReady}) => {
         ...model,
         conversation,
         requests,
         checkpoints,
+        checkCurrentReady,
       }
     | CommitStepper({stepper}) => {...model, stepper}
     | RefSelector({refSelector}) => {...model, refSelector}

@@ -929,6 +929,7 @@ pub struct GetCheckpointDelta {
 }
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CheckpointDelta {
+    pub context: ContextIdentity,
     pub targets: NonEmpty<ResolvedTarget>,
     pub files: Vec<FileChange>,
 }

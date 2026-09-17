@@ -484,6 +484,7 @@ impl Server {
         })
     }
 
+    #[allow(clippy::too_many_lines)] // Keep the exhaustive query-to-Core mapping together.
     async fn call_query(&self, call: QueryCall) -> Result<Value, ToolError> {
         let ops = self.ops()?;
         match call {
@@ -529,7 +530,11 @@ impl Server {
                         },
                     )
                     .await?;
-                ok(tools::CheckpointDelta { targets, files })
+                ok(tools::CheckpointDelta {
+                    context: self.context_identity(),
+                    targets,
+                    files,
+                })
             }
             QueryCall::GetDiff(p) => {
                 let render_opts = RenderOpts {

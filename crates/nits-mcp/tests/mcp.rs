@@ -1827,6 +1827,23 @@ async fn context_switch_is_atomic_preserves_identity_and_isolates_events() {
     assert_eq!(event_b["author"], identity["author"]);
     assert_eq!(event_b["client_seq"], 1);
     assert_ne!(event_b["client_id"], committed(&a, &on_a)["client_id"]);
+    let checked = call(
+        &mut s,
+        "record_checkpoint",
+        json!({
+            "review_id": review_id, "targets": review["resolved"]
+        }),
+    )
+    .await;
+    let delta = call(
+        &mut s,
+        "get_checkpoint_delta",
+        json!({
+            "review_id": review_id, "checkpoint_id": checked["id"]
+        }),
+    )
+    .await;
+    assert_eq!(delta["context"], context_b);
     let polled = call(
         &mut s,
         "subscribe_events",
@@ -2322,6 +2339,7 @@ async fn checkpoints_capture_h1_check_after_h2_and_inspect_delta_with_fresh_iden
     )
     .await;
     assert_eq!(delta["files"][0]["path"], "round.txt");
+    assert_eq!(delta["context"], after["context"]);
     let diff = call(&mut restarted, "get_diff", json!({"review_id": review_id, "path": "round.txt", "scope": {"type": "SinceCheckpoint", "checkpoint_id": checked["id"]}})).await;
     assert!(diff["text"].as_str().unwrap().contains("H2"));
 }

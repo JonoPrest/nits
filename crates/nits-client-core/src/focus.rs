@@ -800,8 +800,8 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             Focus::ReviewRequest { index } => {
                 let request = view.requests.get(index).ok_or_else(nothing)?;
                 match &request.targets {
-                    nits_protocol::RequestedTargets::Unknown => Ok(Action::SetTab {
-                        tab: Tab::FilesChanged,
+                    nits_protocol::RequestedTargets::Unknown => Ok(Action::SetScope {
+                        scope: ScopeChoice::All,
                     }),
                     nits_protocol::RequestedTargets::Captured { .. } => Ok(Action::SetScope {
                         scope: ScopeChoice::Requested {
@@ -1201,7 +1201,11 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
         },
         Command::CheckCurrent => {
             view.review.as_ref().ok_or(NoTarget::NoOpenReview)?;
-            Ok(Action::CheckCurrent)
+            if core.check_current_ready() {
+                Ok(Action::CheckCurrent)
+            } else {
+                Err(nothing())
+            }
         }
         Command::CheckRequested => {
             let Focus::ReviewRequest { index } = view.focus else {

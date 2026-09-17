@@ -2721,6 +2721,16 @@ test("a linked outdated finding opens a visible original pane instead of the cur
   expect(Element.querySelector(container, ".diff-scroll.hidden"))->toBeNull
 })
 describe("Revision checkpoints", () => {
+  test("current checking is disabled while content refreshes", () => {
+    let dispatch = fn()
+    render(<ReviewCheckpoints checkpoints=[] chrome=[] checkCurrentReady=false dispatch />)->ignore
+    let button = Screen.getByText("Record current revision checked")
+    expect(Element.getAttribute(button, "disabled")->Nullable.toOption)->toBe(Some(""))
+    expect(Screen.getByText("Current changes are refreshing."))->toBeTruthy
+    FireEvent.click(button)
+    FireEvent.keyDown(button, {"key": "Enter", "ctrlKey": false})
+    expect(dispatch)->toHaveBeenCalledTimes(0)
+  })
   test(
     "shows checked provenance, changed status and keymap-backed actions without finding controls",
     () => {

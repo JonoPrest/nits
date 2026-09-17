@@ -479,6 +479,8 @@ pub enum CoreError {
     },
     #[error("no review is open")]
     NoOpenReview,
+    #[error("current changes are refreshing; wait for matching content before recording a check")]
+    CurrentChangesRefreshing,
     #[error("{0:?} is not a file of the open review")]
     UnknownFile(FileRef),
     #[error("no file is open")]
@@ -523,6 +525,14 @@ pub enum CoreError {
     StaleEvent { seq: Seq, last_seq: Seq },
 }
 
+/// Opening content belongs to the snapshot generation that began its stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpeningContent {
+    AwaitingSnapshot,
+    Streaming,
+    Superseded,
+}
+
 /// What a `RequestId` is waiting for, so the reply can be routed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InFlight {
@@ -534,6 +544,7 @@ pub(crate) enum InFlight {
     /// Streamed open (local daemon): snapshot, trees, headers, first chunks.
     OpenReview {
         review_id: ReviewId,
+        content: OpeningContent,
     },
     /// Piecewise open (disk tier on): snapshot only, the rest by key.
     ReviewSnapshot {
@@ -541,6 +552,7 @@ pub(crate) enum InFlight {
     },
     ListFiles {
         review_id: ReviewId,
+        scope: DiffScope,
     },
     ListCommits {
         repo_id: RepoId,
@@ -645,6 +657,8 @@ pub struct ClientCore {
     /// Live requests, checks and target updates arriving while a snapshot is in flight. A response
     /// can carry an older cursor than an event delivered ahead of it.
     snapshot_events: BTreeMap<RequestId, (ReviewId, Vec<Event>)>,
+    /// Only the latest file listing may install content after a target/scope refresh.
+    latest_files: Option<RequestId>,
     /// Mutations sent and not yet echoed by the daemon, in send order.
     pending: Vec<Pending>,
     reference_context: Option<nits_protocol::ReferenceContext>,
@@ -730,6 +744,7 @@ impl ClientCore {
             content,
             committed: None,
             snapshot_events: BTreeMap::new(),
+            latest_files: None,
             pending: Vec::new(),
             reference_context: None,
             pending_reference: None,
@@ -1074,6 +1089,11 @@ impl ClientCore {
             .review
             .as_ref()
             .map_or_else(Vec::new, |r| r.snapshot.requests.clone());
+        let check_current_ready = self.check_current_ready();
+        if check_current_ready != self.view.check_current_ready {
+            self.view.check_current_ready = check_current_ready;
+            sections.push(ViewSection::Conversation);
+        }
         let checkpoints = self.view.review.as_ref().map_or_else(Vec::new, |r| {
             let current = self
                 .deferred
@@ -1366,7 +1386,7 @@ impl ClientCore {
                 if let Connection::Subscribed { .. } = self.connection {
                     effects.push(self.request(
                         Request::ListFiles { review_id, scope },
-                        InFlight::ListFiles { review_id },
+                        InFlight::ListFiles { review_id, scope },
                     ));
                 }
             }
@@ -1391,11 +1411,12 @@ impl ClientCore {
         open.open_file = None;
         open.original = None;
         let mut effects = Vec::new();
+        self.supersede_opening_content(review_id);
         self.rebase();
         if let Connection::Subscribed { .. } = self.connection {
             effects.push(self.request(
                 Request::ListFiles { review_id, scope },
-                InFlight::ListFiles { review_id },
+                InFlight::ListFiles { review_id, scope },
             ));
         }
         effects.push(render(&[ViewSection::ReviewList, ViewSection::Diff]));
@@ -1889,7 +1910,10 @@ impl ClientCore {
                 let (request, waiting) = match self.content.config.disk {
                     DiskTier::Disabled => (
                         Request::OpenReview { review_id, opts },
-                        InFlight::OpenReview { review_id },
+                        InFlight::OpenReview {
+                            review_id,
+                            content: OpeningContent::AwaitingSnapshot,
+                        },
                     ),
                     DiskTier::Enabled { .. } => (
                         Request::ReviewSnapshot { review_id },
@@ -2333,8 +2357,11 @@ impl ClientCore {
                             .ok_or(CoreError::NoStepper)?
                     }
                 };
-                self.view.tab = Tab::FilesChanged;
-                Ok(self.apply_scope(wire))
+                let mut effects = self.user(Action::SetTab {
+                    tab: Tab::FilesChanged,
+                })?;
+                effects.extend(self.apply_scope(wire));
+                Ok(effects)
             }
             Action::OpenOriginalDiff { thread_id } => self.open_original(thread_id),
             Action::ExpandContext { file, full } => self.expand_context(&file, full),
@@ -2849,6 +2876,9 @@ impl ClientCore {
             }
             Action::CheckCurrent | Action::CheckRequested => {
                 self.require_subscribed()?;
+                if matches!(action, Action::CheckCurrent) && !self.check_current_ready() {
+                    return Err(CoreError::CurrentChangesRefreshing);
+                }
                 let snapshot = self.committed.as_ref().ok_or(CoreError::NoOpenReview)?;
                 let review_id = snapshot.review.id;
                 let (targets, in_reply_to) = if matches!(action, Action::CheckRequested) {
@@ -3176,6 +3206,7 @@ impl ClientCore {
         self.view.resolved_targets.clear();
         self.view.draft = None;
         self.view.pending_refresh = false;
+        self.latest_files = None;
         self.deferred.clear();
         self.committed = None;
         self.pending.clear();
@@ -3201,7 +3232,12 @@ impl ClientCore {
         mut snapshot: ReviewSnapshot,
         effects: &mut Vec<Effect>,
     ) {
-        if let Some((_, mut events)) = self.snapshot_events.remove(&id) {
+        // Reference navigation replays its complete event buffer in land_reference.
+        // Applying only revision events here first could advance past an earlier
+        // reply or disposition before that complete replay runs.
+        if let Some((_, mut events)) = self.snapshot_events.remove(&id)
+            && self.pending_reference.is_none()
+        {
             events.sort_by_key(|event| event.seq);
             for event in events {
                 if event.seq > snapshot.seq {
@@ -3248,6 +3284,30 @@ impl ClientCore {
         }
     }
 
+    fn supersede_opening_content(&mut self, review: ReviewId) {
+        for waiting in self.in_flight.values_mut() {
+            if let InFlight::OpenReview { review_id, content } = waiting
+                && *review_id == review
+                && *content == OpeningContent::Streaming
+            {
+                *content = OpeningContent::Superseded;
+            }
+        }
+    }
+
+    /// The explicit current check is unavailable while the shown content is
+    /// being replaced, including a refresh held back for a draft.
+    fn check_current_ready(&self) -> bool {
+        self.view.review.as_ref().is_some_and(|open| {
+            open.snapshot.resolved.is_some() && self.latest_files.is_none()
+                && (open.open_file.is_none() || self.view.diff.as_ref().is_some_and(|diff| diff.missing.is_empty()))
+                && !self.view.pending_refresh
+                && !self.in_flight.values().any(|waiting| matches!(waiting,
+                    InFlight::OpenReview { review_id, content: OpeningContent::AwaitingSnapshot | OpeningContent::Streaming }
+                    if *review_id == open.snapshot.review.id))
+        })
+    }
+
     fn require_subscribed(&self) -> Result<(), CoreError> {
         match self.connection {
             Connection::Subscribed { .. } => Ok(()),
@@ -3273,6 +3333,9 @@ impl ClientCore {
             &request
         {
             self.snapshot_events.insert(id, (*review_id, Vec::new()));
+        }
+        if matches!(request, Request::ListFiles { .. }) {
+            self.latest_files = Some(id);
         }
         self.in_flight.insert(id, waiting);
         Effect::Send(ClientMsg::Request { id, request })
@@ -3378,9 +3441,12 @@ impl ClientCore {
                 };
                 let mut effects = Vec::new();
                 match waiting {
-                    InFlight::OpenReview { .. } => {
-                        self.snapshot_requests.remove(&id);
-                        if self.latest_open == Some(id) && self.view.review.is_some() {
+                    InFlight::OpenReview { review_id, content } => {
+                        self.snapshot_events.remove(&id);
+                        if self.latest_open == Some(id)
+                            && content == OpeningContent::Streaming
+                            && self.open_mut(review_id).is_some()
+                        {
                             // The streamed open carries the file list; land
                             // on the first diff (UI-DESIGN §Layout).
                             self.auto_open_first(&mut effects);
@@ -3523,7 +3589,7 @@ impl ClientCore {
     }
 
     fn clear_in_flight(&mut self) {
-        self.snapshot_requests.clear();
+        self.snapshot_events.clear();
         self.pending_reference = None;
         self.latest_open = None;
         let keys: Vec<CacheKey> = self.in_flight.values().filter_map(InFlight::key).collect();
@@ -3543,20 +3609,38 @@ impl ClientCore {
         let Some(waiting) = self.in_flight.get(&id).cloned() else {
             return Err(CoreError::UnknownRequest(id));
         };
-        if matches!(waiting, InFlight::OpenReview { .. }) && self.latest_open != Some(id) {
+        if matches!(
+            waiting,
+            InFlight::OpenReview {
+                content: OpeningContent::Superseded,
+                ..
+            }
+        ) || (matches!(waiting, InFlight::OpenReview { .. }) && self.latest_open != Some(id)) {
             return Ok(Vec::new());
         }
         let got = stream_item_name(&item);
         let unexpected = |expected| CoreError::UnexpectedResponse { id, expected, got };
         let mut effects = Vec::new();
         match (waiting, item) {
-            (InFlight::OpenReview { review_id }, StreamItem::ReviewSnapshot { snapshot }) => {
+            (InFlight::OpenReview { review_id, .. }, StreamItem::ReviewSnapshot { snapshot }) => {
                 if snapshot.review.id != review_id {
                     return Err(unexpected("ReviewSnapshot for the requested review"));
                 }
+                let streamed_targets = snapshot.resolved.clone();
                 self.install_snapshot(id, snapshot, &mut effects);
                 self.land_reference(&mut effects);
-                self.expect_streamed_trees(&mut effects);
+                let current_targets = self.committed.as_ref().and_then(|s| s.resolved.as_ref());
+                let content = if self.view.review.is_none() {
+                    OpeningContent::Superseded
+                } else if current_targets == streamed_targets.as_ref() {
+                    self.expect_streamed_trees(&mut effects);
+                    OpeningContent::Streaming
+                } else {
+                    self.review_opened_piecewise(review_id, &mut effects);
+                    OpeningContent::Superseded
+                };
+                self.in_flight
+                    .insert(id, InFlight::OpenReview { review_id, content });
                 effects.push(render(&[
                     ViewSection::ReviewList,
                     ViewSection::Diff,
@@ -3577,7 +3661,7 @@ impl ClientCore {
                     &mut effects,
                 );
             }
-            (InFlight::OpenReview { review_id }, StreamItem::Header { header }) => {
+            (InFlight::OpenReview { review_id, .. }, StreamItem::Header { header }) => {
                 let render = RenderKey::of_header(&header);
                 // Only the review stream discovers changed files. Standalone
                 // renders may outlive their Browse ref or original thread view.
@@ -3682,7 +3766,7 @@ impl ClientCore {
         };
         if matches!(waiting, InFlight::ReviewSnapshot { .. }) && self.latest_open != Some(id) {
             self.in_flight.remove(&id);
-            self.snapshot_requests.remove(&id);
+            self.snapshot_events.remove(&id);
             return Ok(Vec::new());
         }
         let got = response_name(&response);
@@ -3769,9 +3853,22 @@ impl ClientCore {
                 ]));
                 effects
             }
-            (InFlight::ListFiles { review_id }, Response::Files { files, resolved }) => {
+            (InFlight::ListFiles { review_id, scope }, Response::Files { files, resolved }) => {
                 let mut effects = Vec::new();
-                if self.open_mut(review_id).is_some() {
+                let matches_current = self.view.review.as_ref().is_some_and(|open| {
+                    open.snapshot.review.id == review_id
+                        && open.scope == scope
+                        && (scope != DiffScope::All
+                            || open
+                                .snapshot
+                                .resolved
+                                .as_ref()
+                                .map_or(resolved.is_empty(), |targets| {
+                                    targets.iter().eq(resolved.iter())
+                                }))
+                });
+                if self.latest_files == Some(id) && matches_current {
+                    self.latest_files = None;
                     if let Some(open) = &mut self.view.review
                         && !matches!(open.scope, DiffScope::All)
                     {
@@ -4117,6 +4214,16 @@ impl ClientCore {
             .review_id()
             .is_some_and(|id| self.committed.as_ref().is_some_and(|c| c.review.id == id));
         if concerns_open {
+            if let EventBody::ReviewTargetsResolved { review_id, .. } = &event.body {
+                self.supersede_opening_content(*review_id);
+                if let Some(open) = &mut self.view.review {
+                    open.files.clear();
+                    open.open_file = None;
+                    open.original = None;
+                    open.scoped_targets.clear();
+                }
+                sections.push(ViewSection::Diff);
+            }
             if let Some(committed) = &mut self.committed {
                 sections.extend(apply_event(committed, &event));
             }
@@ -4135,7 +4242,7 @@ impl ClientCore {
                     .unwrap_or_default();
                 effects.push(self.request(
                     Request::ListFiles { review_id, scope },
-                    InFlight::ListFiles { review_id },
+                    InFlight::ListFiles { review_id, scope },
                 ));
             }
         }

@@ -560,7 +560,12 @@ impl Sim {
                     id,
                     response: Response::Files {
                         files: Vec::new(),
-                        resolved: Vec::new(),
+                        resolved: self
+                            .daemon
+                            .snapshot
+                            .resolved
+                            .clone()
+                            .map_or_else(Vec::new, |targets| targets.into_iter().collect()),
                     },
                 },
             ),

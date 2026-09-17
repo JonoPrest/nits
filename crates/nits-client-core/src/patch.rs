@@ -63,6 +63,7 @@ pub enum ViewPatch {
         conversation: Vec<ThreadView>,
         requests: Vec<nits_protocol::ReviewRequest>,
         checkpoints: Vec<nits_protocol::ReviewerCheckpoint>,
+        check_current_ready: bool,
     },
     CommitStepper {
         stepper: Option<CommitStepper>,
@@ -171,6 +172,7 @@ impl ViewModel {
                 conversation: self.conversation.clone(),
                 requests: self.requests.clone(),
                 checkpoints: self.checkpoints.clone(),
+                check_current_ready: self.check_current_ready,
             },
             ViewSection::CommitStepper => ViewPatch::CommitStepper {
                 stepper: self.stepper.clone(),
@@ -268,10 +270,12 @@ impl ViewModel {
                 conversation,
                 requests,
                 checkpoints,
+                check_current_ready,
             } => {
                 self.conversation = conversation;
                 self.requests = requests;
                 self.checkpoints = checkpoints;
+                self.check_current_ready = check_current_ready;
             }
             ViewPatch::CommitStepper { stepper } => self.stepper = stepper,
             ViewPatch::RefSelector { ref_selector } => self.ref_selector = ref_selector,

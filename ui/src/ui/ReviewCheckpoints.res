@@ -24,6 +24,7 @@ module Targets = {
 let make = (
   ~checkpoints: array<Domain.ReviewerCheckpoint.t>,
   ~chrome: array<View.Hint.t>,
+  ~checkCurrentReady: bool=true,
   ~dispatch: Action.t => unit,
 ) =>
   <section ariaLabel="Revision checkpoints" className="threads panel">
@@ -31,6 +32,7 @@ let make = (
     <UI.Box>
       <UI.Button
         label="Record current revision checked"
+        disabled={!checkCurrentReady}
         title=?{Chrome.tip(chrome, CheckCurrent)}
         onClick={() => dispatch(RunCommand({command: CheckCurrent}))}
       />
@@ -44,6 +46,7 @@ let make = (
         React.null
       }}
     </UI.Box>
+    {checkCurrentReady ? React.null : <p> {React.string("Current changes are refreshing.")} </p>}
     {checkpoints
     ->Array.map(status => {
       let checkpoint = status.checkpoint

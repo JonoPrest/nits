@@ -574,6 +574,9 @@ ref so force pushes and GC cannot remove their provenance. Resolved target event
 so a check submitted from a previously displayed snapshot remains valid during a
 refresh race. Existing historical requests explicitly carry unknown targets.
 The note is prose: requesting another head requires an explicit review target update.
+Capture resolves once and records that same resolution on the review, with normal
+comment reanchoring. The request remains the first committed event for mutation
+acknowledgement; resolution/reanchoring events follow in writer order.
 
 `RecordCheckpoint` records exact targets and an optional typed request/checkpoint
 identity being answered. IDs are committed event sequence newtypes. Each checkpoint
@@ -589,8 +592,13 @@ rebuilds and fresh/reconnected clients retain the same records. `Requested` scop
 opens a request's captured diff. `SinceCheckpoint` scope compares each checked head
 to its current head, preserving the original review base and thread history. Both
 scopes use the existing file listing/rendering API and support multiple repos.
+The client discards content from superseded opening streams and file-list replies.
+Current checking is unavailable until matching content is loaded, including while
+a draft holds back a refresh. A deliberately selected historical scope still keeps
+the explicit current check separate from checking the captured requested revision.
 MCP exposes `record_checkpoint`, `get_checkpoint_delta` and `get_diff.scope`;
-`get_review` returns full history and latest reviewer freshness. CLI exposes
+`get_review` returns full history and latest reviewer freshness; checkpoint-delta
+queries include their selected source context. CLI exposes
 `review set-head REVIEW REF --repo REPO`, `review request`, `review check --request ID|--current`, optional
 `--answer-request ID` / `--answer-checkpoint ID`, and `files`/`diff` with either
 `--request ID` (the captured revision) or `--since-checkpoint ID` (the incremental delta).
