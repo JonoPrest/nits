@@ -3232,9 +3232,9 @@ impl ClientCore {
         mut snapshot: ReviewSnapshot,
         effects: &mut Vec<Effect>,
     ) {
-        // Reference navigation replays its complete event buffer in land_reference.
-        // Applying only revision events here first could advance past an earlier
-        // reply or disposition before that complete replay runs.
+        // Reference navigation owns complete replay in land_reference, where
+        // linked discussion and revision records advance together. Ordinary
+        // opens retain their in-flight revision events here.
         if let Some((_, mut events)) = self.snapshot_events.remove(&id)
             && self.pending_reference.is_none()
         {
@@ -3615,7 +3615,8 @@ impl ClientCore {
                 content: OpeningContent::Superseded,
                 ..
             }
-        ) || (matches!(waiting, InFlight::OpenReview { .. }) && self.latest_open != Some(id)) {
+        ) || (matches!(waiting, InFlight::OpenReview { .. }) && self.latest_open != Some(id))
+        {
             return Ok(Vec::new());
         }
         let got = stream_item_name(&item);

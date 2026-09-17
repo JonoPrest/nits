@@ -1874,3 +1874,151 @@ fn requested_checkpoint_and_new_target_delivered_ahead_of_snapshot_are_preserved
         matches!(request, Request::Mutate { mutation: Mutation::RecordCheckpoint { targets, in_reply_to: Some(ReviewRound::Request { request_id: checked_request }), .. }, .. } if targets == h1 && checked_request == request_id)
     );
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // Both snapshot transports exercise the complete linked-reply/revision race.
+fn linked_browse_reply_survives_newer_request_target_and_checkpoint_before_snapshot() {
+    use nits_protocol::{
+        CommentContext, ReferenceTarget, RequestedTargets, ReviewRound, ReviewerIdentity,
+    };
+    for piecewise in [false, true] {
+        let mut cfg = config();
+        if piecewise {
+            cfg.cache.disk = nits_client_core::DiskTier::Enabled {
+                budget: nits_client_core::Bytes::mib(1),
+            };
+        }
+        let mut core = subscribed_with(1, cfg);
+        let id = ReviewId::from_parts(66, 64);
+        let (mut snap, reply_id) = referenced_snapshot(
+            id,
+            Anchor::File {
+                repo_id: repo_id(),
+                path: nits_protocol::RepoPath::new("src/main.rs").unwrap(),
+                blob_oid: nits_protocol::BlobOid::from_bytes([7; 20]),
+            },
+        );
+        for comment in &mut snap.comments {
+            comment.context = Some(CommentContext::Browse {
+                reference: RefSpec::Tag {
+                    name: "retained".into(),
+                },
+            });
+        }
+        let reply = snap.comments.pop().unwrap();
+        snap.threads[0].replies.clear();
+        let thread_id = snap.threads[0].id;
+        let h1 = resolved(1);
+        let h2 = resolved(2);
+        snap.resolved = Some(h1.clone());
+        let reference = reference_for(
+            id,
+            ReferenceTarget::Comment {
+                comment_id: reply_id,
+            },
+        );
+        let req = request_reference(&mut core, &reference);
+        let request_id = nits_protocol::ReviewRequestId::from_event_seq(Seq::new(4));
+        let events = [
+            event(2, EventBody::CommentCreated { comment: reply }),
+            event(
+                3,
+                EventBody::ThreadDeferred {
+                    review_id: id,
+                    thread_id,
+                    reason: "Agreed external follow-up".parse().unwrap(),
+                    tracking_url: None,
+                },
+            ),
+            event(
+                4,
+                EventBody::ReviewRequested {
+                    review_id: id,
+                    agent: "review-agent".into(),
+                    note: "Check H1".into(),
+                    targets: RequestedTargets::Captured {
+                        targets: h1.clone(),
+                    },
+                },
+            ),
+            event(
+                5,
+                EventBody::ReviewTargetsResolved {
+                    review_id: id,
+                    targets: h2.clone(),
+                },
+            ),
+            event(
+                6,
+                EventBody::ReviewChecked {
+                    review_id: id,
+                    reviewer: ReviewerIdentity::Agent {
+                        name: "review-agent".into(),
+                    },
+                    targets: h1,
+                    in_reply_to: Some(ReviewRound::Request { request_id }),
+                },
+            ),
+        ];
+        for event in events {
+            core.handle(Input::Server(ServerMsg::Event { event }))
+                .unwrap();
+        }
+        let effects = core
+            .handle(Input::Server(if piecewise {
+                ServerMsg::Response {
+                    id: req,
+                    response: Response::ReviewSnapshot { snapshot: snap },
+                }
+            } else {
+                ServerMsg::StreamItem {
+                    id: req,
+                    item: StreamItem::ReviewSnapshot { snapshot: snap },
+                }
+            }))
+            .unwrap();
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Send(ClientMsg::Request {
+                request: Request::ListFiles { .. },
+                ..
+            })
+        )));
+        if !piecewise {
+            core.handle(Input::Server(ServerMsg::StreamItem {
+                id: req,
+                item: StreamItem::Header {
+                    header: reference_header(),
+                },
+            }))
+            .unwrap();
+            core.handle(Input::Server(ServerMsg::StreamEnd { id: req }))
+                .unwrap();
+        }
+        let view = core.view();
+        assert_eq!(view.tab, nits_client_core::Tab::Conversation);
+        assert_eq!(view.focused_comment, Some(reply_id));
+        assert_eq!(view.copy_reference, Some(reference));
+        assert_eq!(view.threads[0].comments[1].body, "Verified the fix");
+        assert!(matches!(
+            view.threads[0].status,
+            nits_protocol::ThreadResolution::Deferred { .. }
+        ));
+        assert!(matches!(
+            view.threads[0].context,
+            Some(CommentContext::Browse { .. })
+        ));
+        assert_eq!(view.requests[0].id, request_id);
+        assert_eq!(
+            view.checkpoints[0].freshness,
+            nits_protocol::CheckpointFreshness::Changed
+        );
+        assert_eq!(view.review.as_ref().unwrap().snapshot.resolved, Some(h2));
+        assert!(view.review.as_ref().unwrap().files.is_empty());
+        assert!(!view.check_current_ready);
+        assert!(matches!(
+            core.handle(Input::User(Action::CheckCurrent)),
+            Err(CoreError::CurrentChangesRefreshing)
+        ));
+    }
+}

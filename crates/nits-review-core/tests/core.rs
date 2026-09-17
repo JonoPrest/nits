@@ -1675,6 +1675,47 @@ fn requested_h1_checked_after_h2_is_changed_and_delta_survives_gc_restart_rebuil
             None,
         )
         .unwrap();
+    let original = w.core.tree_snapshot(rid(1), &RefSpec::WorkingTree).unwrap();
+    let original_blob = original
+        .entries
+        .iter()
+        .find_map(|entry| match &entry.kind {
+            nits_protocol::TreeEntryKind::File { oid, .. } if entry.path == p("round.txt") => {
+                Some(*oid)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let browse = w
+        .core
+        .add_comment(
+            &human(),
+            id,
+            cid(67),
+            CommentKind::Note,
+            lines_anchor(rid(1), p("round.txt"), Side::Head, original_blob, 1, 1).unwrap(),
+            "Retain the unfixed original".into(),
+            Some(nits_protocol::CommentContext::Browse {
+                reference: RefSpec::WorkingTree,
+            }),
+        )
+        .unwrap();
+    w.core
+        .defer_thread(
+            &human(),
+            id,
+            browse.thread_id,
+            "Agreed external follow-up".parse().unwrap(),
+            None,
+        )
+        .unwrap();
+    let link = nits_protocol::ReviewReference {
+        context: nits_protocol::ReferenceContext::named("review-box").unwrap(),
+        review_id: id,
+        target: nits_protocol::ReferenceTarget::Comment {
+            comment_id: browse.id,
+        },
+    };
     w.core
         .mark_viewed(&human(), id, rid(1), p("round.txt"))
         .unwrap();
@@ -1749,6 +1790,28 @@ fn requested_h1_checked_after_h2_is_changed_and_delta_survives_gc_restart_rebuil
     drop(store);
     let core = Core::open(&w.data).unwrap();
     assert_eq!(core.review_snapshot(id).unwrap(), after);
+    assert_eq!(link.resolve(&after).unwrap(), Some(browse.id));
+    assert_eq!(
+        after
+            .comments
+            .iter()
+            .find(|comment| comment.id == browse.id)
+            .unwrap(),
+        &browse
+    );
+    assert!(matches!(
+        after
+            .threads
+            .iter()
+            .find(|thread| thread.id == browse.thread_id)
+            .unwrap()
+            .resolution,
+        nits_protocol::ThreadResolution::Deferred { .. }
+    ));
+    let (_, original_rows) = core
+        .blob_render(rid(1), &p("round.txt"), original_blob)
+        .unwrap();
+    assert!(format!("{original_rows:?}").contains("H1"));
     assert_eq!(core.files_scoped(id, &scope).unwrap().0, files);
     // Restarted agent groups with its previous session; provenance is preserved.
     let mut restarted = agent();

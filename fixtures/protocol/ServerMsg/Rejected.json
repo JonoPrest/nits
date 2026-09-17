@@ -2,7 +2,7 @@
   "error": {
     "requested": "2.0.0",
     "supported": [
-      "0.10.0"
+      "0.11.0"
     ],
     "type": "UnsupportedProtocol"
   },

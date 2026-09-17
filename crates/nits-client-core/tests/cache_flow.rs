@@ -3986,6 +3986,7 @@ fn portable_reply_link_preserves_deferred_browse_source_and_inflight_review_requ
                 review_id: review_id(),
                 agent: "review-agent".into(),
                 note: "Check this retained source".into(),
+                targets: nits_protocol::RequestedTargets::Unknown,
             },
         )))
         .unwrap();
