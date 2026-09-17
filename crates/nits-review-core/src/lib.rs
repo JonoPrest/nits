@@ -8,6 +8,7 @@
 pub mod anchor;
 pub mod comments;
 pub mod core;
+mod directory;
 pub mod git;
 pub mod patch;
 pub mod render;

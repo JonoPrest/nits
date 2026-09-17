@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 struct Harness {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     socket: std::path::PathBuf,
     shutdown: CancellationToken,
     repo: TestRepo,
@@ -66,7 +66,7 @@ fn start() -> Harness {
     let shutdown = CancellationToken::new();
     tokio::spawn(server.run(Arc::clone(&daemon), shutdown.clone()));
     Harness {
-        _dir: dir,
+        dir,
         socket,
         shutdown,
         repo: small_repo(),
@@ -103,12 +103,19 @@ fn server_with_session(h: &Harness, session_id: &str) -> Server {
 }
 
 fn server_at(socket: &std::path::Path, session_id: &str) -> Server {
+    server_in_context(
+        nits_config::Context::Local {
+            data_dir: None,
+            socket: Some(socket.to_owned()),
+        },
+        session_id,
+    )
+}
+
+fn server_in_context(context: nits_config::Context, session_id: &str) -> Server {
     Server::new(
         Endpoint {
-            context: nits_config::Context::Local {
-                data_dir: None,
-                socket: Some(socket.to_owned()),
-            },
+            context,
             start: nitsd::contexts::StartPolicy::RequireRunning,
         },
         AgentIdentity {
@@ -307,6 +314,8 @@ async fn tools_list_is_json_rpc_conformant() {
             "list_workspaces",
             "list_reviews",
             "get_review",
+            "ensure_directory_review",
+            "update_review_target",
             "create_review",
             "update_review",
             "get_diff",
@@ -1141,4 +1150,259 @@ async fn subscribe_events_long_polls_and_resumes() {
     assert_eq!(replay["last_seq"], got["last_seq"]);
 
     let _ = Response::Unsubscribed;
+}
+
+#[tokio::test]
+async fn directory_bootstrap_is_mcp_only_idempotent_and_honors_explicit_refs() {
+    let h = start();
+    let mut s = server(&h);
+    init(&mut s).await;
+    let empty = call(&mut s, "list_workspaces", json!({})).await;
+    assert_eq!(empty["workspaces"], json!([]));
+    let args = json!({"path": h.repo.path(), "base": {"type": "Head"}});
+    let first = call(&mut s, "ensure_directory_review", args.clone()).await;
+    assert_eq!(first["outcome"], "Created");
+    assert_eq!(first["base"], args["base"]);
+    assert_eq!(first["head"], json!({"type": "WorkingTree"}));
+    let seq = h.daemon.core().last_seq().unwrap();
+    std::fs::create_dir(h.repo.path().join("nested")).unwrap();
+    let again = call(
+        &mut s,
+        "ensure_directory_review",
+        json!({
+            "path": h.repo.path().join("nested/.."), "base": args["base"]
+        }),
+    )
+    .await;
+    for key in ["workspace_id", "repo_id", "review_id", "base", "head"] {
+        assert_eq!(first[key], again[key], "{key}");
+    }
+    assert_eq!(again["outcome"], "Reused");
+    assert_eq!(h.daemon.core().last_seq().unwrap(), seq);
+    let different = call(
+        &mut s,
+        "ensure_directory_review",
+        json!({
+            "path": h.repo.path(), "base": {"type": "Branch", "name": "main"}
+        }),
+    )
+    .await;
+    assert_ne!(different["review_id"], first["review_id"]);
+    assert_eq!(different["workspace_id"], first["workspace_id"]);
+    assert_eq!(different["base"], json!({"type": "Branch", "name": "main"}));
+    let pinned_args = json!({"path": h.repo.path(), "base": {"type": "Head"},
+        "head": {"type": "Commit", "oid": h.repo.rev_parse("HEAD").unwrap()}});
+    let pinned = call(&mut s, "ensure_directory_review", pinned_args.clone()).await;
+    let repeated = call(&mut s, "ensure_directory_review", pinned_args).await;
+    assert_eq!(pinned["review_id"], repeated["review_id"]);
+    assert_eq!(pinned["head"], repeated["head"]);
+    let events = h.daemon.core().events_after(None).unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|event| matches!(event.author, Author::Agent { .. }))
+    );
+}
+
+#[tokio::test]
+async fn failed_bootstrap_paths_and_refs_leave_no_partial_state() {
+    let h = start();
+    let mut s = server(&h);
+    init(&mut s).await;
+    for args in [
+        json!({"path": h.repo.path(), "base": {"type": "WorkingTree"}}),
+        json!({"path": h.repo.path(), "base": {"type": "Branch", "name": "missing"}}),
+        json!({"path": h.repo.path(), "head": {"type": "Branch", "name": "missing"}}),
+        json!({"path": h.dir.path()}),
+    ] {
+        assert!(
+            !call_err(&mut s, "ensure_directory_review", args)
+                .await
+                .is_empty()
+        );
+        assert!(h.daemon.core().workspaces().unwrap().is_empty());
+        assert_eq!(h.daemon.core().last_seq().unwrap(), None);
+    }
+}
+
+#[tokio::test]
+async fn concurrent_directory_bootstrap_allocates_only_one_review() {
+    let h = start();
+    let mut one = server(&h);
+    let mut two = server(&h);
+    init(&mut one).await;
+    init(&mut two).await;
+    let args = json!({"path": h.repo.path()});
+    let (first, second) = tokio::join!(
+        call(&mut one, "ensure_directory_review", args.clone()),
+        call(&mut two, "ensure_directory_review", args),
+    );
+    for key in ["workspace_id", "repo_id", "review_id"] {
+        assert_eq!(first[key], second[key]);
+    }
+    let workspaces = h.daemon.core().workspaces().unwrap();
+    assert_eq!(workspaces.len(), 1);
+    assert_eq!(workspaces[0].repos.len(), 1);
+    assert_eq!(h.daemon.core().reviews(workspaces[0].id).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn target_updates_pin_working_tree_and_keep_threads_history_and_anchors() {
+    let h = start();
+    let mut s = server(&h);
+    init(&mut s).await;
+    let boot = call(
+        &mut s,
+        "ensure_directory_review",
+        json!({"path": h.repo.path()}),
+    )
+    .await;
+    let review = &boot["review_id"];
+    let repo = &boot["repo_id"];
+    let note = call(
+        &mut s,
+        "add_comment",
+        json!({
+            "review_id": review, "repo_id": repo, "path": "a.rs", "body": "Keep this file"
+        }),
+    )
+    .await;
+    call(
+        &mut s,
+        "reply",
+        json!({"review_id": review, "thread_id": note["thread_id"], "body": "Agreed"}),
+    )
+    .await;
+    let history = h.daemon.core().events_after(None).unwrap();
+    h.repo
+        .write_file("a.rs", b"// prefix\nfn a() { 1; }\nfn z() {}\n")
+        .unwrap();
+    h.repo.git(&["add", "a.rs"]).unwrap();
+    h.repo.git(&["commit", "-q", "-m", "prefix"]).unwrap();
+    let pinned = json!({"type": "Commit", "oid": h.repo.rev_parse("HEAD").unwrap()});
+    let receipt = call(
+        &mut s,
+        "update_review_target",
+        json!({
+            "review_id": review, "repo_id": repo, "revision": {"type": "Head", "ref_spec": pinned}
+        }),
+    )
+    .await;
+    assert_eq!(
+        committed(&h, &receipt)["body"]["type"],
+        "ReviewTargetUpdated"
+    );
+    let detail = call(&mut s, "get_review", json!({"review_id": review})).await;
+    assert_eq!(detail["review"]["id"], *review);
+    assert_eq!(detail["review"]["targets"][0]["head"], pinned);
+    assert_eq!(detail["threads"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["comments"].as_array().unwrap().len(), 2);
+    let root = detail["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == note["comment_id"])
+        .unwrap();
+    assert_eq!(
+        root["anchor"]["blob_oid"],
+        h.repo.git(&["rev-parse", "HEAD:a.rs"]).unwrap()
+    );
+    assert_eq!(root["state"]["type"], "Live");
+    let events = h.daemon.core().events_after(None).unwrap();
+    assert_eq!(&events[..history.len()], history.as_slice());
+    assert!(events[history.len()..].iter().any(|event| matches!(
+        event.body,
+        nits_protocol::EventBody::CommentReanchored { .. }
+    )));
+    h.repo
+        .write_file("a.rs", b"uncommitted movement\n")
+        .unwrap();
+    let pinned_again = call(
+        &mut s,
+        "ensure_directory_review",
+        json!({"path": h.repo.path(), "head": pinned}),
+    )
+    .await;
+    assert_eq!(pinned_again["review_id"], *review);
+}
+
+#[tokio::test]
+async fn target_updates_reject_missing_refs_and_can_change_base() {
+    let h = start();
+    let mut s = server(&h);
+    init(&mut s).await;
+    let boot = call(
+        &mut s,
+        "ensure_directory_review",
+        json!({"path": h.repo.path()}),
+    )
+    .await;
+    let review = &boot["review_id"];
+    let repo = &boot["repo_id"];
+    let before = call(&mut s, "get_review", json!({"review_id": review})).await;
+    for revision in [
+        json!({"type": "Base", "ref_spec": {"type": "Branch", "name": "missing"}}),
+        json!({"type": "Head", "ref_spec": {"type": "Branch", "name": "missing"}}),
+    ] {
+        assert!(
+            !call_err(
+                &mut s,
+                "update_review_target",
+                json!({"review_id": review, "repo_id": repo, "revision": revision})
+            )
+            .await
+            .is_empty()
+        );
+        assert_eq!(
+            call(&mut s, "get_review", json!({"review_id": review})).await,
+            before
+        );
+    }
+    call(
+        &mut s,
+        "update_review_target",
+        json!({"review_id": review, "repo_id": repo,
+        "revision": {"type": "Base", "ref_spec": {"type": "Head"}}}),
+    )
+    .await;
+    let changed = call(&mut s, "get_review", json!({"review_id": review})).await;
+    assert_eq!(
+        changed["review"]["targets"][0]["base"],
+        json!({"type": "Head"})
+    );
+    assert_eq!(changed["threads"], before["threads"]);
+}
+
+#[tokio::test]
+async fn remote_context_bootstrap_discovers_and_canonicalizes_paths_at_daemon() {
+    let h = start();
+    let ws = nitsd::server::WsServer::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let url = format!("ws://{}", ws.addr());
+    tokio::spawn(ws.run(Arc::clone(&h.daemon), h.shutdown.clone()));
+    let mut s = server_in_context(nits_config::Context::Ws { url }, "sess-1");
+    init(&mut s).await;
+    std::fs::create_dir(h.repo.path().join("nested")).unwrap();
+    let alias = h.dir.path().join("checkout");
+    std::os::unix::fs::symlink(h.repo.path(), &alias).unwrap();
+    let first = call(
+        &mut s,
+        "ensure_directory_review",
+        json!({"path": alias.join("nested")}),
+    )
+    .await;
+    let again = call(
+        &mut s,
+        "ensure_directory_review",
+        json!({"path": h.repo.path()}),
+    )
+    .await;
+    assert_eq!(first["review_id"], again["review_id"]);
+    let workspaces = call(&mut s, "list_workspaces", json!({})).await;
+    assert_eq!(workspaces["workspaces"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        workspaces["workspaces"][0]["repos"][0]["path"],
+        json!(h.repo.path())
+    );
 }

@@ -25,6 +25,16 @@ pub async fn single(
     request: Request,
 ) -> Result<Response, DaemonError> {
     match request {
+        Request::EnsureDirectoryReview {
+            client_seq,
+            options,
+        } => {
+            let ctx = Daemon::ctx(who.author.clone(), who.client_id, client_seq);
+            let (review, _) = daemon
+                .write(move |core| core.ensure_directory_review(&ctx, options))
+                .await?;
+            Ok(Response::DirectoryReview { review })
+        }
         Request::ListWorkspaces => {
             let workspaces = daemon.read(Core::workspaces).await?;
             Ok(Response::Workspaces { workspaces })

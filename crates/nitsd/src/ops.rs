@@ -7,11 +7,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use nits_protocol::{
-    Anchor, BlobOid, ChunkIndex, CommentId, CommentKind, ContextHash, DiffScope, Event, FileChange,
-    FileRenderHeader, LineNo, LineRange, Mutation, NonEmpty, RefSpec, RenderChunk, RenderOpts,
-    Repo, RepoId, RepoPath, Request, ResolvedSource, Response, Review, ReviewId, ReviewSnapshot,
-    ReviewTarget, RpcError, Seq, Side, Since, StreamItem, SubscribeScope, ThreadId, TreeEntryKind,
-    Workspace, WorkspaceId,
+    Anchor, BaseRefSpec, BlobOid, ChunkIndex, CommentId, CommentKind, ContextHash, DiffScope,
+    Event, FileChange, FileRenderHeader, LineNo, LineRange, Mutation, NonEmpty, RefSpec,
+    RenderChunk, RenderOpts, Repo, RepoId, RepoPath, Request, ResolvedSource, Response, Review,
+    ReviewId, ReviewSnapshot, ReviewTarget, RpcError, Seq, Side, Since, StreamItem, SubscribeScope,
+    ThreadId, TreeEntryKind, Workspace, WorkspaceId,
 };
 
 use crate::client::{Client, ClientError, Unsolicited};
@@ -80,6 +80,35 @@ impl Ops {
     #[must_use]
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    /// Bootstrap on the daemon's filesystem, including nested directories.
+    pub async fn ensure_directory_review(
+        &mut self,
+        path: String,
+        base: Option<BaseRefSpec>,
+        head: Option<RefSpec>,
+    ) -> Result<nits_protocol::DirectoryReview, OpsError> {
+        let (ts, random) = crate::ids::fresh_parts();
+        self.seq += 1;
+        match self
+            .client
+            .request(Request::EnsureDirectoryReview {
+                client_seq: nits_protocol::ClientSeq::new(self.seq),
+                options: nits_protocol::EnsureDirectoryReview {
+                    workspace_id: WorkspaceId::from_parts(ts, random),
+                    repo_id: RepoId::from_parts(ts, random),
+                    review_id: ReviewId::from_parts(ts, random),
+                    path,
+                    base,
+                    head,
+                },
+            })
+            .await?
+        {
+            Response::DirectoryReview { review } => Ok(review),
+            _ => Err(OpsError::Shape),
+        }
     }
 
     pub async fn workspaces(&self) -> Result<Vec<Workspace>, OpsError> {

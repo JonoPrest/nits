@@ -187,10 +187,45 @@ module Mutation = {
       })
 }
 
+module EnsureDirectoryReview = {
+  @schema
+  type t = {
+    @as("workspace_id") workspaceId: workspaceId,
+    @as("repo_id") repoId: repoId,
+    @as("review_id") reviewId: reviewId,
+    path: string,
+    base: @s.null option<BaseRefSpec.t>,
+    head: @s.null option<RefSpec.t>,
+  }
+}
+
+module DirectoryReviewOutcome = {
+  @schema
+  type t = Created | Reused
+}
+
+module DirectoryReview = {
+  @schema
+  type t = {
+    @as("workspace_id") workspaceId: workspaceId,
+    @as("repo_id") repoId: repoId,
+    @as("review_id") reviewId: reviewId,
+    base: RefSpec.t,
+    head: RefSpec.t,
+    outcome: DirectoryReviewOutcome.t,
+    seq: seq,
+  }
+}
+
 module Request = {
   @@warning("-27")
   @schema @tag("type")
   type t =
+    | @as("EnsureDirectoryReview")
+    EnsureDirectoryReview({
+        @as("client_seq") clientSeq: clientSeq,
+        options: EnsureDirectoryReview.t,
+      })
     | @as("ListWorkspaces") ListWorkspaces({})
     | @as("ListReviews") ListReviews({@as("workspace_id") workspaceId: workspaceId})
     | @as("ListRefs") ListRefs({@as("repo_id") repoId: repoId})
@@ -256,6 +291,7 @@ module Response = {
   @@warning("-27")
   @schema @tag("type")
   type t =
+    | @as("DirectoryReview") DirectoryReview({review: DirectoryReview.t})
     | @as("Workspaces") Workspaces({workspaces: array<Workspace.t>})
     | @as("Reviews") Reviews({reviews: array<Review.t>})
     | @as("DefaultBase") DefaultBase({base: RefSpec.t})

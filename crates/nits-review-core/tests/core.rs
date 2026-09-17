@@ -1244,3 +1244,43 @@ fn content_search_scans_changed_files_or_the_whole_head_tree() {
         .unwrap();
     assert!(hits.is_empty());
 }
+
+#[test]
+fn directory_bootstrap_discovers_nested_paths_without_partial_invalid_refs() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(&DataDir::new(dir.path())).unwrap();
+    let repo = RepoBuilder::new()
+        .commit("initial", files!["nested/file.txt" => "hello\n"])
+        .build()
+        .unwrap();
+    let mut options = nits_protocol::EnsureDirectoryReview {
+        workspace_id: ws(),
+        repo_id: rid(1),
+        review_id: review_id(1),
+        path: repo.path().join("nested").to_string_lossy().into_owned(),
+        base: Some(BaseRefSpec::Branch {
+            name: "missing".into(),
+        }),
+        head: None,
+    };
+    assert!(
+        core.ensure_directory_review(&human(), options.clone())
+            .is_err()
+    );
+    assert!(core.workspaces().unwrap().is_empty());
+    assert_eq!(core.last_seq().unwrap(), None);
+    options.base = Some(BaseRefSpec::Head);
+    let first = core
+        .ensure_directory_review(&human(), options.clone())
+        .unwrap();
+    assert_eq!(
+        first.outcome,
+        nits_protocol::DirectoryReviewOutcome::Created
+    );
+    options.path = repo.path().to_string_lossy().into_owned();
+    let before = core.last_seq().unwrap();
+    let again = core.ensure_directory_review(&human(), options).unwrap();
+    assert_eq!(again.review_id, first.review_id);
+    assert_eq!(again.outcome, nits_protocol::DirectoryReviewOutcome::Reused);
+    assert_eq!(before, core.last_seq().unwrap());
+}

@@ -1,0 +1,14 @@
+{
+  "client_seq": 7,
+  "options": {
+    "base": {
+      "type": "Head"
+    },
+    "head": null,
+    "path": "/repos/example",
+    "repo_id": "01HF7YAT000000000000000002",
+    "review_id": "01HF7YATZ80000000000000004",
+    "workspace_id": "01HF7YAT000000000000000001"
+  },
+  "type": "EnsureDirectoryReview"
+}

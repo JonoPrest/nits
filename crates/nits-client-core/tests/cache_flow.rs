@@ -488,6 +488,7 @@ fn daemon_answers(core: &mut ClientCore, effects: &[Effect]) -> Vec<Effect> {
             | Request::ListReviews { .. }
             | Request::ListRefs { .. }
             | Request::DefaultBase { .. }
+            | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
             | Request::ReviewSnapshot { .. }
             | Request::ListFiles { .. }
@@ -658,6 +659,7 @@ fn viewport_requests_only_the_window_and_bounds_in_flight() {
             | Request::ListReviews { .. }
             | Request::ListRefs { .. }
             | Request::DefaultBase { .. }
+            | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
             | Request::ReviewSnapshot { .. }
             | Request::ListFiles { .. }
@@ -1150,6 +1152,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
                 | Request::ListReviews { .. }
                 | Request::ListRefs { .. }
                 | Request::DefaultBase { .. }
+                | Request::EnsureDirectoryReview { .. }
                 | Request::GetReview { .. }
                 | Request::ReviewSnapshot { .. }
                 | Request::OpenReview { .. }
@@ -1268,6 +1271,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
             | Request::ListReviews { .. }
             | Request::ListRefs { .. }
             | Request::DefaultBase { .. }
+            | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
             | Request::ReviewSnapshot { .. }
             | Request::ListFiles { .. }
@@ -1813,6 +1817,7 @@ fn comments_are_placed_on_rows_by_anchor_and_listed_as_threads() {
             | Request::ListReviews { .. }
             | Request::ListRefs { .. }
             | Request::DefaultBase { .. }
+            | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
             | Request::ReviewSnapshot { .. }
             | Request::ListFiles { .. }

@@ -63,3 +63,15 @@ for (const [set, registry] of suites) {
     }
   });
 }
+
+it("directory bootstrap permits WorkingTree only on the head side", () => {
+  const options = JSON.parse(
+    readFileSync(join(fixturesRoot, "protocol", "EnsureDirectoryReview", "default.json"), "utf8"),
+  );
+  options.head = { type: "WorkingTree" };
+  expect(Registry.roundtrip("EnsureDirectoryReview", options).TAG).toBe("Ok");
+  options.base = { type: "WorkingTree" };
+  expect(Registry.roundtrip("EnsureDirectoryReview", options).TAG).toBe("Error");
+  const request = { type: "EnsureDirectoryReview", client_seq: 1, options };
+  expect(Registry.roundtrip("Request", request).TAG).toBe("Error");
+});

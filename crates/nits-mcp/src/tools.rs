@@ -5,9 +5,9 @@
 //! comment.
 
 use nits_protocol::{
-    Author, BlobOid, ChangeKind, Comment, CommentId, Event, FileChange, NonEmpty, RefSpec,
-    RenderContent, RepoId, RepoPath, ResolvedTarget, Review, ReviewId, ReviewStatus, Seq, Side,
-    SubscribeScope, Thread, ThreadId, Workspace, WorkspaceId,
+    Author, BaseRefSpec, BlobOid, ChangeKind, Comment, CommentId, Event, FileChange, NonEmpty,
+    RefSpec, RenderContent, RepoId, RepoPath, ResolvedTarget, Review, ReviewId, ReviewStatus, Seq,
+    Side, SubscribeScope, Thread, ThreadId, Workspace, WorkspaceId,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,8 @@ pub enum ToolCall {
     ListWorkspaces(NoArgs),
     ListReviews(ListReviews),
     GetReview(ByReview),
+    EnsureDirectoryReview(EnsureDirectoryReview),
+    UpdateReviewTarget(UpdateReviewTarget),
     CreateReview(CreateReview),
     UpdateReview(UpdateReview),
     GetDiff(GetDiff),
@@ -60,6 +62,8 @@ pub enum QueryCall {
 /// A call that appends to the log.
 #[derive(Debug)]
 pub enum MutatingCall {
+    EnsureDirectoryReview(EnsureDirectoryReview),
+    UpdateReviewTarget(UpdateReviewTarget),
     CreateReview(CreateReview),
     UpdateReview(UpdateReview),
     AddComment(AddComment),
@@ -110,6 +114,10 @@ impl ToolCall {
             ToolCall::GetFile(p) => Call::Query(QueryCall::GetFile(p)),
             ToolCall::ListComments(p) => Call::Query(QueryCall::ListComments(p)),
             ToolCall::SubscribeEvents(p) => Call::Query(QueryCall::SubscribeEvents(p)),
+            ToolCall::EnsureDirectoryReview(p) => {
+                Call::Mutating(MutatingCall::EnsureDirectoryReview(p))
+            }
+            ToolCall::UpdateReviewTarget(p) => Call::Mutating(MutatingCall::UpdateReviewTarget(p)),
             ToolCall::CreateReview(p) => Call::Mutating(MutatingCall::CreateReview(p)),
             ToolCall::UpdateReview(p) => Call::Mutating(MutatingCall::UpdateReview(p)),
             ToolCall::AddComment(p) => Call::Mutating(MutatingCall::AddComment(p)),
@@ -149,6 +157,13 @@ impl ToolName {
             ToolName::ListWorkspaces => (schema_for!(NoArgs), schema_for!(Workspaces)),
             ToolName::ListReviews => (schema_for!(ListReviews), schema_for!(Reviews)),
             ToolName::GetReview => (schema_for!(ByReview), schema_for!(ReviewDetail)),
+            ToolName::EnsureDirectoryReview => (
+                schema_for!(EnsureDirectoryReview),
+                schema_for!(nits_protocol::DirectoryReview),
+            ),
+            ToolName::UpdateReviewTarget => {
+                (schema_for!(UpdateReviewTarget), schema_for!(TargetUpdated))
+            }
             ToolName::CreateReview => (schema_for!(CreateReview), schema_for!(Created)),
             ToolName::UpdateReview => (schema_for!(UpdateReview), schema_for!(Updated)),
             ToolName::GetDiff => (schema_for!(GetDiff), schema_for!(DiffText)),
@@ -192,6 +207,37 @@ impl ToolName {
 #[must_use]
 pub fn all() -> Vec<Tool> {
     ToolName::iter().map(ToolName::tool).collect()
+}
+
+/// Ensure an open review for a checkout, attaching it on first use. Path is
+/// interpreted on the daemon's machine (absolute paths are recommended).
+/// Default head is `WorkingTree`; omitted base preserves a matching open review
+/// or uses the detected base. Explicit refs must match to reuse a review;
+/// use `update_review_target` to change an existing review while keeping threads.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EnsureDirectoryReview {
+    pub path: String,
+    pub base: Option<BaseRefSpec>,
+    pub head: Option<RefSpec>,
+}
+
+/// Change one existing repository target's base or head, preserving the review,
+/// threads and history. The daemon validates refs and reanchors comments.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateReviewTarget {
+    pub review_id: ReviewId,
+    pub repo_id: RepoId,
+    pub revision: nits_protocol::TargetRevision,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TargetUpdated {
+    pub review_id: ReviewId,
+    pub repo_id: RepoId,
+    /// Committed mutation sequence; subscribe after it for reanchoring events.
+    pub seq: Seq,
 }
 
 // ---- arguments -------------------------------------------------------------
@@ -650,9 +696,38 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_advertises_working_tree_only_for_head() {
+        let (input, _) = ToolName::EnsureDirectoryReview.schemas();
+        let properties = input.get("properties").unwrap();
+        assert!(
+            properties["base"]
+                .to_string()
+                .contains("#/$defs/BaseRefSpec")
+        );
+        assert!(properties["head"].to_string().contains("#/$defs/RefSpec"));
+        let definitions = input.get("$defs").unwrap();
+        assert!(
+            !definitions["BaseRefSpec"]
+                .to_string()
+                .contains("WorkingTree")
+        );
+        assert!(definitions["RefSpec"].to_string().contains("WorkingTree"));
+    }
+
+    #[test]
     fn mutation_schemas_are_focused_and_only_subscriptions_advertise_events() {
         for tool in all() {
             let expected_fields: Option<&[&str]> = match tool.name {
+                ToolName::EnsureDirectoryReview => Some(&[
+                    "workspace_id",
+                    "repo_id",
+                    "review_id",
+                    "base",
+                    "head",
+                    "outcome",
+                    "seq",
+                ]),
+                ToolName::UpdateReviewTarget => Some(&["review_id", "repo_id", "seq"]),
                 ToolName::CreateReview => Some(&["review_id", "seq"]),
                 ToolName::UpdateReview => Some(&["review_id", "status", "seq"]),
                 ToolName::AddComment | ToolName::Suggest | ToolName::Reply => {
@@ -697,8 +772,13 @@ mod tests {
                     .map(|field| field.as_str().unwrap())
                     .collect();
                 assert_eq!(expected, required, "{}", tool.name);
+                let size_limit = if tool.name == ToolName::EnsureDirectoryReview {
+                    5000
+                } else {
+                    2500
+                };
                 assert!(
-                    schema.len() < 2500,
+                    schema.len() < size_limit,
                     "{} output schema grew to {} bytes",
                     tool.name,
                     schema.len()

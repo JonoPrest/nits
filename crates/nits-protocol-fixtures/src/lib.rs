@@ -210,6 +210,9 @@ registry!(
     SubscribeScope,
     Mutation,
     Request,
+    EnsureDirectoryReview,
+    DirectoryReview,
+    DirectoryReviewOutcome,
     ReviewSnapshot,
     Response,
     StreamItem,
@@ -1383,6 +1386,10 @@ enum_fixture!(
     RequestKind,
     "Request",
     [
+        Request::EnsureDirectoryReview {
+            client_seq: ClientSeq::new(7),
+            options: directory_options()
+        },
         Request::ListWorkspaces,
         Request::ListReviews {
             workspace_id: workspace_id()
@@ -1477,6 +1484,9 @@ enum_fixture!(
     ResponseKind,
     "Response",
     [
+        Response::DirectoryReview {
+            review: directory_review()
+        },
         Response::Workspaces {
             workspaces: vec![workspace()]
         },
@@ -1638,3 +1648,32 @@ struct_fixture!(
         upgrade: None
     })
 );
+
+fn directory_options() -> EnsureDirectoryReview {
+    EnsureDirectoryReview {
+        workspace_id: workspace_id(),
+        repo_id: repo_id(),
+        review_id: review_id(),
+        path: "/repos/example".into(),
+        base: Some(BaseRefSpec::Head),
+        head: None,
+    }
+}
+fn directory_review() -> DirectoryReview {
+    DirectoryReview {
+        workspace_id: workspace_id(),
+        repo_id: repo_id(),
+        review_id: review_id(),
+        base: RefSpec::Head,
+        head: RefSpec::WorkingTree,
+        outcome: DirectoryReviewOutcome::Created,
+        seq: Seq::new(42),
+    }
+}
+struct_fixture!(
+    EnsureDirectoryReview,
+    "EnsureDirectoryReview",
+    directory_options()
+);
+struct_fixture!(DirectoryReview, "DirectoryReview", directory_review());
+unit_enum_fixture!(DirectoryReviewOutcome, "DirectoryReviewOutcome");
