@@ -7,12 +7,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, FromArgMatches, Parser, Subcommand, ValueEnum};
 use nits_config::Context;
 use nits_protocol::{
     AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, DirectoryReviewOutcome, Event,
-    EventBody, Mutation, NonEmpty, RefSpec, RenderOpts, RepoId, RepoPath, ReviewId, ReviewTarget,
-    Seq, Side, Since, SubscribeScope, ThreadId, WorkspaceId,
+    EventBody, LineNo, LineRange, Mutation, NonEmpty, RefSpec, RenderOpts, RepoId, RepoPath,
+    Review, ReviewId, ReviewTarget, Seq, Side, Since, SubscribeScope, ThreadId, Workspace,
+    WorkspaceId,
 };
 use nitsd::client::Identity;
 use nitsd::contexts::{self, Status};
@@ -36,8 +37,13 @@ struct Cli {
     #[arg(long, env = "NITS_SOCKET", global = true)]
     socket: Option<PathBuf>,
     /// Ad-hoc context: a daemon WebSocket URL (`ws://host:port`).
-    #[arg(long, env = "NITS_WS_URL", global = true)]
-    ws: Option<String>,
+    /// `--ws` remains accepted as a deprecated alias.
+    #[arg(long, alias = "ws", env = "NITS_WS_URL", global = true, value_parser = parse_daemon_url)]
+    daemon_url: Option<String>,
+    /// Workspace for review create/list and events. Default for reviews:
+    /// the workspace whose attached repo contains the current directory.
+    #[arg(long, global = true, value_name = "ID")]
+    workspace: Option<WorkspaceId>,
     /// Ad-hoc local context: data dir (socket at `<data-dir>/nitsd.sock`).
     #[arg(long, env = "NITS_DATA_DIR", global = true)]
     data_dir: Option<PathBuf>,
@@ -125,7 +131,10 @@ enum Cmd {
     #[command(subcommand)]
     Review(ReviewCmd),
     /// Changed files in a review.
-    Files { review: ReviewId },
+    Files {
+        #[command(flatten)]
+        review: ReviewArg,
+    },
     /// Diff of one changed file.
     Diff {
         review: ReviewId,
@@ -160,8 +169,6 @@ enum Cmd {
         follow: bool,
         #[arg(long)]
         review: Option<ReviewId>,
-        #[arg(long)]
-        workspace: Option<WorkspaceId>,
         /// Only `ReviewRequested` events addressed to this agent name.
         #[arg(long)]
         awaiting: Option<String>,
@@ -245,10 +252,8 @@ struct ServeArgs {
     /// Also listen for WebSocket clients on this address, e.g.
     /// `127.0.0.1:7677`. Off unless given.
     ///
-    /// `--ws-listen`, not `--ws`: the global `--ws` is the *client* side, a
-    /// URL to connect to. The field name has to differ too — clap keys
-    /// arguments by field name, and a global `--ws` reaching a subcommand
-    /// with its own `ws` field panics at parse time.
+    /// `--ws-listen` binds the server; global `--daemon-url` selects a client
+    /// endpoint. Their field names must differ too: clap keys arguments by ID.
     /// `nitsd::launch::WS_LISTEN_FLAG` is the same flag, for spawning.
     #[arg(long, env = "NITS_WS")]
     ws_listen: Option<std::net::SocketAddr>,
@@ -263,7 +268,8 @@ enum WorkspaceCmd {
     List,
     /// Attach a git repository to a workspace; prints the repo id.
     Attach {
-        workspace: WorkspaceId,
+        #[arg(value_name = "WORKSPACE")]
+        workspace_id: WorkspaceId,
         /// Default: the current directory.
         path: Option<PathBuf>,
         /// Display name. Default: the directory name.
@@ -276,10 +282,6 @@ enum WorkspaceCmd {
 enum ReviewCmd {
     /// Create a review; prints its id.
     Create {
-        /// Default: the workspace whose attached repo contains the current
-        /// directory.
-        #[arg(long)]
-        workspace: Option<WorkspaceId>,
         /// Base ref: branch name, tag:NAME, full commit oid, `HEAD`,
         /// `upstream`, or `worktree`.
         #[arg(long)]
@@ -294,14 +296,12 @@ enum ReviewCmd {
         #[arg(long)]
         title: Option<String>,
     },
-    List {
-        /// Default: the workspace whose attached repo contains the current
-        /// directory.
-        #[arg(long)]
-        workspace: Option<WorkspaceId>,
-    },
+    List,
     /// Review, targets, files and thread counts.
-    Show { review: ReviewId },
+    Show {
+        #[command(flatten)]
+        review: ReviewArg,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -319,13 +319,15 @@ enum CommentCmd {
         thread: ThreadId,
     },
     List {
-        review: ReviewId,
+        #[command(flatten)]
+        review: ReviewArg,
     },
 }
 
 #[derive(Debug, Args)]
 struct AddComment {
-    review: ReviewId,
+    #[command(flatten)]
+    review: ReviewArg,
     #[arg(long)]
     body: String,
     /// Anchor to this file (whole file unless `--line`/`--lines`).
@@ -336,11 +338,11 @@ struct AddComment {
     #[arg(long, value_enum, default_value_t = SideArg::Head)]
     side: SideArg,
     /// One line.
-    #[arg(long, conflicts_with = "lines")]
-    line: Option<u32>,
-    /// A range, `START:END`.
+    #[arg(long, conflicts_with = "lines", value_parser = parse_line)]
+    line: Option<LineNo>,
+    /// Inclusive range, `START-END` or `START:END` (line numbers start at 1).
     #[arg(long, value_parser = parse_lines)]
-    lines: Option<(u32, u32)>,
+    lines: Option<LineRange>,
     /// Attach a unified-diff suggestion the reviewer can apply.
     #[arg(long)]
     patch: Option<String>,
@@ -361,13 +363,83 @@ impl From<SideArg> for Side {
     }
 }
 
-fn parse_lines(s: &str) -> Result<(u32, u32), String> {
+/// clap accepts two spellings at the boundary, but commands receive exactly
+/// one validated review ID. The required, exclusive group rejects ambiguity.
+/// Use this only when review is the sole positional: making it optional before
+/// another positional would change how interspersed flags bind paths/threads.
+#[derive(Debug)]
+struct ReviewArg(ReviewId);
+
+impl Args for ReviewArg {
+    fn augment_args(cmd: clap::Command) -> clap::Command {
+        cmd.arg(
+            clap::Arg::new("review_positional")
+                .value_name("REVIEW")
+                .help("Review ID (or pass --review <REVIEW>)")
+                .value_parser(clap::value_parser!(ReviewId)),
+        )
+        .arg(
+            clap::Arg::new("review_option")
+                .long("review")
+                .value_name("REVIEW")
+                .help("Review ID (alternative to the positional argument)")
+                .value_parser(clap::value_parser!(ReviewId)),
+        )
+        .group(
+            clap::ArgGroup::new("review_selection")
+                .args(["review_positional", "review_option"])
+                .required(true),
+        )
+    }
+
+    fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
+        Self::augment_args(cmd)
+    }
+}
+
+impl FromArgMatches for ReviewArg {
+    fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        matches
+            .get_one::<ReviewId>("review_positional")
+            .or_else(|| matches.get_one::<ReviewId>("review_option"))
+            .copied()
+            .map(Self)
+            .ok_or_else(|| {
+                clap::Error::raw(
+                    clap::error::ErrorKind::MissingRequiredArgument,
+                    "pass the review ID positionally or with --review <REVIEW>",
+                )
+            })
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+        *self = Self::from_arg_matches(matches)?;
+        Ok(())
+    }
+}
+
+fn parse_line(s: &str) -> Result<LineNo, String> {
+    let value = s.parse().map_err(|e| format!("line number: {e}"))?;
+    LineNo::new(value).ok_or_else(|| "lines start at 1".into())
+}
+
+fn parse_lines(s: &str) -> Result<LineRange, String> {
     let (a, b) = s
-        .split_once(':')
-        .ok_or_else(|| "expected START:END".to_string())?;
-    let a = a.parse().map_err(|e| format!("start: {e}"))?;
-    let b = b.parse().map_err(|e| format!("end: {e}"))?;
-    Ok((a, b))
+        .split_once([':', '-'])
+        .ok_or_else(|| "expected START-END or START:END (inclusive)".to_string())?;
+    LineRange::new(parse_line(a)?, parse_line(b)?).map_err(|e| e.to_string())
+}
+
+fn parse_daemon_url(s: &str) -> Result<String, String> {
+    if s.parse::<WorkspaceId>().is_ok() {
+        return Err(format!(
+            "this looks like a workspace ID; use --workspace {s} (for example: nits --workspace {s} review list); --daemon-url expects ws://host:port or wss://host:port"
+        ));
+    }
+    if !s.starts_with("ws://") && !s.starts_with("wss://") {
+        return Err("expected a daemon WebSocket URL: ws://host:port or wss://host:port".into());
+    }
+    Ok(s.into())
 }
 
 /// `worktree` / `upstream` / `HEAD` / `tag:NAME` / 40-hex commit / branch.
@@ -401,8 +473,8 @@ fn ref_label(reference: &RefSpec) -> String {
 
 /// The context to use: ad-hoc flags beat `--context` beats the config.
 fn resolve_context(cli: &Cli, cfg: &nits_config::Config) -> anyhow::Result<(String, Context)> {
-    if let Some(url) = &cli.ws {
-        return Ok(("--ws".into(), Context::Ws { url: url.clone() }));
+    if let Some(url) = &cli.daemon_url {
+        return Ok(("--daemon-url".into(), Context::Ws { url: url.clone() }));
     }
     if cli.socket.is_some() || cli.data_dir.is_some() {
         return Ok((
@@ -427,7 +499,7 @@ fn config_path(cli: &Cli) -> anyhow::Result<PathBuf> {
 /// The desktop parses them into its own endpoint-source enum before use.
 fn desktop_args(cli: &Cli) -> Vec<std::ffi::OsString> {
     let mut args = vec!["--start-policy".into(), cli.start_policy.as_arg().into()];
-    if let Some(url) = &cli.ws {
+    if let Some(url) = &cli.daemon_url {
         args.extend(["--ws".into(), url.into()]);
     } else if cli.socket.is_some() || cli.data_dir.is_some() {
         if let Some(socket) = &cli.socket {
@@ -728,6 +800,14 @@ fn keys_cmd(cmd: &KeysCmd) -> anyhow::Result<()> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if cli.cmd.is_none()
+        && cli.path.is_some()
+        && let Some(workspace) = cli.workspace
+    {
+        bail!(
+            "--workspace cannot select a workspace when opening a directory path; directory opening selects the repository's existing attachment.\nUse `nits --workspace {workspace} review create --repo <REPO_ID> --base <REF> --head worktree`; find repository IDs with `nits workspace list`."
+        );
+    }
     let json = cli.json;
     let cfg_path = config_path(&cli)?;
     let mut cfg = nits_config::Config::load(&cfg_path)?;
@@ -755,16 +835,15 @@ async fn main() -> anyhow::Result<()> {
             unreachable!("handled above")
         }
         Cmd::Workspace(c) => workspace(&mut ops, c, json).await,
-        Cmd::Review(c) => review(&mut ops, c, json).await,
+        Cmd::Review(c) => review(&mut ops, c, cli.workspace, json).await,
         Cmd::Comment(c) => comment(&mut ops, c, json).await,
         Cmd::Files { .. } | Cmd::Diff { .. } | Cmd::Show { .. } => content(&ops, cmd, json).await,
         Cmd::Events {
             follow,
             review,
-            workspace,
             awaiting,
             since,
-        } => events(&ops, follow, review, workspace, awaiting, since, json).await,
+        } => events(&ops, follow, review, cli.workspace, awaiting, since, json).await,
     }
 }
 
@@ -907,14 +986,20 @@ async fn workspace(ops: &mut Ops, cmd: WorkspaceCmd, json: bool) -> anyhow::Resu
                             .iter()
                             .map(|r| format!("\n  {} {} {}", r.id, r.display_name, r.path))
                             .collect();
-                        format!("{} {}{}", w.id, w.name, repos.concat())
+                        let names = w
+                            .repos
+                            .iter()
+                            .map(|r| r.display_name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{} {} ({}){}", w.id, w.name, names, repos.concat())
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
             })
         }
         WorkspaceCmd::Attach {
-            workspace,
+            workspace_id,
             path,
             name,
         } => {
@@ -927,17 +1012,61 @@ async fn workspace(ops: &mut Ops, cmd: WorkspaceCmd, json: bool) -> anyhow::Resu
                     .unwrap_or_default()
             });
             let (id, event) = ops
-                .attach_repo(workspace, path.to_string_lossy().into_owned(), display)
+                .attach_repo(workspace_id, path.to_string_lossy().into_owned(), display)
                 .await?;
             emit(json, &event, || id.to_string())
         }
     }
 }
 
-async fn review(ops: &mut Ops, cmd: ReviewCmd, json: bool) -> anyhow::Result<()> {
+/// Add CLI-specific guidance only when cwd cannot select a workspace;
+/// transport failures retain their original connection diagnostics.
+async fn locate_review_workspace(ops: &Ops) -> anyhow::Result<nitsd::ops::Located> {
+    match ops.locate(Path::new(".")).await {
+        Ok(located) => Ok(located),
+        Err(nitsd::ops::OpsError::Invalid(reason)) => bail!(
+            "{reason}\nSelect a workspace with `nits --workspace <ID> review list` or `nits --workspace <ID> review create --base <REF> --head <REF>`; find IDs with `nits workspace list`."
+        ),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Repository paths come from the daemon, so remote repositories are labelled
+/// correctly even when this process runs from an unrelated local checkout.
+fn review_text(review: &Review, workspaces: &[Workspace]) -> String {
+    let mut out = format!("{} [{:?}] {}", review.id, review.status, review.title);
+    let workspace = workspaces.iter().find(|w| w.id == review.workspace_id);
+    if let Some(workspace) = workspace {
+        let _ = write!(out, "\n  workspace {} {}", workspace.id, workspace.name);
+    } else {
+        let _ = write!(out, "\n  workspace {} (unavailable)", review.workspace_id);
+    }
+    for target in &review.targets {
+        let repo = workspace.and_then(|w| w.repos.iter().find(|r| r.id == target.repo_id));
+        let _ = write!(out, "\n  repo {}", target.repo_id);
+        if let Some(repo) = repo {
+            let _ = write!(out, " {} ({})", repo.display_name, repo.path);
+        } else {
+            out.push_str(" (unavailable)");
+        }
+        let _ = write!(
+            out,
+            "\n    {}..{}",
+            ref_label(&target.base),
+            ref_label(&target.head)
+        );
+    }
+    out
+}
+
+async fn review(
+    ops: &mut Ops,
+    cmd: ReviewCmd,
+    workspace: Option<WorkspaceId>,
+    json: bool,
+) -> anyhow::Result<()> {
     match cmd {
         ReviewCmd::Create {
-            workspace,
             base,
             head,
             repo,
@@ -962,7 +1091,7 @@ async fn review(ops: &mut Ops, cmd: ReviewCmd, json: bool) -> anyhow::Result<()>
                     (workspace, repo_id)
                 }
                 (None, repo) => {
-                    let l = ops.locate(Path::new(".")).await?;
+                    let l = locate_review_workspace(ops).await?;
                     (l.workspace.id, repo.unwrap_or(l.repo.id))
                 }
             };
@@ -977,23 +1106,33 @@ async fn review(ops: &mut Ops, cmd: ReviewCmd, json: bool) -> anyhow::Result<()>
                 .await?;
             emit(json, &event, || id.to_string())
         }
-        ReviewCmd::List { workspace } => {
+        ReviewCmd::List => {
             let workspace = match workspace {
                 Some(w) => w,
-                None => ops.locate(Path::new(".")).await?.workspace.id,
+                None => locate_review_workspace(ops).await?.workspace.id,
             };
             let reviews = ops.reviews(workspace).await?;
+            let workspaces = if json {
+                Vec::new()
+            } else {
+                ops.workspaces().await?
+            };
             emit(json, &reviews, || {
                 reviews
                     .iter()
-                    .map(|r| format!("{} [{:?}] {}", r.id, r.status, r.title))
+                    .map(|r| review_text(r, &workspaces))
                     .collect::<Vec<_>>()
                     .join("\n")
             })
         }
         ReviewCmd::Show { review } => {
-            let snap = ops.snapshot(review).await?;
-            let files = ops.files(review).await?;
+            let snap = ops.snapshot(review.0).await?;
+            let files = ops.files(review.0).await?;
+            let workspaces = if json {
+                Vec::new()
+            } else {
+                ops.workspaces().await?
+            };
             emit(
                 json,
                 &Shown {
@@ -1001,13 +1140,8 @@ async fn review(ops: &mut Ops, cmd: ReviewCmd, json: bool) -> anyhow::Result<()>
                     files: &files,
                 },
                 || {
-                    let mut out = format!(
-                        "{} [{:?}] {}\n",
-                        snap.review.id, snap.review.status, snap.review.title
-                    );
-                    for t in &snap.review.targets {
-                        let _ = writeln!(out, "  target {} {:?}..{:?}", t.repo_id, t.base, t.head);
-                    }
+                    let mut out = review_text(&snap.review, &workspaces);
+                    out.push('\n');
                     for f in &files {
                         let _ = writeln!(
                             out,
@@ -1032,7 +1166,7 @@ async fn review(ops: &mut Ops, cmd: ReviewCmd, json: bool) -> anyhow::Result<()>
 async fn content(ops: &Ops, cmd: Cmd, json: bool) -> anyhow::Result<()> {
     match cmd {
         Cmd::Files { review } => {
-            let files = ops.files(review).await?;
+            let files = ops.files(review.0).await?;
             emit(json, &files, || {
                 files
                     .iter()
@@ -1085,14 +1219,15 @@ async fn comment(ops: &mut Ops, cmd: CommentCmd, json: bool) -> anyhow::Result<(
         CommentCmd::Add(a) => {
             let lines = a
                 .line
-                .map(|l| (l, None))
-                .or(a.lines.map(|(s, e)| (s, Some(e))));
+                .map(LineRange::single)
+                .or(a.lines)
+                .map(|range| (range.start().get(), Some(range.end().get())));
             let anchor = match a.path {
                 None if lines.is_some() => bail!("--line/--lines need --path"),
                 None => Anchor::Review,
                 Some(p) => {
                     let p = RepoPath::new(p)?;
-                    ops.anchor(a.review, a.repo, &p, a.side.into(), lines)
+                    ops.anchor(a.review.0, a.repo, &p, a.side.into(), lines)
                         .await?
                 }
             };
@@ -1100,7 +1235,7 @@ async fn comment(ops: &mut Ops, cmd: CommentCmd, json: bool) -> anyhow::Result<(
                 Some(patch) => CommentKind::Suggestion { patch },
                 None => CommentKind::Note,
             };
-            let (t, event) = ops.new_thread(a.review, kind, anchor, a.body).await?;
+            let (t, event) = ops.new_thread(a.review.0, kind, anchor, a.body).await?;
             emit(json, &event, || t.thread_id.to_string())
         }
         CommentCmd::Reply {
@@ -1121,7 +1256,7 @@ async fn comment(ops: &mut Ops, cmd: CommentCmd, json: bool) -> anyhow::Result<(
             emit(json, &event, String::new)
         }
         CommentCmd::List { review } => {
-            let snap = ops.snapshot(review).await?;
+            let snap = ops.snapshot(review.0).await?;
             emit(json, &(&snap.threads, &snap.comments), || {
                 let mut out = String::new();
                 for t in &snap.threads {
@@ -1376,6 +1511,23 @@ mod tests {
     #[test]
     fn the_command_definition_is_valid() {
         <Cli as clap::CommandFactory>::command().debug_assert();
+    }
+
+    #[test]
+    fn line_ranges_are_inclusive_and_validated_before_connecting() {
+        for value in ["1-1", "1:1"] {
+            assert_eq!(
+                parse_lines(value).unwrap(),
+                LineRange::single(LineNo::FIRST)
+            );
+        }
+        for value in ["3-5", "3:5"] {
+            let range = parse_lines(value).unwrap();
+            assert_eq!(range.start().get(), 3);
+            assert_eq!(range.end().get(), 5);
+            assert_eq!(range.len(), 3);
+        }
+        assert!(parse_line("0").is_err());
     }
 
     #[test]
