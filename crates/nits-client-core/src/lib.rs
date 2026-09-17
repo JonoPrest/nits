@@ -339,6 +339,11 @@ pub enum Action {
     EnterVisual,
     /// Leave Visual mode without commenting (`esc`, `V` again).
     LeaveVisual,
+    /// Enter a search's result list at its first result. This is absolute:
+    /// the host may not yet have received preceding selection changes.
+    SearchFirst {
+        search: SearchKind,
+    },
     /// Step the highlighted result while the search result list owns focus.
     SearchStep {
         search: SearchKind,
@@ -2081,6 +2086,26 @@ impl ClientCore {
                 }
                 Ok(Vec::new())
             }
+            Action::SearchFirst { search } => match search {
+                SearchKind::Files => {
+                    if self.explorer.search.is_none() {
+                        return Err(CoreError::NoTarget(focus::NoTarget::Nothing(
+                            Command::MoveDown,
+                        )));
+                    }
+                    self.explorer.search_selected = 0;
+                    Ok(Vec::new())
+                }
+                SearchKind::Content => {
+                    let Some(search) = &mut self.view.content_search else {
+                        return Err(CoreError::NoTarget(focus::NoTarget::Nothing(
+                            Command::MoveDown,
+                        )));
+                    };
+                    search.selected = 0;
+                    Ok(vec![render(&[ViewSection::Search])])
+                }
+            },
             Action::SearchStep { search, delta } => {
                 let step = |sel: usize, len: usize| -> usize {
                     if len == 0 {

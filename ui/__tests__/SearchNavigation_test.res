@@ -57,6 +57,7 @@ module FileHarness = {
           setQuery(_ => q)
           setSelected(_ => 0)
         }
+      | Action.SearchFirst(_) => setSelected(_ => 0)
       | Action.SearchStep({delta}) =>
         setSelected(s => Math.Int.min(Math.Int.max(s + delta, 0), Array.length(hits) - 1))
       | _ => ()
@@ -81,6 +82,7 @@ module ContentHarness = {
     let send = action => {
       dispatch(action)
       switch action {
+      | Action.SearchFirst(_) => setSearch(s => {...s, selected: 0})
       | Action.SearchStep({delta}) =>
         setSearch(s => {
           ...s,
@@ -290,3 +292,152 @@ testAsync(
     expect(dispatch)->toHaveBeenLastCalledWith(Action.ActionPalette({open_: false}))
   },
 )
+
+// Use the real window handler: an isolated dialog cannot reveal a Tab
+// that escapes to the shell, where it becomes a pane-focus command.
+module ShellKeys = {
+  @react.component
+  let make = (~onKey, ~children) => {
+    React.useEffect0(() => {
+      let core: Core.t = {
+        dispatch: _ => (),
+        key: onKey,
+        subscribe: _ => () => (),
+        attach: () => (),
+      }
+      let handler = ev => App.onKeyDown(core, ~onChord=_ => (), ev)
+      App.KeyEvent.listen("keydown", handler)
+      Some(() => App.KeyEvent.unlisten("keydown", handler))
+    })
+    children
+  }
+}
+
+[Actions, Help]->Array.forEach(surface => {
+  testAsync(
+    "dialog control Tab stays native under the shell keymap: " ++ placeholder(surface),
+    async () => {
+      let user = User.setup()
+      let dispatch = fn()
+      let onKey = fn()
+      let dialog = switch surface {
+      | Help => <HelpOverlay help={help(hints)} dispatch />
+      | Files | Content | Actions =>
+        <Palette contentSearch=None actionPalette=true chrome=hints dispatch />
+      }
+      render(
+        <ShellKeys onKey>
+          <div>
+            dialog
+            <UI.Button label="after dialog" onClick={() => ()} />
+          </div>
+        </ShellKeys>,
+      )->ignore
+      let results = Screen.getByLabelText(resultLabel(surface))
+      await User.keyboard(user, "{ArrowDown}{Tab}")
+      switch surface {
+      | Actions => {
+          expect(Element.textContent(current()))->toBe("Content")
+          await User.tab(user)
+          expect(Element.textContent(current()))->toBe("close ⎋")
+          await User.keyboard(user, "{Shift>}{Tab}{/Shift}")
+          expect(Element.textContent(current()))->toBe("Content")
+        }
+      | Help => expect(Element.textContent(current()))->toBe("close ⎋")
+      | Files | Content => ()
+      }
+      await User.keyboard(user, "{Shift>}{Tab}{/Shift}")
+      expect(current())->toEqual(results)
+      await User.keyboard(user, "{Tab}")
+      if surface == Actions {
+        await User.tab(user)
+      }
+      await User.tab(user)
+      expect(Element.textContent(current()))->toBe("after dialog")
+      expect(onKey)->not_->toHaveBeenCalled
+    },
+  )
+})
+
+testAsync(
+  "content scope keeps native traversal and handles Escape before stopping propagation",
+  async () => {
+    let user = User.setup()
+    let dispatch = fn()
+    let onKey = fn()
+    render(
+      <ShellKeys onKey>
+        <ContentHarness dispatch />
+      </ShellKeys>,
+    )->ignore
+    let scope = Screen.getByLabelText("all files (not just changed)")
+    await User.keyboard(user, "{ArrowDown}{Tab}")
+    expect(current())->toEqual(scope)
+    await User.tab(user)
+    expect(Element.textContent(current()))->toBe("Actions")
+    await User.keyboard(user, "{Shift>}{Tab}{/Shift}")
+    expect(current())->toEqual(scope)
+    await User.keyboard(user, "{Escape}")
+    expect(dispatch)->toHaveBeenLastCalledWith(Action.ContentSearch({query: None, allFiles: false}))
+    expect(onKey)->not_->toHaveBeenCalled
+  },
+)
+
+let coreSearches: array<Action.SearchKind.t> = [Files, Content]
+coreSearches->Array.forEach(search => {
+  ["{ArrowDown}", "{Tab}"]->Array.forEach(enterResults => {
+    let label = switch search {
+    | Files => "files"
+    | Content => "content"
+    }
+    testAsync(
+      "first selection survives delayed " ++ label ++ " view publication via " ++ enterResults,
+      async () => {
+        let user = User.setup()
+        let coreSelected = ref(0)
+        let opened = fn()
+        let sent = fn()
+        let dispatch = action => {
+          sent(action)
+          // Model ordered host dispatch without publishing any selection patches
+          // back to React. Rust tests exercise these intents in the real core.
+          switch action {
+          | Action.SearchFirst(_) => coreSelected := 0
+          | Action.SearchStep({delta}) => coreSelected := coreSelected.contents + delta
+          | Action.OpenSearchResult(_) => opened(coreSelected.contents)
+          | _ => ()
+          }
+        }
+        let element = switch search {
+        | Files => <SearchBox search={{query: "", hits: files(), selected: 0}} dispatch />
+        | Content =>
+          <Palette
+            contentSearch=Some({
+              ...contentBase(),
+              query: "",
+              hits: contentHits(),
+              pending: false,
+              selected: 0,
+            })
+            actionPalette=false
+            chrome=hints
+            dispatch
+          />
+        }
+        let {container} = render(element)
+        let first = selected(container)
+        await User.keyboard(user, "{ArrowDown}j")
+        expect(coreSelected.contents)->toBe(1)
+        expect(selected(container))->toEqual(first)
+        await User.keyboard(user, "{Shift>}{Tab}{/Shift}" ++ enterResults ++ "{Enter}")
+        expect(opened)->toHaveBeenLastCalledWith(0)
+        expect(mock(sent).calls)->toEqual([
+          [Action.SearchFirst({search: search})],
+          [Action.SearchStep({search, delta: 1})],
+          [Action.SearchFirst({search: search})],
+          [Action.OpenSearchResult({search, query: ""})],
+        ])
+      },
+    )
+  })
+})

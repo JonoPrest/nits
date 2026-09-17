@@ -105,6 +105,7 @@ type t =
   | @as("RunCommand") RunCommand({command: View.Command.t})
   | @as("EnterVisual") EnterVisual({})
   | @as("LeaveVisual") LeaveVisual({})
+  | @as("SearchFirst") SearchFirst({search: SearchKind.t})
   | @as("SearchStep") SearchStep({search: SearchKind.t, delta: int})
   | @as("OpenSearchResult") OpenSearchResult({search: SearchKind.t, query: string})
   | @as("OpenRefSelector")

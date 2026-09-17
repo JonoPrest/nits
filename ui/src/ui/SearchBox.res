@@ -16,6 +16,7 @@ let make = (~search: SearchView.t, ~dispatch: Action.t => unit) => {
   ) = SearchNavigation.useNavigation(
     ~count=Array.length(search.hits),
     ~selected=search.selected,
+    ~first=() => dispatch(SearchFirst({search: Files})),
     ~step=delta => dispatch(SearchStep({search: Files, delta})),
     ~query=search.query,
     ~change=query => dispatch(FileSearch({query: Some(query)})),

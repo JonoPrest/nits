@@ -114,6 +114,7 @@ let make = (~help: HelpView.t, ~dispatch: Action.t => unit) => {
   ) = SearchNavigation.useNavigation(
     ~count,
     ~selected=selection,
+    ~first=() => setSelection(_ => 0),
     ~step=delta =>
       setSelection(current =>
         Math.Int.min(Math.Int.max(Math.Int.min(current, count - 1) + delta, 0), count - 1)
@@ -137,7 +138,7 @@ let make = (~help: HelpView.t, ~dispatch: Action.t => unit) => {
     className="help-overlay"
     role="dialog"
     ariaLabel="keyboard help"
-    onKeyDown={ev => SearchNavigation.closeOnEscape(close, ev)}
+    onKeyDown={ev => SearchNavigation.onDialogKey(close, ev)}
   >
     <div className="help-panel panel" ref={ReactDOM.Ref.domRef(panelRef)}>
       <header className="panel-header"> {React.string("Keyboard")} </header>

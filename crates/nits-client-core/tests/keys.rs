@@ -407,6 +407,7 @@ fn every_action_is_reachable_from_a_binding() {
         ActionKind::RunCommand,   // the actions palette picks the command
         ActionKind::CommentLines, // mouse drag across lines
         ActionKind::CommentFile,  // the file header's comment button
+        ActionKind::SearchFirst,  // search input enters the first result
         ActionKind::SearchStep,   // search result navigation
         ActionKind::OpenSearchResult, // search Enter activates current core selection
         ActionKind::OpenRefSelector, // header buttons own target selection
@@ -2721,4 +2722,47 @@ fn content_selection_is_independent_of_an_underlying_file_search() {
     );
     assert_eq!(core.view().content_search.as_ref().unwrap().selected, 1);
     assert_eq!(core.view().tree.search.as_ref().unwrap().selected, 0);
+}
+
+#[test]
+fn entering_search_results_resets_the_core_selection_without_a_view_round_trip() {
+    use nits_client_core::{SearchKind, ViewDelta};
+    for search in [SearchKind::Files, SearchKind::Content] {
+        let mut core = ready();
+        let section = match search {
+            SearchKind::Files => {
+                core.handle(Input::User(Action::FileSearch {
+                    query: Some("rs".into()),
+                }))
+                .unwrap();
+                ViewSection::Tree
+            }
+            SearchKind::Content => {
+                let id = search_request(&mut core, "query");
+                search_answer(&mut core, id, &[1, 2]);
+                ViewSection::Search
+            }
+        };
+        // The host published selection zero, then handles navigation while
+        // withholding subsequent views from its UI. Re-entering results must
+        // reset to zero regardless of what that published view still contains.
+        let published = core.view().clone();
+        core.handle(Input::User(Action::SearchFirst { search }))
+            .unwrap();
+        assert_eq!(
+            core.handle(Input::User(Action::SearchStep { search, delta: 1 }))
+                .unwrap(),
+            vec![Effect::Render(ViewDelta {
+                sections: vec![section]
+            })]
+        );
+        assert_eq!(
+            core.handle(Input::User(Action::SearchFirst { search }))
+                .unwrap(),
+            vec![Effect::Render(ViewDelta {
+                sections: vec![section]
+            })]
+        );
+        assert_eq!(core.view(), &published);
+    }
 }

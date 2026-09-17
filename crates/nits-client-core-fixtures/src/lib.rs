@@ -803,6 +803,9 @@ enum_fixture!(
         },
         Action::EnterVisual,
         Action::LeaveVisual,
+        Action::SearchFirst {
+            search: nits_client_core::SearchKind::Files
+        },
         Action::SearchStep {
             search: nits_client_core::SearchKind::Files,
             delta: 1

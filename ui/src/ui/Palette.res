@@ -140,6 +140,11 @@ let make = (
   ) = SearchNavigation.useNavigation(
     ~count,
     ~selected=current,
+    ~first=() =>
+      switch mode {
+      | Content => dispatch(SearchFirst({search: Content}))
+      | Actions => setActionSel(_ => 0)
+      },
     ~step,
     ~query=text,
     ~change=value => {
@@ -155,7 +160,7 @@ let make = (
     className="palette-overlay"
     role="dialog"
     ariaLabel="palette"
-    onKeyDown={ev => SearchNavigation.closeOnEscape(close, ev)}
+    onKeyDown={ev => SearchNavigation.onDialogKey(close, ev)}
   >
     <div className="palette">
       <div className="palette-tabs">
@@ -222,7 +227,10 @@ let make = (
               <input
                 type_="checkbox"
                 checked=allFiles
-                onKeyDown={ev => ReactEvent.Keyboard.stopPropagation(ev)}
+                onKeyDown={ev => {
+                  SearchNavigation.onDialogKey(close, ev)
+                  ReactEvent.Keyboard.stopPropagation(ev)
+                }}
                 onChange={_ =>
                   dispatch(
                     ContentSearch({

@@ -18,15 +18,21 @@ let isPrintable: string => bool = %raw(`key => Array.from(key).length === 1`)
 
 @send external setSelectionRange: (Dom.element, int, int) => unit = "setSelectionRange"
 
-let closeOnEscape = (close, ev) => {
-  if ReactEvent.Keyboard.key(ev) == "Escape" {
-    ReactEvent.Keyboard.preventDefault(ev)
-    ReactEvent.Keyboard.stopPropagation(ev)
-    close()
+// Dialog controls keep native Tab traversal; neither direction may reach
+// the shell's pane-focus keymap. Inputs/results already stop their events.
+let onDialogKey = (close, ev) => {
+  switch ReactEvent.Keyboard.key(ev) {
+  | "Escape" => {
+      ReactEvent.Keyboard.preventDefault(ev)
+      ReactEvent.Keyboard.stopPropagation(ev)
+      close()
+    }
+  | "Tab" => ReactEvent.Keyboard.stopPropagation(ev)
+  | _ => ()
   }
 }
 
-let useNavigation = (~count, ~selected, ~step, ~query, ~change, ~submit, ~close) => {
+let useNavigation = (~count, ~selected, ~first, ~step, ~query, ~change, ~submit, ~close) => {
   let (zone, setZone) = React.useState(() => Input)
   let inputRef = React.useRef(Nullable.null)
   let resultsRef = React.useRef(Nullable.null)
@@ -74,7 +80,7 @@ let useNavigation = (~count, ~selected, ~step, ~query, ~change, ~submit, ~close)
     switch key {
     | "ArrowDown" | "Tab" if !ReactEvent.Keyboard.shiftKey(ev) && count > 0 => {
         ReactEvent.Keyboard.preventDefault(ev)
-        step(-(selected->Option.getOr(0)))
+        first()
         setZone(_ => Results)
       }
     | "Tab" => setZone(_ => Controls)
