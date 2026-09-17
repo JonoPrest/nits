@@ -12,7 +12,6 @@ let make = (
   ~index: int,
   ~composer: React.element,
   ~dispatch: Action.t => unit,
-  ~chrome: array<Hint.t>=[],
 ) => {
   let (focusRef, onKeyDown) = ThreadFocus.use(~focused)
   let flags =

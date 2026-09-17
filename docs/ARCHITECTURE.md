@@ -556,5 +556,5 @@ The client core correlates reference navigation with the latest review request,
 ignores superseded snapshots and streamed pieces, and replays events that arrived
 ahead of a reference snapshot before selecting the exact reply. Copy targets and
 comment selection are core view state; browser shells perform clipboard and DOM
-scroll effects. Reference/view additions use protocol 0.7; persisted events and
+scroll effects. Reference/view additions use protocol 0.10; persisted events and
 store schema are unchanged.

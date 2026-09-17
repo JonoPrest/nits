@@ -139,6 +139,17 @@ impl OpenReview {
         })
     }
 
+    /// Historical diffs are read-only. A pinned Browse blob retains its
+    /// captured source and supports composition against that exact blob.
+    #[must_use]
+    pub fn original_is_read_only(&self) -> bool {
+        self.original_render()
+            .is_some_and(|render| match render.target {
+                nits_protocol::RenderTarget::Diff { .. } => true,
+                nits_protocol::RenderTarget::Blob { .. } => false,
+            })
+    }
+
     #[must_use]
     pub fn new(snapshot: ReviewSnapshot) -> Self {
         Self {

@@ -628,10 +628,9 @@ async fn copied_verification_reply_opens_on_another_browser_session_after_resolu
     );
     a.dispatch(&Action::ResolveThread { thread_id }).await;
     a.until(|model, _| {
-        model
-            .threads
-            .first()
-            .is_some_and(|t| t.status == nits_client_core::ThreadStatus::Resolved && !t.pending)
+        model.threads.first().is_some_and(|t| {
+            matches!(t.status, nits_client_core::ThreadStatus::Resolved { .. }) && !t.pending
+        })
     })
     .await;
     let mut b = Browser::connect(bridge.addr()).await;
@@ -643,10 +642,7 @@ async fn copied_verification_reply_opens_on_another_browser_session_after_resolu
         .await;
     assert_eq!(b.model.open_review, Some(review_a()));
     assert_eq!(b.model.tab, nits_client_core::Tab::Conversation);
-    assert_eq!(
-        b.model.threads[0].status,
-        nits_client_core::ThreadStatus::Resolved
-    );
+    assert_eq!(b.model.threads[0].status, a.model.threads[0].status);
     assert_eq!(b.model.copy_reference, Some(reference));
     assert_eq!(b.model.last_error, None);
     bridge.stop();

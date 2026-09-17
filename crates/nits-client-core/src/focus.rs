@@ -109,7 +109,7 @@ pub enum NoTarget {
     NoOpenFile,
     #[error("no review is open")]
     NoOpenReview,
-    #[error("the original context is read-only; return to the current diff to comment")]
+    #[error("the original diff is read-only; return to the current diff to comment")]
     ReadOnlyOriginal,
 }
 
@@ -949,7 +949,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 && view
                     .review
                     .as_ref()
-                    .is_some_and(|open| open.original_render().is_some()) =>
+                    .is_some_and(crate::view::OpenReview::original_is_read_only) =>
         {
             Err(NoTarget::ReadOnlyOriginal)
         }

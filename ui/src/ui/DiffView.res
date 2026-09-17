@@ -139,7 +139,12 @@ let make = (
     </header>
     {diff.original
       ? <div className="original-banner" role="status">
-          {React.string("Viewing the original content this comment was made on. ")}
+          {React.string(
+            switch diff.target {
+            | Diff(_) => "Viewing the original diff this comment was made on — read-only. "
+            | Blob(_) => "Viewing the pinned original file; comments stay anchored to this source. "
+            },
+          )}
           <UI.Kbd keys="esc" />
           {React.string(" back to the current diff")}
         </div>

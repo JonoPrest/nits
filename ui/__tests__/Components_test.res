@@ -2576,7 +2576,7 @@ describe("Portable thread and reply references", () => {
     rerender(
       <Threads
         title="Conversation"
-        threads=[{...thread, status: Resolved}]
+        threads=[{...thread, status: Resolved({by: thread.author, at: thread.created})}]
         focus={Thread({index: 0})}
         indexOffset=0
         dispatch

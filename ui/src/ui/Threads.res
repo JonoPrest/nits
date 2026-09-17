@@ -133,7 +133,6 @@ module Item = {
     ~onReply: unit => unit,
     ~dispatch: Action.t => unit,
     ~composer: React.element,
-    ~dispatch: Action.t => unit,
     ~focusedComment: option<string>,
   ) => {
     let (focusRef, onKeyDown) = ThreadFocus.use(~focused)
@@ -269,7 +268,6 @@ let make = (
               | Some(_) | None => React.null
               }}
               onReply={() => dispatch(ReplyOpened({threadId: t.id}))}
-              dispatch
               onApply={() => dispatch(ApplySuggestion({commentId: t.root}))}
               onOriginal={() => dispatch(OpenOriginalDiff({threadId: t.id}))}
             />

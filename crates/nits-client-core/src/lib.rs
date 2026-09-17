@@ -1481,9 +1481,9 @@ impl ClientCore {
         })
     }
 
-    /// Open the render a thread's root comment recorded as its context,
-    /// read-only. The render is not part of the review's file list; the
-    /// content plumbing treats `open.original` as an honorary member.
+    /// Open the source a thread's root comment recorded as its context.
+    /// Historical diffs are read-only; pinned Browse blobs retain their
+    /// captured comment source. Neither joins the current review's file list.
     fn open_original(&mut self, thread_id: ThreadId) -> Result<Vec<Effect>, CoreError> {
         self.require_subscribed()?;
         let Some(open) = &self.view.review else {
@@ -1676,11 +1676,12 @@ impl ClientCore {
         })
     }
 
-    /// Line/file composers belong to the current source. The retained source
-    /// is read-only; rejecting here also protects direct mouse/host actions.
+    /// Historical diff panes cannot open line/file composers. Pinned Browse
+    /// blobs keep their captured source; direct mouse/host actions follow the
+    /// same rule as keyboard commands.
     fn require_commentable_context(&self) -> Result<(), CoreError> {
         let open = self.view.review.as_ref().ok_or(CoreError::NoOpenReview)?;
-        if open.original_render().is_some() {
+        if open.original_is_read_only() {
             return Err(NoTarget::ReadOnlyOriginal.into());
         }
         Ok(())
@@ -3567,6 +3568,7 @@ impl ClientCore {
         };
         if matches!(waiting, InFlight::ReviewSnapshot { .. }) && self.latest_open != Some(id) {
             self.in_flight.remove(&id);
+            self.snapshot_requests.remove(&id);
             return Ok(Vec::new());
         }
         let got = response_name(&response);

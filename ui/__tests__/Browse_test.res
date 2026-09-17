@@ -11,7 +11,10 @@ Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
   configurable: true, get() { return 800; }
 });
 HTMLElement.prototype.scrollTo = function () {};
+HTMLElement.prototype.scrollIntoView = function () {};
 `)
+
+@module("react") external act: (unit => unit) => unit = "act"
 
 afterEach(cleanup)
 
@@ -216,4 +219,90 @@ test("same-length ref changes clear cached rows by blob identity", () => {
     [after.rows->Array.getUnsafe(0)],
   )
   expect(next->Dict.valuesToArray->Array.length)->toBe(1)
+})
+
+test("a linked deferred Browse reply opens its pinned source and a visible inline composer", () => {
+  let model = Fixtures.parse(View.ViewModel.schema, "client", "ViewModel", "default")
+  let thread = Fixtures.parse(View.ThreadView.schema, "client", "ThreadView", "default")
+  let source = Domain.CommentContext.Browse({reference: Tag({name: "v1"})})
+  let thread = {
+    ...thread,
+    context: Some(source),
+    outdated: true,
+    status: Deferred({
+      reason: "Follow up outside this review",
+      trackingUrl: None,
+      by: thread.author,
+      at: thread.created,
+    }),
+  }
+  let selected = {
+    ...model,
+    tab: View.Tab.Conversation,
+    threads: [thread],
+    focus: View.Focus.Thread({index: 0}),
+    focusedComment: Some(thread.root),
+    draft: None,
+  }
+  let dispatch = fn()
+  let push = ref(_ => ())
+  let core: Core.t = {
+    dispatch,
+    key: _ => (),
+    subscribe: listener => {
+      push := listener
+      listener(selected)
+      () => ()
+    },
+    attach: () => (),
+  }
+  let {container} = render(<App.Shell core />)
+  expect(Screen.getByText("Deferred · unfixed"))->toBeTruthy
+  FireEvent.click(Screen.getByText("Open original diff (enter)"))
+  expect(dispatch)->toHaveBeenCalledWith(Action.OpenOriginalDiff({threadId: thread.id}))
+  let diff = {...base(), original: true}
+  let original = {...selected, tab: Browse, focus: Diff({row: 1, side: Head}), diff: Some(diff)}
+  act(() => push.contents(original))
+  let banner = Element.querySelector(container, ".original-banner")->Nullable.getExn
+  expect(Element.textContent(banner))->toContain("pinned original file")
+  expect(Element.textContent(banner))->not_->toContain("read-only")
+  FireEvent.click(Screen.getByLabelText("Comment on line 2"))
+  expect(dispatch)->toHaveBeenLastCalledWith(
+    Action.CommentLines({file: diff.file, side: Head, startLine: 2, endLine: 2}),
+  )
+  let draft: View.Draft.t = {
+    anchor: Lines({
+      repoId: diff.file.repoId,
+      path: diff.file.path,
+      side: Head,
+      blobOid: "original",
+      lines: {start: 2, end_: 2},
+      contextHash: "0",
+    }),
+    purpose: Comment({intent: Finding, context: Some(source)}),
+    submissionError: None,
+  }
+  act(() =>
+    push.contents({
+      ...original,
+      focus: Composer({}),
+      draft: Some(draft),
+      diff: Some({
+        ...diff,
+        rows: diff.rows->Array.map(
+          row => {...row, drafted: row.index == 1 ? Some((Anchor, Domain.Side.Head)) : None},
+        ),
+      }),
+    })
+  )
+  let row = Element.querySelector(container, "[data-row-index='1']")->Nullable.getExn
+  expect(Element.querySelector(Element.parentElement(row), ".composer"))->not_->toBeNull
+  expect(Element.querySelector(container, ".app-center > .composer"))->toBeNull
+  let editor = Screen.getByPlaceholderText("Finding…")
+  expect(Document.activeElement->Nullable.getExn)->toBe(editor)
+  FireEvent.change(editor, {"target": {"value": "Follow-up on pinned source"}})
+  FireEvent.keyDown(editor, {"key": "Enter", "ctrlKey": true})
+  expect(dispatch)->toHaveBeenLastCalledWith(
+    Action.DraftSubmitted({body: "Follow-up on pinned source"}),
+  )
 })
