@@ -2298,7 +2298,7 @@ describe("Informational conversation", () => {
         indexOffset=0
         dispatch
         chrome
-        draft={{intent: Finding, anchor: Review({}), replyTo: Some(note.id)}}
+        draft={{intent: Finding, anchor: Review({}), context: None, replyTo: Some(note.id)}}
       />,
     )
     expect(Screen.getByPlaceholderText("Reply…"))->toBeTruthy
@@ -2310,7 +2310,7 @@ describe("Informational conversation", () => {
     let model = {
       ...Fixtures.parse(View.ViewModel.schema, "client", "ViewModel", "default"),
       tab: Conversation,
-      draft: Some({intent: Informational, anchor: Review({}), replyTo: None}),
+      draft: Some({intent: Informational, anchor: Review({}), context: None, replyTo: None}),
     }
     let dispatch = fn()
     let core: Core.t = {

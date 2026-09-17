@@ -54,6 +54,7 @@ let base = (): View.DiffView.t => {
 }
 
 let draft = (diff: View.DiffView.t): View.Draft.t => {
+  intent: Finding,
   anchor: Lines({
     repoId: diff.file.repoId,
     path: diff.file.path,
@@ -125,7 +126,7 @@ test("Browse composes below the range, focuses the editor, cancels and submits",
   let {container, rerender} = render(
     <DiffView diff=drafted layout=Unified focus={Composer({})} draft={draft(diff)} dispatch />,
   )
-  let textarea = Screen.getByPlaceholderText("Comment…")
+  let textarea = Screen.getByPlaceholderText("Finding…")
   expect(Document.activeElement->Nullable.getExn)->toBe(textarea)
   let anchor = Element.querySelector(container, "[data-row-index='1']")->Nullable.getExn
   expect(Element.querySelector(anchor->Element.parentElement, ".composer"))->not_->toBeNull
@@ -137,7 +138,7 @@ test("Browse composes below the range, focuses the editor, cancels and submits",
   rerender(
     <DiffView diff=drafted layout=Unified focus={Composer({})} draft={draft(diff)} dispatch />,
   )
-  let textarea = Screen.getByPlaceholderText("Comment…")
+  let textarea = Screen.getByPlaceholderText("Finding…")
   FireEvent.change(textarea, {"target": {"value": "reviewed this revision"}})
   FireEvent.keyDown(textarea, {"key": "Enter", "ctrlKey": true})
   expect(dispatch)->toHaveBeenLastCalledWith(

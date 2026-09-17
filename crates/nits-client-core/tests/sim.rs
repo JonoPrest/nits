@@ -705,6 +705,35 @@ fn browse_comment_arrives_remotely_inline_and_converges() {
         .unwrap();
         sim.settle();
     }
+    sim.request_review(
+        human("ada"),
+        "review-agent".into(),
+        "Check this file".into(),
+    );
+    sim.settle();
+    for peer in [A, B] {
+        sim.act(
+            peer,
+            Action::RunCommand {
+                command: nits_client_core::Command::FocusRequests,
+            },
+        )
+        .unwrap();
+        assert_eq!(sim.client(peer).view().tab, Tab::Conversation);
+        sim.act(peer, Action::SetTab { tab: Tab::Browse }).unwrap();
+        sim.settle();
+        assert_eq!(
+            sim.client(peer).view().focus,
+            nits_client_core::Focus::Diff {
+                row: 0,
+                side: Side::Head
+            },
+        );
+        assert_eq!(
+            sim.client(peer).view().diff.as_ref().unwrap().target,
+            RenderTarget::Blob { oid }
+        );
+    }
     sim.act(
         A,
         Action::CommentLines {

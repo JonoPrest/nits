@@ -688,16 +688,10 @@ fn schema_one_history_and_informational_threads_survive_migration_rebuild_and_re
         .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
         .unwrap();
     for entry in log.iter().unwrap() {
-        let (seq, bytes) = entry.unwrap();
+        let (_, bytes) = entry.unwrap();
         let event: serde_json::Value = serde_json::from_slice(bytes.value()).unwrap();
-        // 1→2 rewrites the old envelopes; 2→3 only rebuilds the new view.
-        // Events appended after opening use the current schema.
-        let expected_schema = if seq.value() <= events.last().unwrap().seq.get() {
-            2
-        } else {
-            SchemaVersion::CURRENT.get()
-        };
-        assert_eq!(event["schema"], serde_json::json!(expected_schema));
+        // 3→4 rewrites every old envelope after earlier migrations finish.
+        assert_eq!(event["schema"], serde_json::json!(SchemaVersion::CURRENT));
     }
 }
 
@@ -841,73 +835,126 @@ fn snapshot_requests_and_cursor_share_one_read_transaction() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // Keep actual old log construction and upgrade assertions together.
 fn legacy_diff_context_migrates_without_reinterpreting_null_contexts() {
+    use nits_protocol::ThreadResolution;
     use redb::{ReadableTable, TableDefinition};
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("state.redb");
-    let expected = {
-        let store = Store::open(&path).unwrap();
-        store
-            .append(new_event(EventBody::WorkspaceCreated {
-                workspace: workspace(),
-            }))
-            .unwrap();
-        store
-            .append(new_event(EventBody::ReviewCreated { review: review(1) }))
-            .unwrap();
-        let mut first = comment(1, 1, 1, 3);
-        first.context = Some(nits_protocol::CommentContext::Diff {
-            change: nits_protocol::ChangeKind::Modified {
-                old: blob(2),
-                new: blob(3),
-            },
-        });
-        for comment in [first, comment(1, 2, 2, 3)] {
+    for old_schema in 1..=3 {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.redb");
+        let (expected, views, snapshot) = {
+            let store = Store::open(&path).unwrap();
             store
-                .append(new_event(EventBody::CommentCreated { comment }))
+                .append(new_event(EventBody::WorkspaceCreated {
+                    workspace: workspace(),
+                }))
                 .unwrap();
-        }
-        store.events_after(None).unwrap()
-    };
-    // Write exactly the old persisted representation, including its schema stamp.
-    {
-        let db = redb::Database::open(&path).unwrap();
-        let txn = db.begin_write().unwrap();
-        {
-            let mut events = txn
-                .open_table(TableDefinition::<u64, &[u8]>::new("events"))
+            store
+                .append(new_event(EventBody::ReviewCreated { review: review(1) }))
                 .unwrap();
-            let old: Vec<_> = events
-                .iter()
-                .unwrap()
-                .map(|row| {
-                    let (key, value) = row.unwrap();
-                    let mut value: serde_json::Value =
-                        serde_json::from_slice(value.value()).unwrap();
-                    value["schema"] = 1.into();
-                    if let Some(context) = value.pointer_mut("/event/body/comment/context")
-                        && !context.is_null()
-                    {
-                        *context = context["change"].take();
-                    }
-                    (key.value(), serde_json::to_vec(&value).unwrap())
-                })
-                .collect();
-            for (key, value) in old {
-                events.insert(key, value.as_slice()).unwrap();
+            let context = Some(nits_protocol::CommentContext::Diff {
+                change: nits_protocol::ChangeKind::Modified {
+                    old: blob(2),
+                    new: blob(3),
+                },
+            });
+            let mut first = comment(1, 1, 1, 3);
+            first.context = context.clone();
+            let mut reply = comment(1, 3, 1, 3);
+            reply.context = context;
+            for comment in [first, comment(1, 2, 2, 3), reply] {
+                store
+                    .append(new_event(EventBody::CommentCreated { comment }))
+                    .unwrap();
             }
+            store
+                .append(new_event(EventBody::ThreadResolved {
+                    review_id: review_id(1),
+                    thread_id: thread_of(comment_id(1)),
+                }))
+                .unwrap();
+            if old_schema >= 2 {
+                let mut note = comment(1, 4, 4, 1);
+                note.anchor = Anchor::Review;
+                note.kind = CommentKind::Informational;
+                store
+                    .append(new_event(EventBody::CommentCreated { comment: note }))
+                    .unwrap();
+            }
+            store
+                .append(new_event(EventBody::ReviewRequested {
+                    review_id: review_id(1),
+                    agent: "review-agent".into(),
+                    note: "Please check the retained discussion".into(),
+                }))
+                .unwrap();
+            (
+                store.events_after(None).unwrap(),
+                store.dump_views().unwrap(),
+                store.review_snapshot(review_id(1)).unwrap().unwrap(),
+            )
+        };
+        // Recreate old envelopes with untagged ChangeKind contexts. Starting at
+        // schema 1 must not decode those payloads before the 3→4 transform.
+        {
+            let db = redb::Database::open(&path).unwrap();
+            let txn = db.begin_write().unwrap();
+            if old_schema < 3 {
+                txn.delete_table(TableDefinition::<(&str, u64), &[u8]>::new(
+                    "review_requests",
+                ))
+                .unwrap();
+            }
+            {
+                let mut events = txn
+                    .open_table(TableDefinition::<u64, &[u8]>::new("events"))
+                    .unwrap();
+                let old: Vec<_> = events
+                    .iter()
+                    .unwrap()
+                    .map(|row| {
+                        let (key, value) = row.unwrap();
+                        let mut value: serde_json::Value =
+                            serde_json::from_slice(value.value()).unwrap();
+                        value["schema"] = old_schema.into();
+                        if let Some(context) = value.pointer_mut("/event/body/comment/context")
+                            && !context.is_null()
+                        {
+                            *context = context["change"].take();
+                        }
+                        (key.value(), serde_json::to_vec(&value).unwrap())
+                    })
+                    .collect();
+                for (key, value) in old {
+                    events.insert(key, value.as_slice()).unwrap();
+                }
+            }
+            txn.commit().unwrap();
         }
-        txn.commit().unwrap();
+        stamp_schema(&path, old_schema);
+        for _ in 0..2 {
+            let store = Store::open(&path).unwrap();
+            assert_eq!(store.schema_version().unwrap(), SchemaVersion::CURRENT);
+            assert_eq!(store.events_after(None).unwrap(), expected);
+            assert_eq!(store.dump_views().unwrap(), views);
+            assert_eq!(
+                store.review_snapshot(review_id(1)).unwrap().unwrap(),
+                snapshot
+            );
+            store.rebuild_views().unwrap();
+            assert_eq!(store.dump_views().unwrap(), views);
+            assert_eq!(
+                store.review_snapshot(review_id(1)).unwrap().unwrap(),
+                snapshot
+            );
+        }
+        assert_eq!(snapshot.requests.len(), 1);
+        assert_eq!(snapshot.requests[0].id.event_seq(), snapshot.seq);
+        assert_eq!(snapshot.threads[0].replies, vec![comment_id(3)]);
+        assert!(matches!(
+            snapshot.threads[0].resolution,
+            ThreadResolution::Resolved { .. }
+        ));
+        assert!(snapshot.comments[1].context.is_none());
     }
-    stamp_schema(&path, 1);
-    let store = Store::open(&path).unwrap();
-    assert_eq!(store.schema_version().unwrap(), SchemaVersion::CURRENT);
-    assert_eq!(store.events_after(None).unwrap(), expected);
-    let views = store.dump_views().unwrap();
-    store.rebuild_views().unwrap();
-    assert_eq!(store.dump_views().unwrap(), views);
-    drop(store);
-    let reopened = Store::open(&path).unwrap();
-    assert_eq!(reopened.events_after(None).unwrap(), expected);
-    assert_eq!(reopened.dump_views().unwrap(), views);
 }
