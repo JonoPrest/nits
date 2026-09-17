@@ -40,20 +40,25 @@ impl Core {
             ));
         }
         let head = options.head.unwrap_or(RefSpec::WorkingTree);
+        let requested_base = options.base.map(RefSpec::from);
         // An explicit missing ref must fail even if a stale review still names it.
         git.resolve(&head)
             .map_err(|error| CoreError::invalid(error.to_string()))?;
-        if let Some(base) = &options.base {
+        if let Some(base) = &requested_base {
             git.resolve(base)
                 .map_err(|error| CoreError::invalid(error.to_string()))?;
         }
         if let Some((workspace_id, repo_id)) = located
-            && let Some(review) =
-                self.matching_directory_review(workspace_id, repo_id, options.base.as_ref(), &head)?
+            && let Some(review) = self.matching_directory_review(
+                workspace_id,
+                repo_id,
+                requested_base.as_ref(),
+                &head,
+            )?
         {
             return Ok(review);
         }
-        let base = match options.base {
+        let base = match requested_base {
             Some(base) => base,
             None => git.default_base()?,
         };

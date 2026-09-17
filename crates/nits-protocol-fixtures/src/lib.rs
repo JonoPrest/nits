@@ -1655,7 +1655,7 @@ fn directory_options() -> EnsureDirectoryReview {
         repo_id: repo_id(),
         review_id: review_id(),
         path: "/repos/example".into(),
-        base: Some(RefSpec::Head),
+        base: Some(BaseRefSpec::Head),
         head: None,
     }
 }

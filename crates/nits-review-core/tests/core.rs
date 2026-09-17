@@ -1258,7 +1258,7 @@ fn directory_bootstrap_discovers_nested_paths_without_partial_invalid_refs() {
         repo_id: rid(1),
         review_id: review_id(1),
         path: repo.path().join("nested").to_string_lossy().into_owned(),
-        base: Some(RefSpec::Branch {
+        base: Some(BaseRefSpec::Branch {
             name: "missing".into(),
         }),
         head: None,
@@ -1269,7 +1269,7 @@ fn directory_bootstrap_discovers_nested_paths_without_partial_invalid_refs() {
     );
     assert!(core.workspaces().unwrap().is_empty());
     assert_eq!(core.last_seq().unwrap(), None);
-    options.base = Some(RefSpec::Head);
+    options.base = Some(BaseRefSpec::Head);
     let first = core
         .ensure_directory_review(&human(), options.clone())
         .unwrap();

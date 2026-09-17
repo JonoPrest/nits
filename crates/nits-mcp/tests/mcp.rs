@@ -1210,6 +1210,7 @@ async fn failed_bootstrap_paths_and_refs_leave_no_partial_state() {
     let mut s = server(&h);
     init(&mut s).await;
     for args in [
+        json!({"path": h.repo.path(), "base": {"type": "WorkingTree"}}),
         json!({"path": h.repo.path(), "base": {"type": "Branch", "name": "missing"}}),
         json!({"path": h.repo.path(), "head": {"type": "Branch", "name": "missing"}}),
         json!({"path": h.dir.path()}),

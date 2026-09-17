@@ -7,11 +7,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use nits_protocol::{
-    Anchor, BlobOid, ChunkIndex, CommentId, CommentKind, ContextHash, DiffScope, Event, FileChange,
-    FileRenderHeader, LineNo, LineRange, Mutation, NonEmpty, RefSpec, RenderChunk, RenderOpts,
-    Repo, RepoId, RepoPath, Request, ResolvedSource, Response, Review, ReviewId, ReviewSnapshot,
-    ReviewTarget, RpcError, Seq, Side, Since, StreamItem, SubscribeScope, ThreadId, TreeEntryKind,
-    Workspace, WorkspaceId,
+    Anchor, BaseRefSpec, BlobOid, ChunkIndex, CommentId, CommentKind, ContextHash, DiffScope,
+    Event, FileChange, FileRenderHeader, LineNo, LineRange, Mutation, NonEmpty, RefSpec,
+    RenderChunk, RenderOpts, Repo, RepoId, RepoPath, Request, ResolvedSource, Response, Review,
+    ReviewId, ReviewSnapshot, ReviewTarget, RpcError, Seq, Side, Since, StreamItem, SubscribeScope,
+    ThreadId, TreeEntryKind, Workspace, WorkspaceId,
 };
 
 use crate::client::{Client, ClientError, Unsolicited};
@@ -86,7 +86,7 @@ impl Ops {
     pub async fn ensure_directory_review(
         &mut self,
         path: String,
-        base: Option<RefSpec>,
+        base: Option<BaseRefSpec>,
         head: Option<RefSpec>,
     ) -> Result<nits_protocol::DirectoryReview, OpsError> {
         let (ts, random) = crate::ids::fresh_parts();

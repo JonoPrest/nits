@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use strum::{EnumDiscriminants, EnumIter};
 
 use crate::domain::{
-    Anchor, Author, ChangeKind, Comment, CommentKind, CommitInfo, ContentHit, DiffScope,
-    FileChange, RefCandidate, RefSpec, RenderOpts, ResolvedTarget, Review, ReviewStatus,
+    Anchor, Author, BaseRefSpec, ChangeKind, Comment, CommentKind, CommitInfo, ContentHit,
+    DiffScope, FileChange, RefCandidate, RefSpec, RenderOpts, ResolvedTarget, Review, ReviewStatus,
     ReviewTarget, ReviewTargetUpdate, Thread, TreeDelta, TreeSnapshot, ViewedMark, Workspace,
 };
 use crate::events::Event;
@@ -560,7 +560,7 @@ pub struct EnsureDirectoryReview {
     pub repo_id: RepoId,
     pub review_id: ReviewId,
     pub path: String,
-    pub base: Option<RefSpec>,
+    pub base: Option<BaseRefSpec>,
     pub head: Option<RefSpec>,
 }
 
@@ -586,4 +586,31 @@ pub struct DirectoryReview {
     /// First committed bootstrap event, or current log position on reuse.
     /// Pass to `subscribe_events` to receive subsequent events.
     pub seq: Seq,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_bootstrap_accepts_working_tree_only_for_head() {
+        let options = EnsureDirectoryReview {
+            workspace_id: WorkspaceId::from_parts(1, 1),
+            repo_id: RepoId::from_parts(1, 2),
+            review_id: ReviewId::from_parts(1, 3),
+            path: "/repos/example".into(),
+            base: Some(BaseRefSpec::Head),
+            head: Some(RefSpec::WorkingTree),
+        };
+        let mut wire = serde_json::to_value(&options).unwrap();
+        assert_eq!(
+            serde_json::from_value::<EnsureDirectoryReview>(wire.clone()).unwrap(),
+            options
+        );
+        wire["base"] = serde_json::json!({"type": "WorkingTree"});
+        assert!(serde_json::from_value::<EnsureDirectoryReview>(wire.clone()).is_err());
+        let request =
+            serde_json::json!({"type": "EnsureDirectoryReview", "client_seq": 1, "options": wire});
+        assert!(serde_json::from_value::<Request>(request).is_err());
+    }
 }

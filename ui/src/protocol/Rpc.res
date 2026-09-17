@@ -194,7 +194,7 @@ module EnsureDirectoryReview = {
     @as("repo_id") repoId: repoId,
     @as("review_id") reviewId: reviewId,
     path: string,
-    base: @s.null option<RefSpec.t>,
+    base: @s.null option<BaseRefSpec.t>,
     head: @s.null option<RefSpec.t>,
   }
 }

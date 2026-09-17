@@ -5,9 +5,9 @@
 //! comment.
 
 use nits_protocol::{
-    Author, BlobOid, ChangeKind, Comment, CommentId, Event, FileChange, NonEmpty, RefSpec,
-    RenderContent, RepoId, RepoPath, ResolvedTarget, Review, ReviewId, ReviewStatus, Seq, Side,
-    SubscribeScope, Thread, ThreadId, Workspace, WorkspaceId,
+    Author, BaseRefSpec, BlobOid, ChangeKind, Comment, CommentId, Event, FileChange, NonEmpty,
+    RefSpec, RenderContent, RepoId, RepoPath, ResolvedTarget, Review, ReviewId, ReviewStatus, Seq,
+    Side, SubscribeScope, Thread, ThreadId, Workspace, WorkspaceId,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -218,7 +218,7 @@ pub fn all() -> Vec<Tool> {
 #[serde(deny_unknown_fields)]
 pub struct EnsureDirectoryReview {
     pub path: String,
-    pub base: Option<RefSpec>,
+    pub base: Option<BaseRefSpec>,
     pub head: Option<RefSpec>,
 }
 
@@ -693,6 +693,25 @@ mod tests {
             input.get("required"),
             Some(&serde_json::json!(["review_id", "path"]))
         );
+    }
+
+    #[test]
+    fn bootstrap_advertises_working_tree_only_for_head() {
+        let (input, _) = ToolName::EnsureDirectoryReview.schemas();
+        let properties = input.get("properties").unwrap();
+        assert!(
+            properties["base"]
+                .to_string()
+                .contains("#/$defs/BaseRefSpec")
+        );
+        assert!(properties["head"].to_string().contains("#/$defs/RefSpec"));
+        let definitions = input.get("$defs").unwrap();
+        assert!(
+            !definitions["BaseRefSpec"]
+                .to_string()
+                .contains("WorkingTree")
+        );
+        assert!(definitions["RefSpec"].to_string().contains("WorkingTree"));
     }
 
     #[test]
