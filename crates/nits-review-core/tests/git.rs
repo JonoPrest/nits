@@ -667,6 +667,72 @@ fn working_tree_snapshot_reflects_unstaged_edits_untracked_and_deletes() {
 }
 
 #[test]
+fn working_tree_snapshot_rechecks_racy_index_entries_without_changing_real_index() {
+    let t = RepoBuilder::new()
+        .commit("one", files!["value.py" => "value = 1\n"])
+        .build()
+        .unwrap();
+    // A fixed mtime recreates a same-timestamp edit without waiting for a clock
+    // boundary. Ignore ctime because the fixture cannot restore filesystem ctime.
+    t.git(&["config", "core.trustctime", "false"]).unwrap();
+    let timestamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let file = t.write_file("value.py", b"value = 2\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(timestamp)
+        .unwrap();
+    t.git(&["add", "value.py"]).unwrap();
+    let index = t.path().join(".git/index");
+    std::fs::File::options()
+        .write(true)
+        .open(&index)
+        .unwrap()
+        .set_modified(timestamp)
+        .unwrap();
+    let original_index = std::fs::read(&index).unwrap();
+    let original_mtime = std::fs::metadata(&index).unwrap().modified().unwrap();
+
+    // The cached size and mtime still match, but Git must hash the file because
+    // its mtime is at least as recent as the original index's mtime.
+    t.write_file("value.py", b"value = 4\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(timestamp)
+        .unwrap();
+    let repo = Repo::open(t.path()).unwrap();
+    let current = repo.resolve(&RefSpec::WorkingTree).unwrap();
+    let snapshot = repo.tree_snapshot(RepoId::nil(), current.tree).unwrap();
+    let TreeEntryKind::File { oid, .. } = snapshot.entries[0].kind else {
+        panic!("expected value.py file");
+    };
+    assert_eq!(repo.blob(oid).unwrap(), b"value = 4\n");
+    let ResolvedSource::WorkingTree { dirty, .. } = current.source else {
+        panic!("expected working tree");
+    };
+    assert_eq!(
+        dirty
+            .iter()
+            .map(nits_protocol::RepoPath::as_str)
+            .collect::<Vec<_>>(),
+        vec!["value.py"]
+    );
+    assert_eq!(
+        repo.resolve(&RefSpec::WorkingTree).unwrap().tree,
+        current.tree
+    );
+    assert_eq!(std::fs::read(&index).unwrap(), original_index);
+    assert_eq!(
+        std::fs::metadata(&index).unwrap().modified().unwrap(),
+        original_mtime
+    );
+    assert_eq!(t.git(&["show", ":value.py"]).unwrap(), "value = 2");
+}
+
+#[test]
 fn tree_delta_between_snapshots() {
     let t = RepoBuilder::new()
         .commit("one", files!["a.txt" => "a\n", "b.txt" => "b\n"])

@@ -827,14 +827,21 @@ impl Repo {
     /// files are absent.
     pub fn working_tree(&self) -> Result<ResolvedRef, GitError> {
         let git_dir = self.local().git_dir().to_path_buf();
-        let tmp = tempfile::Builder::new()
+        let mut tmp = tempfile::Builder::new()
             .prefix("nits-index-")
             .tempfile_in(&git_dir)?;
         let tmp_path = tmp.path().to_path_buf();
         // Seed from the real index so stat caching makes `add -A` incremental.
         let real_index = git_dir.join("index");
         if real_index.exists() {
-            std::fs::copy(&real_index, &tmp_path)?;
+            // Git uses the index mtime to detect racily clean entries. A fresh
+            // copy timestamp could hide same-size edits from an earlier second.
+            // Read metadata and bytes from one handle so atomic index replacement
+            // cannot pair another generation's timestamp with these entries.
+            let mut source = std::fs::File::open(&real_index)?;
+            let modified = source.metadata()?.modified()?;
+            std::io::copy(&mut source, tmp.as_file_mut())?;
+            tmp.as_file().set_modified(modified)?;
         }
         let env: &[(&str, &Path)] = &[("GIT_INDEX_FILE", tmp_path.as_path())];
         self.git(&["add", "-A", "--ignore-errors", "--", "."], env)?;
