@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, bail};
 use clap::{Args, FromArgMatches, Parser, Subcommand, ValueEnum};
-use nits_config::Context;
+use nits_config::{Context, ContextName, Selection, SelectionOrigin};
 use nits_protocol::{
     AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, DirectoryReviewOutcome, Event,
     EventBody, LineNo, LineRange, Mutation, NonEmpty, RefSpec, RenderOpts, RepoId, RepoPath,
@@ -26,10 +26,10 @@ use std::fmt::Write as _;
 #[command(name = "nits", version, about)]
 struct Cli {
     /// Named context from the config file (see `nits context`). Default:
-    /// `local`, an implicit daemon on this machine. There is no persisted
-    /// "current" context: pass this flag or set `NITS_CONTEXT`.
+    /// the default saved by `nits context use`, then implicit `local`.
+    /// This flag or `NITS_CONTEXT` overrides the saved default.
     #[arg(long, short = 'c', env = "NITS_CONTEXT", global = true)]
-    context: Option<String>,
+    context: Option<ContextName>,
     /// Config file. Default: `$XDG_CONFIG_HOME/nits/config.toml`.
     #[arg(long, env = "NITS_CONFIG", global = true)]
     config: Option<PathBuf>,
@@ -183,8 +183,12 @@ enum ContextCmd {
     /// Configured contexts.
     List,
     /// The selected context's name and details (`-c`, `NITS_CONTEXT`, or
-    /// the implicit `local`).
+    /// the persisted default, or implicit `local`), including selection origin.
     Show,
+    /// Save a named context as the default for new CLI and MCP processes.
+    Use {
+        name: ContextName,
+    },
     /// A daemon on this machine.
     AddLocal {
         name: String,
@@ -472,20 +476,34 @@ fn ref_label(reference: &RefSpec) -> String {
 }
 
 /// The context to use: ad-hoc flags beat `--context` beats the config.
-fn resolve_context(cli: &Cli, cfg: &nits_config::Config) -> anyhow::Result<(String, Context)> {
+fn resolve_context(
+    cli: &Cli,
+    cfg: &nits_config::Config,
+    origin: SelectionOrigin,
+) -> anyhow::Result<Selection> {
     if let Some(url) = &cli.daemon_url {
-        return Ok(("--daemon-url".into(), Context::Ws { url: url.clone() }));
+        return Ok(Selection {
+            name: "--daemon-url".parse()?,
+            context: Context::Ws { url: url.clone() },
+            origin: SelectionOrigin::AdHoc,
+        });
     }
     if cli.socket.is_some() || cli.data_dir.is_some() {
-        return Ok((
-            "--socket".into(),
-            Context::Local {
+        return Ok(Selection {
+            name: (if cli.socket.is_some() {
+                "--socket"
+            } else {
+                "--data-dir"
+            })
+            .parse()?,
+            context: Context::Local {
                 data_dir: cli.data_dir.clone(),
                 socket: cli.socket.clone(),
             },
-        ));
+            origin: SelectionOrigin::AdHoc,
+        });
     }
-    Ok(cfg.resolve(cli.context.as_deref())?)
+    Ok(cfg.selection(cli.context.as_ref().map(|name| (name, origin)))?)
 }
 
 fn config_path(cli: &Cli) -> anyhow::Result<PathBuf> {
@@ -510,7 +528,7 @@ fn desktop_args(cli: &Cli) -> Vec<std::ffi::OsString> {
         }
     } else {
         if let Some(context) = &cli.context {
-            args.push(context.into());
+            args.push(context.as_str().into());
         }
         if let Some(config) = &cli.config {
             args.extend(["--config".into(), config.as_os_str().into()]);
@@ -594,11 +612,16 @@ fn serve_opts(spec: &nitsd::launch::DaemonSpec, args: &ServeArgs) -> nitsd::serv
 }
 
 /// `nits mcp`: the MCP stdio server, on the context the global flags chose.
-async fn mcp(ctx: &Context, start: contexts::StartPolicy) -> anyhow::Result<()> {
+async fn mcp(
+    selection: Selection,
+    config_path: PathBuf,
+    start: contexts::StartPolicy,
+) -> anyhow::Result<()> {
     init_daemon_logging();
     nits_mcp::serve_stdio(
         nits_mcp::Endpoint {
-            context: ctx.clone(),
+            selection,
+            config_path,
             start,
         },
         nits_mcp::server::AgentIdentity::from_env(),
@@ -799,7 +822,14 @@ fn keys_cmd(cmd: &KeysCmd) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let matches = <Cli as clap::CommandFactory>::command().get_matches();
+    let origin = if matches.value_source("context") == Some(clap::parser::ValueSource::EnvVariable)
+    {
+        SelectionOrigin::Environment
+    } else {
+        SelectionOrigin::Flag
+    };
+    let mut cli = Cli::from_arg_matches(&matches)?;
     if cli.cmd.is_none()
         && cli.path.is_some()
         && let Some(workspace) = cli.workspace
@@ -815,15 +845,20 @@ async fn main() -> anyhow::Result<()> {
         // Purely local: no daemon, no context.
         return keys_cmd(c);
     }
-    if let Some(Cmd::Context(c)) = cli.cmd {
-        return context_cmd(&mut cfg, &cfg_path, cli.context.as_deref(), c, json);
+    if matches!(cli.cmd, Some(Cmd::Context(_)))
+        && let Some(Cmd::Context(c)) = cli.cmd.take()
+    {
+        return context_cmd(&mut cfg, &cfg_path, &cli, origin, c, json);
     }
-    let (name, ctx) = resolve_context(&cli, &cfg)?;
-    if let Some(Cmd::Daemon(c)) = cli.cmd {
-        return daemon_cmd(&cfg, &name, &ctx, c, json, cli.start_policy.into()).await;
-    }
+    let selection = resolve_context(&cli, &cfg, origin)?;
     if let Some(Cmd::Mcp) = cli.cmd {
-        return mcp(&ctx, cli.start_policy.into()).await;
+        return mcp(selection, cfg_path, cli.start_policy.into()).await;
+    }
+    let Selection {
+        name, context: ctx, ..
+    } = selection;
+    if let Some(Cmd::Daemon(c)) = cli.cmd {
+        return daemon_cmd(&cfg, name.as_str(), &ctx, c, json, cli.start_policy.into()).await;
     }
     let ops = connect(&cli, &ctx).await?;
     let Some(cmd) = cli.cmd else {
@@ -1330,7 +1365,8 @@ async fn events(
 fn context_cmd(
     cfg: &mut nits_config::Config,
     path: &Path,
-    selected: Option<&str>,
+    cli: &Cli,
+    origin: SelectionOrigin,
     cmd: ContextCmd,
     json: bool,
 ) -> anyhow::Result<()> {
@@ -1350,9 +1386,26 @@ fn context_cmd(
             rows.join("\n")
         }),
         ContextCmd::Show => {
-            let (name, ctx) = cfg.resolve(selected)?;
-            emit(json, &(&name, &ctx), || {
-                format!("{name}\t{}", ctx.describe())
+            let selection = resolve_context(cli, cfg, origin)?;
+            emit(json, &selection, || {
+                format!(
+                    "{}\t{}\t{:?}",
+                    selection.name,
+                    selection.context.describe(),
+                    selection.origin
+                )
+            })
+        }
+        ContextCmd::Use { name } => {
+            let selection = cfg.selection(Some((&name, SelectionOrigin::Persisted)))?;
+            cfg.current_context = Some(name);
+            cfg.save(path)?;
+            emit(json, &selection, || {
+                format!(
+                    "default context: {}\t{}",
+                    selection.name,
+                    selection.context.describe()
+                )
             })
         }
         ContextCmd::AddLocal {

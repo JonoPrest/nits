@@ -1,9 +1,10 @@
 //! The tools: one argument struct and one result struct per tool. Both are
 //! serde types with `schemars` derives, so what `tools/list` advertises is
 //! exactly what `tools/call` parses and returns — there is no hand-written
-//! schema anywhere. The tool's description is the argument struct's doc
-//! comment.
+//! schema anywhere. Descriptions belong to tool identities, even when
+//! argument types are shared.
 
+use nits_config::{ContextKind, ContextName};
 use nits_protocol::{
     Author, BaseRefSpec, BlobOid, ChangeKind, Comment, CommentId, Event, FileChange, LineNo,
     LineRange, NonEmpty, RefSpec, RenderContent, RepoId, RepoPath, ResolvedTarget, Review,
@@ -12,7 +13,7 @@ use nits_protocol::{
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use strum::{Display, EnumDiscriminants, EnumIter, IntoEnumIterator, IntoStaticStr};
+use strum::{Display, EnumDiscriminants, EnumIter, EnumMessage, IntoEnumIterator, IntoStaticStr};
 
 /// A decoded `tools/call`: the variant is the tool, the payload its
 /// validated arguments. Adding a tool means adding a variant here; the
@@ -21,29 +22,96 @@ use strum::{Display, EnumDiscriminants, EnumIter, IntoEnumIterator, IntoStaticSt
 #[derive(Debug, Deserialize, EnumDiscriminants)]
 #[strum_discriminants(
     name(ToolName),
-    derive(EnumIter, IntoStaticStr, Display, Hash, PartialOrd, Ord, Deserialize),
+    derive(
+        EnumIter,
+        EnumMessage,
+        IntoStaticStr,
+        Display,
+        Hash,
+        PartialOrd,
+        Ord,
+        Deserialize
+    ),
     strum(serialize_all = "snake_case"),
     serde(rename_all = "snake_case")
 )]
 #[serde(tag = "name", content = "arguments", rename_all = "snake_case")]
 pub enum ToolCall {
+    #[strum_discriminants(strum(
+        message = "List configured contexts, the active daemon and the persisted default. Reads the current config file; does not connect or switch."
+    ))]
+    ListContexts(NoArgs),
+    #[strum_discriminants(strum(
+        message = "Switch the active daemon for subsequent calls in this MCP session. Calls run in order; wait for this result before using IDs from that daemon. Connects and negotiates before replacement; failure retains the previous connection. Preserves agent identity, discards old subscriptions, and does not change the persisted default. After switching, pass since_context with any since_seq; cursors and review/workspace IDs belong to their source context."
+    ))]
+    UseContext(UseContext),
+    #[strum_discriminants(strum(
+        message = "Workspaces known to the daemon, each with its attached repos."
+    ))]
     ListWorkspaces(NoArgs),
+    #[strum_discriminants(strum(
+        message = "Reviews in a workspace. Without `workspace_id`: the workspace whose attached repo contains this server's working directory."
+    ))]
     ListReviews(ListReviews),
+    #[strum_discriminants(strum(
+        message = "A review with its resolved targets, changed files, threads and comments."
+    ))]
     GetReview(ByReview),
+    #[strum_discriminants(strum(
+        message = "Ensure an open review for a checkout, attaching it on first use. Path is interpreted on the daemon's machine (absolute paths are recommended). Default head is `WorkingTree`; omitted base preserves a matching open review or uses the detected base. Explicit refs must match to reuse a review; use `update_review_target` to change an existing review while keeping threads."
+    ))]
     EnsureDirectoryReview(EnsureDirectoryReview),
+    #[strum_discriminants(strum(
+        message = "Change one existing repository target's base or head, preserving the review, threads and history. The daemon validates refs and reanchors comments."
+    ))]
     UpdateReviewTarget(UpdateReviewTarget),
+    #[strum_discriminants(strum(
+        message = "Create a review over one or more repos. Returns its ID and committed sequence; use `get_review` for its contents and resolved targets. Without `workspace_id`: the workspace containing this server's working directory."
+    ))]
     CreateReview(CreateReview),
+    #[strum_discriminants(strum(message = "Rename a review or change its status."))]
     UpdateReview(UpdateReview),
+    #[strum_discriminants(strum(
+        message = "The diff of one changed file in a review, as numbered text (old-line new-line mark text)."
+    ))]
     GetDiff(GetDiff),
+    #[strum_discriminants(strum(
+        message = "Contents of a file at the review's base or head, with absolute line numbers. Works for unchanged files too. Omit both bounds for the full file; otherwise supply both for an inclusive range. Ends beyond EOF are clamped; starts beyond EOF return empty text and a null `returned_range`. Empty files have zero lines. Binary files have no line metadata and reject bounded reads."
+    ))]
     GetFile(GetFile),
+    #[strum_discriminants(strum(
+        message = "Comment threads on a review, including resolution state, comments and attribution."
+    ))]
     ListComments(ByReview),
+    #[strum_discriminants(strum(
+        message = "Start a thread. Anchor to the whole review (no path), a file (path only) or a line range (path + `start_line` [+ `end_line`]) on the given side."
+    ))]
     AddComment(AddComment),
+    #[strum_discriminants(strum(
+        message = "Start a thread carrying a suggested change: a unified diff against the anchored blob that a human can apply."
+    ))]
     Suggest(Suggest),
+    #[strum_discriminants(strum(message = "Reply in an existing thread."))]
     Reply(Reply),
+    #[strum_discriminants(strum(
+        message = "Mark a thread resolved (or reopen it with `resolved: false`)."
+    ))]
     Resolve(Resolve),
+    #[strum_discriminants(strum(
+        message = "Ask a named agent to review. Subscribers with scope `AwaitingAgent` for that name are notified. Use the recipient's `get_session_identity` `author.name` unchanged as `agent`."
+    ))]
     RequestReview(RequestReview),
+    #[strum_discriminants(strum(
+        message = "Long-poll for events. Returns events matching the scope after `since_seq`, waiting up to `timeout_ms` for at least one. Pass the returned `last_seq` back as `since_seq` to continue. Mutation results also return a `seq`: use it as `since_seq` for later events, or use an earlier cursor to include the mutation's full event. `review_id`, `workspace_id`, and `awaiting_agent` are mutually exclusive: provide at most one non-null scope filter, or omit all for every event. Cursors are scoped to the returned context.name. After use_context, since_context is required with since_seq; mismatched contexts are rejected."
+    ))]
     SubscribeEvents(SubscribeEvents),
+    #[strum_discriminants(strum(
+        message = "Read this MCP session's current author, including its display/routing name, model and immutable provenance. Use `author.name` for `request_review.agent` and `subscribe_events.awaiting_agent`. Available after initialize, even if the daemon connection is down."
+    ))]
     GetSessionIdentity(GetSessionIdentity),
+    #[strum_discriminants(strum(
+        message = "Set this MCP session's name and model for subsequent events. Both fields are required; use `get_session_identity` to retain a current value. Names and models must be nonempty, with no surrounding whitespace or control characters. The name is also the exact routing key for `request_review.agent` and `subscribe_events.awaiting_agent`; keep it stable while collaborating. Reconnects to the daemon before applying; on failure the old identity remains. Session ID, invoking human, Agent/Mcp provenance and historical authors are preserved. This changes only the calling session and appends no event."
+    ))]
     SetSessionIdentity(SetSessionIdentity),
 }
 
@@ -75,6 +143,13 @@ pub enum MutatingCall {
 
 /// Session-local operations, separate from daemon queries and event writes.
 #[derive(Debug)]
+pub enum ContextCall {
+    List,
+    Use(UseContext),
+}
+
+/// Session-local operations, separate from daemon queries and event writes.
+#[derive(Debug)]
 pub enum SessionCall {
     GetIdentity,
     SetIdentity(SetSessionIdentity),
@@ -86,6 +161,7 @@ pub enum Call {
     Query(QueryCall),
     Mutating(MutatingCall),
     Session(SessionCall),
+    Context(ContextCall),
 }
 
 impl ToolCall {
@@ -107,6 +183,8 @@ impl ToolCall {
     #[must_use]
     pub fn classify(self) -> Call {
         match self {
+            ToolCall::ListContexts(NoArgs {}) => Call::Context(ContextCall::List),
+            ToolCall::UseContext(p) => Call::Context(ContextCall::Use(p)),
             ToolCall::ListWorkspaces(NoArgs {}) => Call::Query(QueryCall::ListWorkspaces),
             ToolCall::ListReviews(p) => Call::Query(QueryCall::ListReviews(p)),
             ToolCall::GetReview(p) => Call::Query(QueryCall::GetReview(p)),
@@ -142,7 +220,7 @@ pub struct NoArgs {}
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tool {
     pub name: ToolName,
-    /// The argument struct's doc comment.
+    /// The tool identity's description.
     pub description: String,
     pub input_schema: Schema,
     pub output_schema: Schema,
@@ -154,6 +232,8 @@ impl ToolName {
     #[must_use]
     pub fn schemas(self) -> (Schema, Schema) {
         match self {
+            ToolName::ListContexts => (schema_for!(NoArgs), schema_for!(Contexts)),
+            ToolName::UseContext => (schema_for!(UseContext), schema_for!(ContextSelected)),
             ToolName::ListWorkspaces => (schema_for!(NoArgs), schema_for!(Workspaces)),
             ToolName::ListReviews => (schema_for!(ListReviews), schema_for!(Reviews)),
             ToolName::GetReview => (schema_for!(ByReview), schema_for!(ReviewDetail)),
@@ -188,12 +268,10 @@ impl ToolName {
 
     #[must_use]
     pub fn tool(self) -> Tool {
-        let (input_schema, output_schema) = self.schemas();
-        let description = input_schema
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let (mut input_schema, output_schema) = self.schemas();
+        let description = self.get_message().unwrap_or_default().to_owned();
+        input_schema.insert("title".into(), self.to_string().into());
+        input_schema.insert("description".into(), description.clone().into());
         Tool {
             name: self,
             description,
@@ -207,6 +285,32 @@ impl ToolName {
 #[must_use]
 pub fn all() -> Vec<Tool> {
     ToolName::iter().map(ToolName::tool).collect()
+}
+
+/// Select a configured daemon for subsequent calls in this MCP session.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UseContext {
+    pub name: ContextName,
+}
+
+/// The selected daemon's configured name and transport kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ContextIdentity {
+    pub name: ContextName,
+    pub kind: ContextKind,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ContextSelected {
+    pub context: ContextIdentity,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Contexts {
+    pub contexts: Vec<ContextIdentity>,
+    pub active: ContextIdentity,
+    pub persisted: Option<ContextName>,
 }
 
 /// Ensure an open review for a checkout, attaching it on first use. Path is
@@ -513,11 +617,26 @@ pub struct RequestReview {
 /// provide at most one non-null scope filter, or omit all for every event.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(try_from = "SubscribeEventsWire")]
+#[schemars(with = "SubscribeEventsWire")]
 pub struct SubscribeEvents {
     pub scope: SubscribeScope,
-    pub since_seq: Option<Seq>,
+    pub start: EventStart,
     pub timeout_ms: u64,
     pub max: usize,
+}
+
+/// A subscription starts live or replays a position from one source.
+#[derive(Debug, PartialEq, Eq)]
+pub enum EventStart {
+    Live,
+    Replay { seq: Seq, source: CursorSource },
+}
+
+/// Bare cursors remain accepted until the MCP session switches contexts.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CursorSource {
+    InitialContext,
+    Named(ContextName),
 }
 
 /// Flat MCP arguments, converted to a single scope at the serde boundary.
@@ -536,6 +655,9 @@ struct SubscribeEventsWire {
     awaiting_agent: Option<String>,
     /// Replay after this log position; omit for live only.
     since_seq: Option<Seq>,
+    /// Context name that issued `since_seq`. Required after `use_context`;
+    /// a name different from the active context is rejected.
+    since_context: Option<ContextName>,
     /// Default 30000.
     #[serde(default = "default_timeout")]
     timeout_ms: u64,
@@ -545,13 +667,17 @@ struct SubscribeEventsWire {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error(
-    "review_id, workspace_id, and awaiting_agent are mutually exclusive; provide at most one non-null scope filter, or omit all for every event"
-)]
-struct ConflictingSubscribeScopes;
+enum InvalidSubscribe {
+    #[error(
+        "review_id, workspace_id, and awaiting_agent are mutually exclusive; provide at most one non-null scope filter, or omit all for every event"
+    )]
+    ConflictingScopes,
+    #[error("since_context requires since_seq")]
+    ContextWithoutSequence,
+}
 
 impl TryFrom<SubscribeEventsWire> for SubscribeEvents {
-    type Error = ConflictingSubscribeScopes;
+    type Error = InvalidSubscribe;
 
     fn try_from(wire: SubscribeEventsWire) -> Result<Self, Self::Error> {
         let scope = match (wire.review_id, wire.workspace_id, wire.awaiting_agent) {
@@ -560,12 +686,20 @@ impl TryFrom<SubscribeEventsWire> for SubscribeEvents {
             (None, Some(workspace_id), None) => SubscribeScope::Workspace { workspace_id },
             (None, None, Some(agent)) => SubscribeScope::AwaitingAgent { agent },
             (Some(_), Some(_), _) | (Some(_), None, Some(_)) | (None, Some(_), Some(_)) => {
-                return Err(ConflictingSubscribeScopes);
+                return Err(InvalidSubscribe::ConflictingScopes);
             }
+        };
+        let start = match (wire.since_seq, wire.since_context) {
+            (None, None) => EventStart::Live,
+            (None, Some(_)) => return Err(InvalidSubscribe::ContextWithoutSequence),
+            (Some(seq), source) => EventStart::Replay {
+                seq,
+                source: source.map_or(CursorSource::InitialContext, CursorSource::Named),
+            },
         };
         Ok(Self {
             scope,
-            since_seq: wire.since_seq,
+            start,
             timeout_ms: wire.timeout_ms,
             max: wire.max,
         })
@@ -590,16 +724,19 @@ pub struct SessionIdentity {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Workspaces {
+    pub context: ContextIdentity,
     pub workspaces: Vec<Workspace>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Reviews {
+    pub context: ContextIdentity,
     pub reviews: Vec<Review>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ReviewDetail {
+    pub context: ContextIdentity,
     pub review: Review,
     pub resolved: Option<NonEmpty<ResolvedTarget>>,
     pub files: Vec<FileChange>,
@@ -650,6 +787,7 @@ pub struct Requested {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct DiffText {
+    pub context: ContextIdentity,
     pub repo_id: RepoId,
     pub path: RepoPath,
     pub change: ChangeKind,
@@ -661,6 +799,7 @@ pub struct DiffText {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FileText {
+    pub context: ContextIdentity,
     pub repo_id: RepoId,
     pub path: RepoPath,
     pub side: Side,
@@ -683,6 +822,7 @@ pub struct FileLines {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Comments {
+    pub context: ContextIdentity,
     pub threads: Vec<Thread>,
     pub comments: Vec<Comment>,
     pub seq: Seq,
@@ -706,6 +846,7 @@ pub struct Replied {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Events {
+    pub context: ContextIdentity,
     pub events: Vec<Event>,
     /// Pass back as `since_seq`.
     pub last_seq: Seq,
@@ -744,6 +885,59 @@ mod tests {
             input.get("required"),
             Some(&serde_json::json!(["review_id", "path"]))
         );
+    }
+
+    #[test]
+    fn subscription_cursors_parse_the_source_with_the_position() {
+        assert!(
+            ToolCall::parse(
+                ToolName::SubscribeEvents,
+                serde_json::json!({ "since_context": "remote" })
+            )
+            .is_err()
+        );
+        let call = ToolCall::parse(
+            ToolName::SubscribeEvents,
+            serde_json::json!({ "since_context": "remote", "since_seq": 7 }),
+        )
+        .unwrap();
+        let Call::Query(QueryCall::SubscribeEvents(parsed)) = call.classify() else {
+            panic!("expected subscription");
+        };
+        assert_eq!(
+            parsed.start,
+            EventStart::Replay {
+                seq: Seq::new(7),
+                source: CursorSource::Named("remote".parse().unwrap())
+            }
+        );
+    }
+
+    #[test]
+    fn shared_arguments_have_tool_specific_descriptions_and_titles() {
+        let review = ToolName::GetReview.tool();
+        let comments = ToolName::ListComments.tool();
+        assert_ne!(review.description, comments.description);
+        assert!(comments.description.contains("Comment threads"));
+        assert!(review.description.contains("resolved targets"));
+        assert_eq!(
+            review.input_schema.get("title"),
+            Some(&Value::String("get_review".into()))
+        );
+        assert_eq!(
+            comments.input_schema.get("title"),
+            Some(&Value::String("list_comments".into()))
+        );
+        assert!(ToolCall::parse(ToolName::UseContext, serde_json::json!({ "name": " " })).is_err());
+        assert!(matches!(
+            ToolCall::parse(
+                ToolName::UseContext,
+                serde_json::json!({ "name": "remote" })
+            )
+            .unwrap()
+            .classify(),
+            Call::Context(ContextCall::Use(_))
+        ));
     }
 
     #[test]
@@ -786,7 +980,9 @@ mod tests {
                 }
                 ToolName::Resolve => Some(&["review_id", "thread_id", "resolution", "seq"]),
                 ToolName::RequestReview => Some(&["review_id", "agent", "seq"]),
-                ToolName::ListWorkspaces
+                ToolName::ListContexts
+                | ToolName::UseContext
+                | ToolName::ListWorkspaces
                 | ToolName::ListReviews
                 | ToolName::GetReview
                 | ToolName::GetDiff
@@ -1027,7 +1223,7 @@ mod tests {
                 panic!("expected subscribe_events");
             };
             assert_eq!(parsed.scope, expected);
-            assert_eq!(parsed.since_seq, None);
+            assert_eq!(parsed.start, EventStart::Live);
             assert_eq!(parsed.timeout_ms, 30_000);
             assert_eq!(parsed.max, 100);
         }
@@ -1037,7 +1233,13 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(parsed.scope, SubscribeScope::Review { review_id });
-        assert_eq!(parsed.since_seq, Some(Seq::new(7)));
+        assert_eq!(
+            parsed.start,
+            EventStart::Replay {
+                seq: Seq::new(7),
+                source: CursorSource::InitialContext
+            }
+        );
         assert_eq!(parsed.timeout_ms, 5);
         assert_eq!(parsed.max, 3);
     }

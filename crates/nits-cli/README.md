@@ -22,6 +22,23 @@ $ nits diff
 Other ways to install — Homebrew, `apt`, `dnf`, the AUR — and the full
 documentation are at <https://github.com/JonoPrest/nits>.
 
+Select a default daemon with `nits context use <NAME>` (saved atomically in
+`~/.config/nits/config.toml`, or `--config` / `NITS_CONFIG`). Offline contexts
+can be selected. `nits context show` reports the effective selection and its
+origin; `--json` returns `{name, context, origin}`. Ad-hoc transport flags take
+precedence over `-c`, then `NITS_CONTEXT`, the persisted default, and implicit
+`local`. To remove the persisted default, select another context first.
+
+`nits mcp` uses the same startup default. Inside MCP, `list_contexts` reports
+configured names and the active daemon; `use_context {"name":"build-box"}`
+switches that session after a successful handshake. Failure leaves the old
+connection active. A switch preserves agent identity and affects subsequent
+calls only; await it before using the selected daemon's IDs. Read results
+include `context: {name, kind}`. After switching, pass `since_context` alongside
+`subscribe_events.since_seq`, using the source context's name. Running MCP
+sessions do not follow later CLI default changes, and MCP switches do not
+rewrite the default.
+
 Select a workspace with `--workspace <ID>` anywhere in the command, including
 before `review list`, `review create`, or `events`. Without it, review commands
 infer the workspace from the current directory. `nits workspace list` lists IDs,

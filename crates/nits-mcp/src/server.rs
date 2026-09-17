@@ -3,7 +3,7 @@
 //! clients pipeline rarely and the daemon connection is shared, so
 //! serialising keeps event long-polls from interleaving with other calls.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use nits_protocol::{
@@ -18,7 +18,9 @@ use serde_json::{Value, json};
 use strum::EnumString;
 
 use crate::jsonrpc::{self, Incoming, Outgoing};
-use crate::tools::{self, Call, MutatingCall, QueryCall, SessionCall, ToolCall, ToolName};
+use crate::tools::{
+    self, Call, ContextCall, MutatingCall, QueryCall, SessionCall, ToolCall, ToolName,
+};
 
 /// JSON-RPC methods this server answers. Anything else is
 /// `METHOD_NOT_FOUND`.
@@ -56,7 +58,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// How to reach the daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoint {
-    pub context: nits_config::Context,
+    pub selection: nits_config::Selection,
+    /// Context definitions are reloaded for `list_contexts` and `use_context`.
+    pub config_path: PathBuf,
     /// Start the daemon when initializing or reconnecting if it is not
     /// running (local and ssh contexts), so an agent can always get going.
     pub start: nitsd::contexts::StartPolicy,
@@ -106,6 +110,8 @@ pub enum ToolError {
     )]
     Disconnected,
     #[error(transparent)]
+    Config(#[from] nits_config::ConfigError),
+    #[error(transparent)]
     Ops(OpsError),
 }
 
@@ -146,12 +152,20 @@ struct Session {
     ops: Ops,
 }
 
+/// Legacy bare cursors are unambiguous only before a context switch.
+#[derive(Debug, Clone, Copy)]
+enum CursorPolicy {
+    InitialContext,
+    RequireContext,
+}
+
 #[derive(Debug)]
 pub struct Server {
     endpoint: Endpoint,
     agent: AgentIdentity,
     build: BuildInfo,
     session: Option<Session>,
+    cursor_policy: CursorPolicy,
 }
 
 impl Server {
@@ -162,6 +176,7 @@ impl Server {
             agent,
             build,
             session: None,
+            cursor_policy: CursorPolicy::InitialContext,
         }
     }
 
@@ -268,18 +283,31 @@ impl Server {
             "capabilities": { "tools": {} },
             "serverInfo": { "name": self.build.name, "version": self.build.version },
             "instructions": format!(
-                "Nits code review. Connected to {} {}. Start with list_workspaces, then get_review; \
+                "Nits code review. Connected to {} {} in context {}. \
+                 Use list_contexts and use_context to select a daemon for this session; calls run in order. \
+                 New sessions follow the CLI persisted default unless launch flags override it. \
+                 Reads report their source context. IDs and cursors belong to that context; after switching, \
+                 pass since_context with since_seq. Start with list_workspaces, then get_review; \
                  anchor comments with add_comment/suggest; wait for work with subscribe_events. \
                  Use get_session_identity to see your author; set_session_identity with name and \
                  model before posting to identify this agent. Share the returned author.name as \
                  the exact request_review.agent / subscribe_events.awaiting_agent routing key \
                  and keep it stable while collaborating. Identity changes affect only future events.",
-                daemon.name, daemon.version
+                daemon.name, daemon.version, self.endpoint.selection.name
             ),
         }))
     }
 
     async fn connect(&self, author: Author) -> Result<Client, ToolError> {
+        self.connect_context(&self.endpoint.selection.context, author)
+            .await
+    }
+
+    async fn connect_context(
+        &self,
+        context: &nits_config::Context,
+        author: Author,
+    ) -> Result<Client, ToolError> {
         let (ts, r) = nitsd::ids::fresh_parts();
         let identity = Identity {
             client_id: ClientId::from_parts(ts, r),
@@ -288,7 +316,7 @@ impl Server {
         };
         tokio::time::timeout(
             CONNECT_TIMEOUT,
-            nitsd::contexts::connect(&self.endpoint.context, identity, self.endpoint.start),
+            nitsd::contexts::connect(context, identity, self.endpoint.start),
         )
         .await
         .map_err(|_| ToolError::Connecting(format!("timed out after {CONNECT_TIMEOUT:?}")))?
@@ -337,6 +365,74 @@ impl Server {
                 self.call_mutating(m).await
             }
             Call::Session(s) => self.call_session(s).await,
+            Call::Context(c) => self.call_context(c).await,
+        }
+    }
+
+    fn context_identity(&self) -> tools::ContextIdentity {
+        tools::ContextIdentity {
+            name: self.endpoint.selection.name.clone(),
+            kind: self.endpoint.selection.context.kind(),
+        }
+    }
+
+    async fn call_context(&mut self, call: ContextCall) -> Result<Value, ToolError> {
+        let session = self.session.as_ref().ok_or(ToolError::NotInitialized)?;
+        let config = nits_config::Config::load(&self.endpoint.config_path)?;
+        match call {
+            ContextCall::List => {
+                let mut contexts: Vec<_> = config
+                    .contexts
+                    .iter()
+                    .map(|(name, context)| {
+                        Ok(tools::ContextIdentity {
+                            name: name.parse()?,
+                            kind: context.kind(),
+                        })
+                    })
+                    .collect::<Result<_, nits_config::ConfigError>>()?;
+                if !config.contexts.contains_key(nits_config::DEFAULT_CONTEXT) {
+                    contexts.insert(
+                        0,
+                        tools::ContextIdentity {
+                            name: nits_config::DEFAULT_CONTEXT.parse()?,
+                            kind: nits_config::ContextKind::Local,
+                        },
+                    );
+                }
+                ok(tools::Contexts {
+                    contexts,
+                    active: self.context_identity(),
+                    persisted: config.current_context,
+                })
+            }
+            ContextCall::Use(p) => {
+                let selection =
+                    config.selection(Some((&p.name, nits_config::SelectionOrigin::Mcp)))?;
+                let author = session.author.clone();
+                // Do not touch active state until the new daemon has welcomed us.
+                // Dropping the entire old Ops closes subscriptions and queues;
+                // a fresh client ID accompanies the new mutation sequence.
+                let client = self
+                    .connect_context(&selection.context, author.clone())
+                    .await?;
+                let cursor_policy = if selection.name == self.endpoint.selection.name
+                    && selection.context == self.endpoint.selection.context
+                {
+                    self.cursor_policy
+                } else {
+                    CursorPolicy::RequireContext
+                };
+                self.session = Some(Session {
+                    author,
+                    ops: Ops::new(client),
+                });
+                self.endpoint.selection = selection;
+                self.cursor_policy = cursor_policy;
+                ok(tools::ContextSelected {
+                    context: self.context_identity(),
+                })
+            }
         }
     }
 
@@ -366,10 +462,35 @@ impl Server {
         ok(tools::SessionIdentity { author })
     }
 
+    fn subscription_since(&self, start: tools::EventStart) -> Result<Since, ToolError> {
+        Ok(match start {
+            tools::EventStart::Live => Since::Now,
+            tools::EventStart::Replay { seq, source } => {
+                match source {
+                    tools::CursorSource::Named(name) => {
+                        if name != self.endpoint.selection.name {
+                            return Err(ToolError::Invalid(format!(
+                                "cursor context {name} does not match active context {}; use_context first",
+                                self.endpoint.selection.name
+                            )));
+                        }
+                    }
+                    tools::CursorSource::InitialContext => {
+                        if matches!(self.cursor_policy, CursorPolicy::RequireContext) {
+                            return Err(ToolError::Invalid("since_context is required with since_seq after switching contexts; use the context.name that issued the cursor".into()));
+                        }
+                    }
+                }
+                Since::After { seq }
+            }
+        })
+    }
+
     async fn call_query(&self, call: QueryCall) -> Result<Value, ToolError> {
         let ops = self.ops()?;
         match call {
             QueryCall::ListWorkspaces => ok(tools::Workspaces {
+                context: self.context_identity(),
                 workspaces: ops.workspaces().await?,
             }),
             QueryCall::ListReviews(p) => {
@@ -378,6 +499,7 @@ impl Server {
                     None => ops.locate(Path::new(".")).await?.workspace.id,
                 };
                 ok(tools::Reviews {
+                    context: self.context_identity(),
                     reviews: ops.reviews(workspace_id).await?,
                 })
             }
@@ -385,6 +507,7 @@ impl Server {
                 let snap = ops.snapshot(p.review_id).await?;
                 let files = ops.files(p.review_id).await?;
                 ok(tools::ReviewDetail {
+                    context: self.context_identity(),
                     review: snap.review,
                     resolved: snap.resolved,
                     files,
@@ -406,6 +529,7 @@ impl Server {
                     .await?;
                 let text = text::render(&header, &chunks);
                 ok(tools::DiffText {
+                    context: self.context_identity(),
                     repo_id: file.repo_id,
                     path: file.path,
                     change: file.kind,
@@ -418,17 +542,19 @@ impl Server {
             QueryCall::ListComments(p) => {
                 let snap = ops.snapshot(p.review_id).await?;
                 ok(tools::Comments {
+                    context: self.context_identity(),
                     threads: snap.threads,
                     comments: snap.comments,
                     seq: snap.seq,
                 })
             }
             QueryCall::SubscribeEvents(p) => {
-                let since = p.since_seq.map_or(Since::Now, |seq| Since::After { seq });
+                let since = self.subscription_since(p.start)?;
                 let polled = ops
                     .poll_events(p.scope, since, Duration::from_millis(p.timeout_ms), p.max)
                     .await?;
                 ok(tools::Events {
+                    context: self.context_identity(),
                     events: polled.events,
                     last_seq: polled.last_seq,
                 })
@@ -474,6 +600,7 @@ impl Server {
             None => text::render_blob(&header, &chunks),
         };
         ok(tools::FileText {
+            context: self.context_identity(),
             repo_id,
             path,
             side: p.side,

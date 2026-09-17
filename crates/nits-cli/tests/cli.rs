@@ -1220,3 +1220,232 @@ fn directory_opening_rejects_workspace_selection_before_connecting_or_creating_s
     }
     assert_eq!(h.out(&["--json", "workspace", "list"]), before);
 }
+
+/// Context tests must not inherit the developer's transport/default selection.
+fn configured_nits(config: &Path) -> Command {
+    let mut command = Command::cargo_bin("nits").unwrap();
+    command.env("NITS_CONFIG", config).env("NITS_USER", "ada");
+    for key in [
+        "NITS_CONTEXT",
+        "NITS_SOCKET",
+        "NITS_WS_URL",
+        "NITS_DATA_DIR",
+        "NITS_AGENT",
+    ] {
+        command.env_remove(key);
+    }
+    command
+}
+
+fn json_output(command: &mut Command) -> serde_json::Value {
+    let output = command.arg("--json").assert().success();
+    serde_json::from_slice(&output.get_output().stdout).unwrap()
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one precedence scenario across two live daemons
+fn persisted_context_precedence_and_origins_use_real_daemons() {
+    let a = start();
+    let b = start();
+    a.out(&["workspace", "add", "workspace-a"]);
+    b.out(&["workspace", "add", "workspace-b"]);
+    let config_path = a.dir.path().join("selection.toml");
+    let mut config = nits_config::Config::default();
+    for (name, socket) in [("a", &a.socket), ("b", &b.socket)] {
+        config.contexts.insert(
+            name.into(),
+            nits_config::Context::Local {
+                data_dir: None,
+                socket: Some(socket.clone()),
+            },
+        );
+    }
+    config.contexts.insert(
+        "offline".into(),
+        nits_config::Context::Ws {
+            url: "ws://127.0.0.1:1".into(),
+        },
+    );
+    config.save(&config_path).unwrap();
+    let initial = json_output(configured_nits(&config_path).args(["context", "show"]));
+    assert_eq!(initial["name"], "local");
+    assert_eq!(initial["origin"], "Implicit");
+    configured_nits(&config_path)
+        .args(["context", "use", "b"])
+        .assert()
+        .success();
+    let selected = json_output(configured_nits(&config_path).args(["context", "show"]));
+    assert_eq!(selected["name"], "b");
+    assert_eq!(selected["origin"], "Persisted");
+    assert_eq!(
+        json_output(configured_nits(&config_path).args(["workspace", "list"]))[0]["name"],
+        "workspace-b"
+    );
+
+    let environment = json_output(
+        configured_nits(&config_path)
+            .env("NITS_CONTEXT", "a")
+            .args(["context", "show"]),
+    );
+    assert_eq!(environment["name"], "a");
+    assert_eq!(environment["origin"], "Environment");
+    assert_eq!(
+        json_output(
+            configured_nits(&config_path)
+                .env("NITS_CONTEXT", "a")
+                .args(["workspace", "list"])
+        )[0]["name"],
+        "workspace-a"
+    );
+    let flag = json_output(
+        configured_nits(&config_path)
+            .env("NITS_CONTEXT", "a")
+            .args(["-c", "b", "context", "show"]),
+    );
+    assert_eq!(flag["name"], "b");
+    assert_eq!(flag["origin"], "Flag");
+    let adhoc = json_output(
+        configured_nits(&config_path)
+            .args(["-c", "b", "--socket"])
+            .arg(&a.socket)
+            .args(["context", "show"]),
+    );
+    assert_eq!(adhoc["origin"], "AdHoc");
+    assert_eq!(adhoc["context"]["socket"], a.socket.to_str().unwrap());
+    assert_eq!(
+        json_output(
+            configured_nits(&config_path)
+                .args(["-c", "b", "--socket"])
+                .arg(&a.socket)
+                .args(["workspace", "list"])
+        )[0]["name"],
+        "workspace-a"
+    );
+    assert_eq!(
+        json_output(configured_nits(&config_path).args([
+            "-c",
+            "a",
+            "--daemon-url",
+            &b.ws_url,
+            "workspace",
+            "list"
+        ]))[0]["name"],
+        "workspace-b"
+    );
+
+    let before = std::fs::read(&config_path).unwrap();
+    configured_nits(&config_path)
+        .args(["context", "use", "missing"])
+        .assert()
+        .failure();
+    configured_nits(&config_path)
+        .args(["context", "remove", "b"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("persisted default"));
+    assert_eq!(std::fs::read(&config_path).unwrap(), before);
+    // Selecting a saved remote must work offline without launching a daemon.
+    configured_nits(&config_path)
+        .args(["context", "use", "offline"])
+        .assert()
+        .success();
+    assert_eq!(
+        nits_config::Config::load(&config_path)
+            .unwrap()
+            .current_context
+            .unwrap()
+            .as_str(),
+        "offline"
+    );
+    configured_nits(&config_path)
+        .args(["context", "use", "local"])
+        .assert()
+        .success();
+    configured_nits(&config_path)
+        .args(["context", "remove", "b"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn mcp_launch_uses_persisted_selection_and_explicit_override() {
+    use serde_json::json;
+    use std::io::{BufRead as _, Write as _};
+    use std::process::Stdio;
+    let a = start();
+    let b = start();
+    a.out(&["workspace", "add", "workspace-a"]);
+    b.out(&["workspace", "add", "workspace-b"]);
+    let path = a.dir.path().join("mcp-selection.toml");
+    let mut config = nits_config::Config::default();
+    for (name, socket) in [("a", &a.socket), ("b", &b.socket)] {
+        config.contexts.insert(
+            name.into(),
+            nits_config::Context::Local {
+                data_dir: None,
+                socket: Some(socket.clone()),
+            },
+        );
+    }
+    config.save(&path).unwrap();
+    configured_nits(&path)
+        .args(["context", "use", "b"])
+        .assert()
+        .success();
+    for (args, expected) in [(vec![], "b"), (vec!["-c", "a"], "a")] {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_nits"));
+        for key in [
+            "NITS_CONTEXT",
+            "NITS_SOCKET",
+            "NITS_WS_URL",
+            "NITS_DATA_DIR",
+        ] {
+            command.env_remove(key);
+        }
+        let mut child = command
+            .env("NITS_CONFIG", &path)
+            .args(args)
+            .arg("mcp")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+        for (id, method, params) in [
+            (
+                1,
+                "initialize",
+                json!({"clientInfo": {"name":"test-agent"}}),
+            ),
+            (
+                2,
+                "tools/call",
+                json!({"name":"list_workspaces", "arguments":{}}),
+            ),
+        ] {
+            writeln!(
+                input,
+                "{}",
+                json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params})
+            )
+            .unwrap();
+            input.flush().unwrap();
+            let mut line = String::new();
+            output.read_line(&mut line).unwrap();
+            let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert!(response.get("error").is_none(), "{response}");
+            if id == 2 {
+                let result = &response["result"]["structuredContent"];
+                assert_eq!(result["context"]["name"], expected);
+                assert_eq!(
+                    result["workspaces"][0]["name"],
+                    format!("workspace-{expected}")
+                );
+            }
+        }
+        drop(input);
+        assert!(child.wait().unwrap().success());
+    }
+}

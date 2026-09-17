@@ -80,10 +80,15 @@ async fn accept_client(
 fn server(socket: &std::path::Path) -> Server {
     Server::new(
         Endpoint {
-            context: nits_config::Context::Local {
-                data_dir: Some(socket.parent().unwrap().to_owned()),
-                socket: Some(socket.to_owned()),
+            selection: nits_config::Selection {
+                name: "test".parse().unwrap(),
+                origin: nits_config::SelectionOrigin::AdHoc,
+                context: nits_config::Context::Local {
+                    data_dir: Some(socket.parent().unwrap().to_owned()),
+                    socket: Some(socket.to_owned()),
+                },
             },
+            config_path: socket.with_extension("toml"),
             start: nitsd::contexts::StartPolicy::RequireRunning,
         },
         AgentIdentity {

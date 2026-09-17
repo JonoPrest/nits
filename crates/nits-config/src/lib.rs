@@ -3,11 +3,9 @@
 //! TOML at `$XDG_CONFIG_HOME/nits/config.toml` (default
 //! `~/.config/nits/config.toml`).
 //!
-//! Deliberately **no "current" context**: the file holds definitions only.
-//! Each process picks its context explicitly (`--context`, `NITS_CONTEXT`)
-//! or gets the implicit [`DEFAULT_CONTEXT`], so a CLI or MCP session for one
-//! project can never redirect another, and the desktop app keeps its own
-//! selection in its own state.
+//! `current_context` supplies the default for new processes. Explicit
+//! `--context`/`NITS_CONTEXT` selections override it, followed by the implicit
+//! [`DEFAULT_CONTEXT`]. Running MCP sessions retain their own selection.
 //!
 //! ```toml
 //! [contexts.laptop]
@@ -27,6 +25,7 @@
 //! a `Ws` context is somebody else's daemon and is only connected to.
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -34,8 +33,84 @@ use serde::{Deserialize, Serialize};
 /// Name of the context used when none is configured.
 pub const DEFAULT_CONTEXT: &str = "local";
 
+/// A nonempty context name, with no surrounding whitespace or controls.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ContextName(String);
+
+impl ContextName {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ContextName {
+    type Error = ConfigError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
+            return Err(ConfigError::InvalidName);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl std::str::FromStr for ContextName {
+    type Err = ConfigError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_from(value.to_owned())
+    }
+}
+
+impl From<ContextName> for String {
+    fn from(name: ContextName) -> Self {
+        name.0
+    }
+}
+
+impl std::fmt::Display for ContextName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Why this process selected a context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum SelectionOrigin {
+    Flag,
+    Environment,
+    Persisted,
+    Implicit,
+    AdHoc,
+    Mcp,
+}
+
+/// A resolved context and the selection that led to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Selection {
+    pub name: ContextName,
+    pub context: Context,
+    pub origin: SelectionOrigin,
+}
+
+/// Transport identity reported with MCP results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum ContextKind {
+    Local,
+    Ssh,
+    Ws,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    #[error("context names must be nonempty, with no surrounding whitespace or control characters")]
+    InvalidName,
+    #[error(
+        "context {0} is the persisted default; select another with `nits context use` before removing it"
+    )]
+    CurrentContext(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("parse {path}: {source}")]
@@ -217,6 +292,15 @@ impl Context {
          `bin = \"nits\"` (or the path to `nits` on that host), or drop the line \
          to use `nits` from the remote PATH";
 
+    #[must_use]
+    pub fn kind(&self) -> ContextKind {
+        match self {
+            Self::Local { .. } => ContextKind::Local,
+            Self::Ssh { .. } => ContextKind::Ssh,
+            Self::Ws { .. } => ContextKind::Ws,
+        }
+    }
+
     /// One-line description for listings.
     #[must_use]
     pub fn describe(&self) -> String {
@@ -244,6 +328,8 @@ impl Context {
 /// themselves stay strict.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_context: Option<ContextName>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub contexts: BTreeMap<String, Context>,
 }
@@ -270,20 +356,52 @@ impl Config {
         }
     }
 
-    /// Write `path`, creating parent directories.
+    /// Atomically replace `path`, creating parent directories. Readers see
+    /// either complete file, and a failed write leaves the old file intact.
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        if let Ok(metadata) = std::fs::metadata(path) {
+            temporary
+                .as_file()
+                .set_permissions(metadata.permissions())?;
         }
-        std::fs::write(path, toml::to_string_pretty(self)?)?;
+        temporary.write_all(toml::to_string_pretty(self)?.as_bytes())?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(path).map_err(|error| error.error)?;
         Ok(())
     }
 
-    /// Resolve `name` (or [`DEFAULT_CONTEXT`]). An unconfigured default is
-    /// an implicit `Local` with defaults, so a fresh install works with no
-    /// config file.
+    /// Resolve the persisted default unless an explicit name overrides it.
+    pub fn selection(
+        &self,
+        explicit: Option<(&ContextName, SelectionOrigin)>,
+    ) -> Result<Selection, ConfigError> {
+        let (name, origin) = match explicit {
+            Some((name, origin)) => (name.clone(), origin),
+            None => match &self.current_context {
+                Some(name) => (name.clone(), SelectionOrigin::Persisted),
+                None => (DEFAULT_CONTEXT.parse()?, SelectionOrigin::Implicit),
+            },
+        };
+        let (_, context) = self.resolve(Some(name.as_str()))?;
+        Ok(Selection {
+            name,
+            context,
+            origin,
+        })
+    }
+
+    /// Resolve an explicit name, the persisted selection, or [`DEFAULT_CONTEXT`].
+    /// An unconfigured `local` is implicit, so a fresh install needs no file.
     pub fn resolve(&self, name: Option<&str>) -> Result<(String, Context), ConfigError> {
-        let name = name.unwrap_or(DEFAULT_CONTEXT);
+        let name = name
+            .or_else(|| self.current_context.as_ref().map(ContextName::as_str))
+            .unwrap_or(DEFAULT_CONTEXT);
         if let Some(c) = self.contexts.get(name) {
             return Ok((name.to_string(), c.clone()));
         }
@@ -300,6 +418,13 @@ impl Config {
     }
 
     pub fn remove(&mut self, name: &str) -> Result<Context, ConfigError> {
+        if self
+            .current_context
+            .as_ref()
+            .is_some_and(|current| current.as_str() == name)
+        {
+            return Err(ConfigError::CurrentContext(name.to_owned()));
+        }
         self.contexts
             .remove(name)
             .ok_or_else(|| ConfigError::NoSuchContext(name.to_string()))
@@ -343,13 +468,90 @@ mod tests {
         let back = Config::load(&path).unwrap();
         assert_eq!(back, cfg);
         assert_eq!(back.resolve(Some("box")).unwrap().0, "box");
-        // No "current": resolving nothing is always the implicit default.
+        // With no persisted selection, the implicit local context wins.
         assert_eq!(back.resolve(None).unwrap().0, "local");
 
         let mut back = back;
         back.remove("box").unwrap();
         assert!(back.resolve(Some("box")).is_err());
         assert!(Config::load(&path).is_ok());
+    }
+
+    #[test]
+    fn persisted_selection_round_trips_and_explicit_selection_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut config = Config::default();
+        config.contexts.insert(
+            "remote".into(),
+            Context::Ws {
+                url: "ws://review.example:7677".into(),
+            },
+        );
+        config.current_context = Some("remote".parse().unwrap());
+        config.save(&path).unwrap();
+        let mut loaded = Config::load(&path).unwrap();
+        assert_eq!(
+            loaded.selection(None).unwrap().origin,
+            SelectionOrigin::Persisted
+        );
+        assert_eq!(loaded.resolve(None).unwrap().0, "remote");
+        let local = "local".parse().unwrap();
+        let explicit = loaded
+            .selection(Some((&local, SelectionOrigin::Flag)))
+            .unwrap();
+        assert_eq!(explicit.name, local);
+        assert_eq!(explicit.origin, SelectionOrigin::Flag);
+        assert!(matches!(
+            loaded.remove("remote"),
+            Err(ConfigError::CurrentContext(_))
+        ));
+        loaded.current_context = Some(local);
+        loaded.remove("remote").unwrap();
+        loaded.save(&path).unwrap();
+        assert_eq!(
+            Config::load(&path).unwrap().resolve(None).unwrap().0,
+            "local"
+        );
+        loaded.current_context = Some("missing".parse().unwrap());
+        assert!(matches!(
+            loaded.resolve(None),
+            Err(ConfigError::NoSuchContext(_))
+        ));
+        assert_eq!(loaded.resolve(Some("local")).unwrap().0, "local");
+    }
+
+    #[test]
+    fn atomic_save_preserves_permissions_and_leaves_no_temporary_files() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# previous config").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        Config::default().save(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        // A destination that cannot be replaced leaves the existing entry intact.
+        let destination = dir.path().join("directory");
+        std::fs::create_dir(&destination).unwrap();
+        assert!(Config::default().save(&destination).is_err());
+        assert!(destination.is_dir());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn context_names_are_validated_at_the_boundary() {
+        for invalid in ["", " ", " remote", "remote ", "a\nb", "a\0b"] {
+            assert!(invalid.parse::<ContextName>().is_err());
+        }
+        assert_eq!(
+            "build-box".parse::<ContextName>().unwrap().as_str(),
+            "build-box"
+        );
+        assert!(toml::from_str::<Config>("current_context = ' '").is_err());
     }
 
     /// A config written before the daemon became `nits daemon serve` still

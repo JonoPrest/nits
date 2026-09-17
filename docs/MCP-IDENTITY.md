@@ -60,10 +60,13 @@ string is used in `request_review`:
 The recipient calls `subscribe_events` with that string as `awaiting_agent`:
 
 ```json
-{ "awaiting_agent": "reviewer-a", "since_seq": 42, "timeout_ms": 30000 }
+{ "awaiting_agent": "reviewer-a", "since_seq": 42, "since_context": "build-box", "timeout_ms": 30000 }
 ```
 
-Use your saved cursor for this scope as `since_seq` and pass each response's
+Use your saved cursor for this scope and context as `since_seq`; use the source
+`context.name` as `since_context`. The latter is required after switching contexts,
+and a mismatched context is rejected. Context switches preserve session identity
+and discard old connection subscriptions. Pass each response's
 `last_seq` into the next poll. Omitting `since_seq` receives only live events.
 `awaiting_agent`, `review_id`, and `workspace_id` are mutually exclusive filters.
 The identity tools do not create or change subscription filters automatically.

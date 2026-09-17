@@ -11,12 +11,14 @@ authors.workspace = true
 homepage.workspace = true
 description = "Client-side configuration: named contexts (local, ssh, websocket) and the current one"
 
+[features]
+schema = ["dep:schemars"]
+
 [dependencies]
+schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 toml = "0.9"
-
-[dev-dependencies]
 tempfile = { workspace = true }
 
 [lints]
