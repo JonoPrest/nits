@@ -478,7 +478,9 @@ impl Ops {
         max: usize,
     ) -> Result<Polled, OpsError> {
         let client = &self.client;
-        // Drop anything left over from an earlier poll.
+        // The previous Unsubscribed response fences its queued events. Drop
+        // those copies: explicit replay below starts at the caller's cursor,
+        // including events queued earlier but excluded by `max` or the timeout.
         while tokio::time::timeout(Duration::ZERO, client.next_unsolicited())
             .await
             .is_ok_and(|m| m.is_some())

@@ -28,7 +28,7 @@ pub struct Daemon {
     writer: std::sync::mpsc::Sender<WriteJob>,
     events: broadcast::Sender<Arc<Event>>,
     deltas: broadcast::Sender<Arc<TreeDelta>>,
-    review_workspaces: Mutex<HashMap<ReviewId, WorkspaceId>>,
+    review_workspaces: Arc<Mutex<HashMap<ReviewId, WorkspaceId>>>,
     /// Cancelled by `Request::Shutdown`, ctrl-c, or the idle timer.
     shutdown: tokio_util::sync::CancellationToken,
     /// Open connections, for the idle timer.
@@ -120,7 +120,7 @@ impl Daemon {
             writer,
             events,
             deltas,
-            review_workspaces: Mutex::new(HashMap::new()),
+            review_workspaces: Arc::new(Mutex::new(HashMap::new())),
             shutdown: tokio_util::sync::CancellationToken::new(),
             connections: std::sync::atomic::AtomicUsize::new(0),
             build,
@@ -181,25 +181,33 @@ impl Daemon {
         F: FnOnce(&Core) -> Result<T, CoreError> + Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
+        let broadcast = self.events.clone();
+        let review_workspaces = Arc::clone(&self.review_workspaces);
         let job: WriteJob = Box::new(move |core| {
             let result = (|| {
                 let before = core.last_seq()?;
-                let out = f(core)?;
+                let out = f(core);
                 let events = core.events_after(before)?;
-                Ok::<_, CoreError>((out, events))
+                // Publish on the writer thread, in commit order, even if the
+                // requesting task was cancelled before receiving its result.
+                for event in &events {
+                    // Keep scope information even if the review is deleted
+                    // before a subscriber first asks for its workspace.
+                    if let EventBody::ReviewCreated { review } = &event.body {
+                        review_workspaces
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(review.id, review.workspace_id);
+                    }
+                    // No subscribers is not an error.
+                    let _ = broadcast.send(Arc::new(event.clone()));
+                }
+                Ok::<_, CoreError>((out?, events))
             })();
-            // The receiver only disappears if the caller was cancelled; the
-            // write already happened and is broadcast below regardless.
             let _ = tx.send(result);
         });
         self.writer.send(job).map_err(|_| DaemonError::Shutdown)?;
-        let (out, events) = rx.await.map_err(|_| DaemonError::Shutdown)??;
-        for e in &events {
-            self.note_workspace(e);
-            // No subscribers is not an error.
-            let _ = self.events.send(Arc::new(e.clone()));
-        }
-        Ok((out, events))
+        Ok(rx.await.map_err(|_| DaemonError::Shutdown)??)
     }
 
     /// Subscribe to the live event tail.
@@ -253,17 +261,8 @@ impl Daemon {
         }
     }
 
-    fn note_workspace(&self, e: &Event) {
-        if let EventBody::ReviewCreated { review } = &e.body {
-            self.review_workspaces
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(review.id, review.workspace_id);
-        }
-    }
-
-    /// Workspace of a review, cached; falls back to the store for reviews
-    /// created before this process started.
+    /// Workspace of a review, cached; falls back to persisted records including
+    /// tombstones so replay still matches reviews deleted before this process.
     fn workspace_of(&self, review: ReviewId) -> Option<WorkspaceId> {
         if let Some(w) = self
             .review_workspaces
@@ -273,7 +272,7 @@ impl Daemon {
         {
             return Some(*w);
         }
-        let w = self.core.review(review).ok()?.review.workspace_id;
+        let w = self.core.stored_review_workspace(review).ok()?;
         self.review_workspaces
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -355,5 +354,171 @@ fn event_review(body: &EventBody) -> Option<ReviewId> {
         | EventBody::WorkspaceUpdated { .. }
         | EventBody::RepoAttached { .. }
         | EventBody::RepoDetached { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    use nits_protocol::{
+        Anchor, Author, ClientId, ClientSeq, CommentId, CommentKind, NonEmpty, ProtocolVersion,
+        RefSpec, RepoId, Request, ReviewTarget, Seq, Since,
+    };
+    use nits_test_support::{RepoBuilder, TestRepo, files};
+
+    use crate::client::{Client, ClientError, Identity};
+    use crate::ops::Ops;
+
+    fn identity() -> Identity {
+        Identity {
+            client_id: ClientId::from_parts(1, 1),
+            client: BuildInfo {
+                name: "test".into(),
+                version: "0".into(),
+            },
+            author: Author::Human {
+                name: "ada".into(),
+                machine: "box".into(),
+            },
+        }
+    }
+
+    async fn deleted_review_gap(daemon: &Daemon, repo: &TestRepo) -> (Seq, Vec<Event>) {
+        let who = identity();
+        let ctx = Daemon::ctx(who.author, who.client_id, ClientSeq::new(1));
+        let path = repo.path().to_str().unwrap().to_owned();
+        daemon
+            .write(move |core| {
+                let workspace = WorkspaceId::from_parts(1, 1);
+                let repository = RepoId::from_parts(1, 1);
+                core.create_workspace(&ctx, workspace, "review workspace".into())?;
+                core.create_workspace(
+                    &ctx,
+                    WorkspaceId::from_parts(1, 2),
+                    "other workspace".into(),
+                )?;
+                core.attach_repo(&ctx, workspace, repository, &path, "repo".into())?;
+                core.create_review(
+                    &ctx,
+                    ReviewId::from_parts(1, 1),
+                    workspace,
+                    "review".into(),
+                    NonEmpty::singleton(ReviewTarget {
+                        repo_id: repository,
+                        base: RefSpec::Head,
+                        head: RefSpec::Head,
+                    }),
+                )
+            })
+            .await
+            .unwrap();
+        // Reconnect after creation: ReviewCreated cannot warm the new cache.
+        let cursor = daemon.core().last_seq().unwrap().unwrap();
+        let who = identity();
+        let ctx = Daemon::ctx(who.author, who.client_id, ClientSeq::new(2));
+        let ((), gap) = daemon
+            .write(move |core| {
+                let review = ReviewId::from_parts(1, 1);
+                core.add_comment(
+                    &ctx,
+                    review,
+                    CommentId::from_parts(1, 1),
+                    CommentKind::Note,
+                    Anchor::Review,
+                    "persisted comment".into(),
+                    None,
+                )?;
+                core.delete_review(&ctx, review)?;
+                core.rename_workspace(&ctx, WorkspaceId::from_parts(1, 2), "unrelated".into())
+            })
+            .await
+            .unwrap();
+        assert_eq!(gap.len(), 3);
+        assert!(matches!(gap[0].body, EventBody::CommentCreated { .. }));
+        assert!(matches!(gap[1].body, EventBody::ReviewDeleted { .. }));
+        assert!(matches!(gap[2].body, EventBody::WorkspaceUpdated { .. }));
+        (cursor, gap)
+    }
+
+    #[tokio::test]
+    async fn workspace_replay_after_restart_includes_deleted_reviews() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = DataDir::new(dir.path());
+        let repo = RepoBuilder::new()
+            .commit("initial", files!["file.txt" => "text\n"])
+            .build()
+            .unwrap();
+        let daemon = Daemon::open(&data, identity().client).unwrap();
+        let (cursor, gap) = deleted_review_gap(&daemon, &repo).await;
+        // The writer owns another Core reference. Wait for its release rather
+        // than racing the database lock with the restarted daemon.
+        let Daemon {
+            mut core, writer, ..
+        } = Arc::try_unwrap(daemon).unwrap();
+        drop(writer);
+        let old_core = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match Arc::try_unwrap(core) {
+                    Ok(core) => break core,
+                    Err(shared) => core = shared,
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(old_core);
+
+        let daemon = Daemon::open(&data, identity().client).unwrap();
+        let (client_io, server_io) = tokio::io::duplex(65536);
+        let server = tokio::spawn(crate::connection::serve(Arc::clone(&daemon), server_io));
+        let client = Client::handshake(client_io, identity(), ProtocolVersion::CURRENT)
+            .await
+            .unwrap();
+        let review = ReviewId::from_parts(1, 1);
+        assert!(matches!(
+            client
+                .request(Request::GetReview { review_id: review })
+                .await,
+            Err(ClientError::Rpc(RpcError::NotFound { .. }))
+        ));
+        let ops = Ops::new(client);
+        // Ask for workspace replay first, with an empty process-local cache.
+        for (scope, expected) in [
+            (
+                SubscribeScope::Workspace {
+                    workspace_id: WorkspaceId::from_parts(1, 1),
+                },
+                &gap[..2],
+            ),
+            (SubscribeScope::Review { review_id: review }, &gap[..2]),
+            (
+                SubscribeScope::Workspace {
+                    workspace_id: WorkspaceId::from_parts(1, 2),
+                },
+                &gap[2..],
+            ),
+            (SubscribeScope::All, gap.as_slice()),
+        ] {
+            let polled = ops
+                .poll_events(
+                    scope,
+                    Since::After { seq: cursor },
+                    Duration::from_millis(50),
+                    10,
+                )
+                .await
+                .unwrap();
+            assert_eq!(polled.events, expected);
+            assert_eq!(polled.last_seq, expected.last().unwrap().seq);
+        }
+        drop(ops);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 }

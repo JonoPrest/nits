@@ -515,5 +515,16 @@ async fn subscribe_events_long_polls_and_resumes() {
     .await;
     assert_eq!(again["events"].as_array().unwrap().len(), 0);
 
+    // Rewinding on the same MCP session must replay persisted events even
+    // though a previous scope already delivered them to this connection.
+    let replay = call(
+        &mut s,
+        "subscribe_events",
+        json!({ "review_id": review_id, "since_seq": since, "timeout_ms": 50 }),
+    )
+    .await;
+    assert_eq!(replay["events"], got["events"]);
+    assert_eq!(replay["last_seq"], got["last_seq"]);
+
     let _ = Response::Unsubscribed;
 }

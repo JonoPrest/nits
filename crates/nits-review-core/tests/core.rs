@@ -147,6 +147,34 @@ fn head_blob(core: &Core, review: ReviewId, repo: RepoId, path: &str) -> nits_pr
 }
 
 #[test]
+fn stored_review_workspace_survives_deletion_and_reopening() {
+    let w = world();
+    assert!(matches!(
+        w.core.stored_review_workspace(review_id(1)),
+        Err(CoreError::NotFound { .. })
+    ));
+    w.core
+        .create_review(&human(), review_id(1), ws(), "review".into(), targets())
+        .unwrap();
+    assert_eq!(w.core.stored_review_workspace(review_id(1)).unwrap(), ws());
+    w.core.delete_review(&human(), review_id(1)).unwrap();
+    assert_eq!(w.core.stored_review_workspace(review_id(1)).unwrap(), ws());
+    drop(w.core);
+
+    let core = Core::open(&w.data).unwrap();
+    assert_eq!(core.stored_review_workspace(review_id(1)).unwrap(), ws());
+    assert!(matches!(
+        core.review(review_id(1)),
+        Err(CoreError::NotFound { .. })
+    ));
+    assert!(matches!(
+        core.review_snapshot(review_id(1)),
+        Err(CoreError::NotFound { .. })
+    ));
+    assert!(core.reviews(ws()).unwrap().is_empty());
+}
+
+#[test]
 fn explicit_review_base_is_preserved_when_remote_trunk_is_newer() {
     let w = world();
     w.a.git(&["checkout", "-q", "--detach", "main"]).unwrap();
