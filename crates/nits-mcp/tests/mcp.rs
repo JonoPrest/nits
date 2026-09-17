@@ -117,11 +117,23 @@ fn server_at(socket: &std::path::Path, session_id: &str) -> Server {
 }
 
 fn server_in_context(context: nits_config::Context, session_id: &str) -> Server {
-    Server::new(
+    server_with_endpoint(
         Endpoint {
-            context,
+            selection: nits_config::Selection {
+                name: "test".parse().unwrap(),
+                context,
+                origin: nits_config::SelectionOrigin::AdHoc,
+            },
+            config_path: std::env::temp_dir().join("nits-mcp-unused-config.toml"),
             start: nitsd::contexts::StartPolicy::RequireRunning,
         },
+        session_id,
+    )
+}
+
+fn server_with_endpoint(endpoint: Endpoint, session_id: &str) -> Server {
+    Server::new(
+        endpoint,
         AgentIdentity {
             model: "test-model".into(),
             session_id: session_id.into(),
@@ -296,6 +308,9 @@ async fn tools_list_is_json_rpc_conformant() {
     assert_eq!(r["serverInfo"]["name"], json!("nits-mcp"));
     let instructions = r["instructions"].as_str().unwrap();
     for term in [
+        "list_contexts",
+        "use_context",
+        "since_context",
         "get_session_identity",
         "set_session_identity",
         "author.name",
@@ -315,6 +330,8 @@ async fn tools_list_is_json_rpc_conformant() {
     assert_eq!(
         names,
         [
+            "list_contexts",
+            "use_context",
             "list_workspaces",
             "list_reviews",
             "get_review",
@@ -1610,5 +1627,422 @@ async fn remote_context_bootstrap_discovers_and_canonicalizes_paths_at_daemon() 
     assert_eq!(
         workspaces["workspaces"][0]["repos"][0]["path"],
         json!(h.repo.path())
+    );
+}
+
+fn configured_server(path: &std::path::Path, name: &str) -> Server {
+    let config = nits_config::Config::load(path).unwrap();
+    server_with_endpoint(
+        Endpoint {
+            selection: config
+                .selection(Some((
+                    &name.parse().unwrap(),
+                    nits_config::SelectionOrigin::Flag,
+                )))
+                .unwrap(),
+            config_path: path.to_owned(),
+            start: nitsd::contexts::StartPolicy::RequireRunning,
+        },
+        "context-session",
+    )
+}
+
+async fn shared_review(h: &Harness, title: &str) -> ReviewId {
+    let c = human(h).await;
+    seed(h, &c).await;
+    let review_id = ReviewId::from_parts(1, 1);
+    let result = c
+        .request(Request::Mutate {
+            client_seq: ClientSeq::new(3),
+            mutation: Mutation::CreateReview {
+                review_id,
+                workspace_id: WorkspaceId::from_parts(1, 1),
+                title: title.into(),
+                targets: nits_protocol::NonEmpty::singleton(nits_protocol::ReviewTarget {
+                    repo_id: RepoId::from_parts(1, 1),
+                    base: nits_protocol::RefSpec::Branch {
+                        name: "main".into(),
+                    },
+                    head: nits_protocol::RefSpec::Head,
+                }),
+            },
+        })
+        .await
+        .unwrap();
+    assert!(matches!(result, Response::Committed { .. }));
+    review_id
+}
+
+fn local_context(socket: &std::path::Path) -> nits_config::Context {
+    nits_config::Context::Local {
+        data_dir: None,
+        socket: Some(socket.to_owned()),
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one atomic switch scenario with overlapping IDs
+async fn context_switch_is_atomic_preserves_identity_and_isolates_events() {
+    let a = start();
+    let b = start();
+    let review_id = shared_review(&a, "review on a").await;
+    assert_eq!(shared_review(&b, "review on b").await, review_id);
+    let path = a.dir.path().join("contexts.toml");
+    let mut config = nits_config::Config::default();
+    config
+        .contexts
+        .insert("a".parse().unwrap(), local_context(&a.socket));
+    let ws_server = nitsd::server::WsServer::bind(([127, 0, 0, 1], 0).into())
+        .await
+        .unwrap();
+    let url = format!("ws://{}", ws_server.addr());
+    tokio::spawn(ws_server.run(Arc::clone(&b.daemon), b.shutdown.clone()));
+    config
+        .contexts
+        .insert("b".parse().unwrap(), nits_config::Context::Ws { url });
+    config.contexts.insert(
+        "offline".parse().unwrap(),
+        local_context(&a.socket.with_extension("missing")),
+    );
+    config.current_context = Some("a".parse().unwrap());
+    config.save(&path).unwrap();
+    let mut s = configured_server(&path, "a");
+    let mut other = configured_server(&path, "a");
+    init(&mut s).await;
+    init(&mut other).await;
+    let identity = call(
+        &mut s,
+        "set_session_identity",
+        json!({"name":"context-reviewer", "model":"example-model"}),
+    )
+    .await;
+    let context_a = json!({"name":"a", "kind":"Local"});
+    let context_b = json!({"name":"b", "kind":"Ws"});
+    assert_eq!(
+        call(&mut s, "list_workspaces", json!({})).await["context"],
+        context_a
+    );
+    let contexts = call(&mut s, "list_contexts", json!({})).await;
+    assert_eq!(contexts["active"], context_a);
+    assert_eq!(contexts["persisted"], "a");
+    assert!(
+        contexts["contexts"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"name":"local", "kind":"Local"}))
+    );
+    let on_a = call(
+        &mut s,
+        "add_comment",
+        json!({"review_id":review_id,"body":"comment on a"}),
+    )
+    .await;
+    // Reselecting an unchanged context keeps a bare cursor unambiguous.
+    call(&mut s, "use_context", json!({"name":"a"})).await;
+    // Leave a queued backlog on A, then ensure B cannot receive it.
+    call(
+        &mut s,
+        "subscribe_events",
+        json!({"since_seq":0,"max":1,"timeout_ms":10}),
+    )
+    .await;
+    for name in ["missing", "offline"] {
+        let error = call_err(&mut s, "use_context", json!({"name":name})).await;
+        assert!(!error.is_empty());
+        assert_eq!(
+            call(&mut s, "list_contexts", json!({})).await["active"],
+            context_a
+        );
+        assert_eq!(
+            call(&mut s, "get_session_identity", json!({})).await,
+            identity
+        );
+        assert_eq!(
+            call(&mut s, "get_review", json!({"review_id":review_id})).await["review"]["title"],
+            "review on a"
+        );
+    }
+    // A config edit after startup is visible to both discovery and switching.
+    config
+        .contexts
+        .insert("new-b".parse().unwrap(), local_context(&b.socket));
+    config.save(&path).unwrap();
+    assert!(
+        call(&mut s, "list_contexts", json!({})).await["contexts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|context| context["name"] == "new-b")
+    );
+    let unchanged = std::fs::read(&path).unwrap();
+    assert_eq!(
+        call(&mut s, "use_context", json!({"name":"b"})).await["context"],
+        context_b
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        unchanged,
+        "MCP switching is session-local"
+    );
+    assert_eq!(
+        call(&mut other, "list_contexts", json!({})).await["active"],
+        context_a
+    );
+    assert_eq!(
+        call(&mut s, "get_session_identity", json!({})).await,
+        identity
+    );
+    let review = call(&mut s, "get_review", json!({"review_id":review_id})).await;
+    assert_eq!(review["context"], context_b);
+    assert_eq!(review["review"]["title"], "review on b");
+    assert_eq!(review["comments"], json!([]));
+    assert!(
+        call_err(
+            &mut s,
+            "subscribe_events",
+            json!({"since_seq":0,"timeout_ms":10})
+        )
+        .await
+        .contains("since_context is required")
+    );
+    assert!(
+        call_err(
+            &mut s,
+            "subscribe_events",
+            json!({"since_seq":0,"since_context":"a","timeout_ms":10})
+        )
+        .await
+        .contains("does not match active context")
+    );
+    let on_b = call(
+        &mut s,
+        "add_comment",
+        json!({"review_id":review_id,"body":"comment on b"}),
+    )
+    .await;
+    let event_b = committed(&b, &on_b);
+    assert_eq!(event_b["author"], identity["author"]);
+    assert_eq!(event_b["client_seq"], 1);
+    assert_ne!(event_b["client_id"], committed(&a, &on_a)["client_id"]);
+    let polled = call(
+        &mut s,
+        "subscribe_events",
+        json!({"since_seq":0,"since_context":"b","timeout_ms":10}),
+    )
+    .await;
+    assert_eq!(polled["context"], context_b);
+    assert_eq!(
+        polled["events"],
+        json!(b.daemon.core().events_after(None).unwrap())
+    );
+    assert_eq!(a.daemon.core().comments(review_id).unwrap().len(), 1);
+    assert_eq!(
+        call(&mut s, "use_context", json!({"name":"a"})).await["context"],
+        context_a
+    );
+    let comments = call(&mut s, "list_comments", json!({"review_id":review_id})).await;
+    assert_eq!(comments["comments"].as_array().unwrap().len(), 1);
+    assert_eq!(comments["comments"][0]["body"], "comment on a");
+}
+
+#[tokio::test]
+async fn switched_context_reconnects_to_its_own_endpoint_with_the_same_provenance() {
+    let a = start();
+    let b = start();
+    let review_id = shared_review(&b, "b").await;
+    let proxy_socket = b.socket.with_extension("proxy.sock");
+    let listener = tokio::net::UnixListener::bind(&proxy_socket).unwrap();
+    let shutdown = CancellationToken::new();
+    let proxy = tokio::spawn(forward_connections(
+        listener,
+        b.socket.clone(),
+        shutdown.clone(),
+    ));
+    let path = a.dir.path().join("contexts.toml");
+    let mut config = nits_config::Config::default();
+    config
+        .contexts
+        .insert("a".parse().unwrap(), local_context(&a.socket));
+    config
+        .contexts
+        .insert("b".parse().unwrap(), local_context(&proxy_socket));
+    config.save(&path).unwrap();
+    let mut s = configured_server(&path, "a");
+    init(&mut s).await;
+    let identity = call(
+        &mut s,
+        "set_session_identity",
+        json!({"name":"context-reviewer", "model":"example-model"}),
+    )
+    .await;
+    call(&mut s, "use_context", json!({"name":"b"})).await;
+    let before = call(
+        &mut s,
+        "add_comment",
+        json!({"review_id":review_id,"body":"before reconnect"}),
+    )
+    .await;
+    shutdown.cancel();
+    proxy.await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !s.client().unwrap().is_closed() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        call(&mut s, "list_contexts", json!({})).await["active"]["name"],
+        "b"
+    );
+    assert_eq!(
+        call(&mut s, "get_session_identity", json!({})).await,
+        identity
+    );
+    assert!(
+        call_err(&mut s, "list_workspaces", json!({}))
+            .await
+            .contains("cannot connect")
+    );
+    std::fs::remove_file(&proxy_socket).unwrap();
+    let listener = tokio::net::UnixListener::bind(&proxy_socket).unwrap();
+    let shutdown = CancellationToken::new();
+    let proxy = tokio::spawn(forward_connections(
+        listener,
+        b.socket.clone(),
+        shutdown.clone(),
+    ));
+    let after = call(
+        &mut s,
+        "add_comment",
+        json!({"review_id":review_id,"body":"after reconnect"}),
+    )
+    .await;
+    assert_eq!(committed(&b, &after)["author"], identity["author"]);
+    assert_ne!(
+        committed(&b, &after)["client_id"],
+        committed(&b, &before)["client_id"]
+    );
+    assert_eq!(
+        call(&mut s, "list_workspaces", json!({})).await["context"]["name"],
+        "b"
+    );
+    assert!(
+        call_err(
+            &mut s,
+            "subscribe_events",
+            json!({"since_seq":0,"timeout_ms":10})
+        )
+        .await
+        .contains("since_context is required")
+    );
+    assert_eq!(a.daemon.core().events_after(None).unwrap().len(), 0);
+    shutdown.cancel();
+    proxy.await.unwrap();
+}
+
+#[tokio::test]
+async fn rejected_context_handshake_keeps_the_previous_connection_usable() {
+    let h = start();
+    let path = h.dir.path().join("contexts.toml");
+    let rejected_socket = h.socket.with_extension("rejected.sock");
+    let listener = tokio::net::UnixListener::bind(&rejected_socket).unwrap();
+    let reject = tokio::spawn(async move {
+        // RequireRunning probes the socket before the protocol connection.
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut read, mut write) = nitsd::transport::byte_stream(stream);
+            let hello = nitsd::transport::recv_msg::<_, nits_protocol::ClientMsg>(&mut read)
+                .await
+                .unwrap();
+            if let Some(hello) = hello {
+                nitsd::transport::send_msg(
+                    &mut write,
+                    &nits_protocol::Envelope {
+                        v: hello.v,
+                        msg: nits_protocol::ServerMsg::Rejected {
+                            error: nits_protocol::RpcError::UnsupportedProtocol {
+                                requested: hello.v,
+                                supported: vec![],
+                            },
+                        },
+                    },
+                )
+                .await
+                .unwrap();
+                break;
+            }
+        }
+    });
+    let mut config = nits_config::Config::default();
+    config
+        .contexts
+        .insert("a".parse().unwrap(), local_context(&h.socket));
+    config.contexts.insert(
+        "incompatible".parse().unwrap(),
+        local_context(&rejected_socket),
+    );
+    config.save(&path).unwrap();
+    let mut s = configured_server(&path, "a");
+    init(&mut s).await;
+    let identity = call(&mut s, "get_session_identity", json!({})).await;
+    assert!(
+        call_err(&mut s, "use_context", json!({"name":"incompatible"}))
+            .await
+            .contains("cannot connect")
+    );
+    reject.await.unwrap();
+    assert_eq!(
+        call(&mut s, "list_workspaces", json!({})).await["context"]["name"],
+        "a"
+    );
+    assert_eq!(
+        call(&mut s, "get_session_identity", json!({})).await,
+        identity
+    );
+    // The failed switch did not make an existing bare cursor ambiguous.
+    call(
+        &mut s,
+        "subscribe_events",
+        json!({"since_seq":0,"timeout_ms":10}),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn malformed_config_keys_are_reported_at_load_and_recovery_preserves_the_session() {
+    let h = start();
+    let path = h.dir.path().join("contexts.toml");
+    let mut config = nits_config::Config::default();
+    config
+        .contexts
+        .insert("valid".parse().unwrap(), local_context(&h.socket));
+    config.save(&path).unwrap();
+    let mut s = configured_server(&path, "valid");
+    init(&mut s).await;
+    std::fs::write(&path, "[contexts.\" broken \"]\ntype = \"Local\"\n").unwrap();
+    assert!(matches!(
+        nits_config::Config::load(&path),
+        Err(nits_config::ConfigError::Parse { .. })
+    ));
+    let error = call_err(&mut s, "list_contexts", json!({})).await;
+    assert!(
+        error.contains("parse ") && error.contains("context names must be nonempty"),
+        "{error}"
+    );
+    assert_eq!(
+        call(&mut s, "list_workspaces", json!({})).await["context"]["name"],
+        "valid"
+    );
+    config.save(&path).unwrap();
+    let listed = call(&mut s, "list_contexts", json!({})).await;
+    assert_eq!(listed["active"]["name"], "valid");
+    assert_eq!(listed["contexts"].as_array().unwrap().len(), 2);
+    assert!(
+        listed["contexts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|context| context["name"] == "valid")
     );
 }

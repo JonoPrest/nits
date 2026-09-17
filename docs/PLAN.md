@@ -116,12 +116,14 @@ Goal: `nitsd` running, multiple clients connected, events streaming, MCP working
 
 ### 2.5 MCP
 - `nits-mcp` stdio binary proxying to daemon socket; tool per `Core` method; `Author::Agent` from MCP client info + session.
-- `subscribe_events` tool for long-poll/streaming.
+- `subscribe_events` tool for long-poll/streaming, with source-context cursor checks after switching.
+- `list_contexts` / `use_context` select a session-local daemon through a successful replacement handshake; reads report source context, identity survives, and subscriptions cannot cross the switch.
 - Tests: JSON-RPC conformance for tool list; each tool maps to core and round-trips; agent-authored comment carries provenance.
 
 ### 2.6 `nits` CLI
 - `nits workspace add/list`, `nits review create --base --head [--repo ...]`, `nits comment ...`, `nits events --follow`. Same client lib as MCP.
-- Tests: `assert_cmd` against a spawned daemon in a temp dir.
+- `nits context use NAME` atomically persists a startup default; ad-hoc transports and explicit context flags/environment override it. `context show` includes selection origin.
+- Tests: `assert_cmd` against spawned daemons in temp dirs, including selection precedence and MCP startup/switch isolation.
 
 ### 2.7 Lifecycle
 - Data dir, socket path, `nitsd --stdio` mode for `ssh host nitsd --stdio`, graceful shutdown, crash-safe reopen.

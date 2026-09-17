@@ -16,8 +16,8 @@ pub use server::{Endpoint, Server};
 /// Serve MCP on this process's stdin/stdout until stdin closes.
 ///
 /// The entry point behind `nits mcp`. Context resolution belongs to the
-/// caller, so the CLI's global `--context`/`--socket`/`--ws` flags govern
-/// the MCP server exactly as they govern every other subcommand.
+/// caller: launch flags override the persisted default. `use_context` then
+/// switches only this MCP session, with calls processed in input order.
 pub async fn serve_stdio(
     endpoint: Endpoint,
     identity: server::AgentIdentity,
