@@ -186,6 +186,56 @@ fn default_base_excludes_remote_trunk_changes_after_a_rebase_with_stale_main() {
     assert_feature_only_default_base(&t, remote);
 }
 
+fn stale_main_with_unrelated_sibling() -> TestRepo {
+    let t = stale_main_repo();
+    t.git(&["rebase", "refs/remotes/origin/main"]).unwrap();
+    t.git(&[
+        "checkout",
+        "-q",
+        "-b",
+        "unrelated-sibling",
+        "refs/remotes/origin/main",
+    ])
+    .unwrap();
+    t.write_file("sibling.txt", b"unrelated sibling work\n")
+        .unwrap();
+    t.git(&["add", "sibling.txt"]).unwrap();
+    t.git(&["commit", "-q", "-m", "unrelated sibling"]).unwrap();
+    t.git(&["checkout", "-q", "feature"]).unwrap();
+    t
+}
+
+#[test]
+fn default_base_ranks_remote_trunk_before_sibling_without_named_reflog_source() {
+    let t = stale_main_with_unrelated_sibling();
+    let remote = commit(&t.rev_parse("refs/remotes/origin/main").unwrap());
+    // Recreate the feature at its tip with only `HEAD` as its creation source.
+    t.git(&["branch", "-m", "original-feature"]).unwrap();
+    t.git(&["checkout", "-q", "-b", "feature"]).unwrap();
+    t.git(&["branch", "-D", "original-feature"]).unwrap();
+    assert_eq!(
+        t.git(&["reflog", "show", "--format=%gs", "refs/heads/feature"])
+            .unwrap(),
+        "branch: Created from HEAD"
+    );
+
+    assert_feature_only_default_base(&t, remote);
+}
+
+#[test]
+fn default_base_ranks_remote_trunk_before_sibling_with_expired_reflog() {
+    let t = stale_main_with_unrelated_sibling();
+    let remote = commit(&t.rev_parse("refs/remotes/origin/main").unwrap());
+    t.git(&["reflog", "expire", "--expire=all", "--all"])
+        .unwrap();
+    assert_eq!(
+        t.git(&["reflog", "show", "refs/heads/feature"]).unwrap(),
+        ""
+    );
+
+    assert_feature_only_default_base(&t, remote);
+}
+
 #[test]
 fn default_base_in_linked_worktree_uses_remote_trunk_shared_with_stale_main() {
     let t = stale_main_repo();

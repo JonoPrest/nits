@@ -186,9 +186,10 @@ impl Repo {
     /// closest local branch by merge-base distance, then a detected trunk.
     /// The checked-out trunk is handled before ancestor ranking so a feature
     /// branch created from it cannot be mistaken for its parent.
-    /// When the chosen parent is trunk, use its remote-tracking merge-base
-    /// with HEAD if it advances the local trunk. This reads existing refs;
-    /// it never fetches or moves them, or overrides a named stack parent.
+    /// Trunk is ranked at its remote-tracking merge-base with HEAD if that
+    /// advances the local trunk, so unrelated sibling branches cannot beat
+    /// a stale trunk. This reads existing refs; it never fetches or moves
+    /// them, or overrides a named stack parent.
     pub fn default_base(&self) -> Result<RefSpec, GitError> {
         let branches = self.local_branches()?;
         let current = self.current_branch()?;
@@ -383,8 +384,17 @@ impl Repo {
             if current == Some(branch) {
                 continue;
             }
-            let branch_ref = branch.qualified();
-            let branch_tip = self.rev_parse_commit(&branch_ref)?;
+            let local_tip = self.rev_parse_commit(&branch.qualified())?;
+            // Rank the effective trunk base alongside local parent branches.
+            // Correcting trunk only after ranking would let a sibling from
+            // the newer remote trunk beat the stale local trunk first.
+            let branch_tip = if trunk == Some(branch) {
+                self.advanced_remote_trunk_base(branch)?
+                    .unwrap_or(local_tip)
+            } else {
+                local_tip
+            };
+            let branch_ref = branch_tip.to_string();
             // A descendant of HEAD is not an ancestor candidate. A second
             // branch at the exact same commit is retained: that is common
             // immediately after cutting a stacked branch.
