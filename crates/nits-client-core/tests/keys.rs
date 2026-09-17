@@ -752,9 +752,11 @@ fn every_action_is_reachable_from_a_binding() {
         state: CommentState::Outdated {
             last_good_anchor: anchor.clone(),
         },
-        context: Some(ChangeKind::Modified {
-            old: blob(3),
-            new: blob(4),
+        context: Some(nits_protocol::CommentContext::Diff {
+            change: ChangeKind::Modified {
+                old: blob(3),
+                new: blob(4),
+            },
         }),
         anchor,
         ..comment(12, Anchor::Review)

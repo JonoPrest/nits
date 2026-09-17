@@ -5,6 +5,17 @@
 /// Identity of the rendered file; cached rows are dropped when it changes
 /// (another file, a re-render with new totals).
 let fileKey = (diff: View.DiffView.t): string =>
+  switch diff.target {
+  | Blob({oid}) => oid
+  | Diff({change}) =>
+    switch change {
+    | Added({new}) => "added:" ++ new
+    | Deleted({old}) => "deleted:" ++ old
+    | Modified({old, new}) => old ++ ":" ++ new
+    | Renamed({from, old, new}) => from ++ ":" ++ old ++ ":" ++ new
+    }
+  } ++
+  "\x00" ++
   diff.file.repoId ++
   "\x00" ++
   diff.file.path ++

@@ -423,6 +423,17 @@ pub enum CommentState {
     Deleted,
 }
 
+/// The content a comment was written against. Browse keeps its anchor's
+/// immutable blob even if this human-readable ref or the review targets move.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, EnumDiscriminants)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[strum_discriminants(name(CommentContextKind), derive(EnumIter, Hash))]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum CommentContext {
+    Diff { change: ChangeKind },
+    Browse { reference: RefSpec },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -437,11 +448,10 @@ pub struct Comment {
     pub created: Timestamp,
     pub edited: Option<Timestamp>,
     pub state: CommentState,
-    /// The file diff (blob pair) on screen when the comment was made, so
-    /// a reader can jump back to that exact rendering even after the
-    /// review's head moved. `None` for review-level comments and clients
-    /// that don't track it.
-    pub context: Option<ChangeKind>,
+    /// The diff pair or Browse revision on screen when the comment was made.
+    /// Readers reopen the exact content after refs move. `None` for
+    /// review-level comments and clients that do not record provenance.
+    pub context: Option<CommentContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumDiscriminants)]

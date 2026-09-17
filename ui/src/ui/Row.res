@@ -113,6 +113,8 @@ module CellView = {
     ~drafting: bool=false,
     ~threads: int=0,
     ~onClick: unit => unit=() => (),
+    ~onComment: option<unit => unit>=?,
+    ~commentTip: option<string>=?,
     ~onMouseDown: unit => unit=() => (),
     ~onMouseEnter: unit => unit=() => (),
   ) => {
@@ -133,6 +135,23 @@ module CellView = {
         onMouseEnter={_ => onMouseEnter()}
       >
         <span className="cell-line-no"> {React.string(Int.toString(cell.lineNo))} </span>
+        {switch onComment {
+        | Some(comment) =>
+          <button
+            type_="button"
+            className="btn btn-ghost cell-comment"
+            ariaLabel={"Comment on line " ++ Int.toString(cell.lineNo)}
+            title=?commentTip
+            onMouseDown={ev => ReactEvent.Mouse.stopPropagation(ev)}
+            onClick={ev => {
+              ReactEvent.Mouse.stopPropagation(ev)
+              comment()
+            }}
+          >
+            {React.string("+")}
+          </button>
+        | None => React.null
+        }}
         {pieces(cell)
         ->Array.mapWithIndex((p, i) => {
           let cls = switch (p.class, p.changed) {
@@ -168,6 +187,7 @@ let make = (
   ~selectedSide: option<Domain.Side.t>=?,
   ~drafted: option<(View.RowPlace.t, Domain.Side.t)>=?,
   ~onClick: Domain.Side.t => unit=_ => (),
+  ~onComment: option<Domain.Side.t => unit>=?,
   ~onMouseDown: Domain.Side.t => unit=_ => (),
   ~onMouseEnter: Domain.Side.t => unit=_ => (),
   ~onExpand: (int, Render.ExpandDir.t) => unit=(_, _) => (),
@@ -219,6 +239,8 @@ let make = (
       commented={commentedOn(side) || (oneCellBothSides && commentedOn(other(side)))}
       drafting={draftingOn(side) || (oneCellBothSides && draftingOn(other(side)))}
       threads={anchorsOn(side) + (oneCellBothSides ? anchorsOn(other(side)) : 0)}
+      onComment=?{onComment->Option.map(comment => () => comment(side))}
+      commentTip=?{Chrome.tip(chrome, Comment)}
       onClick={() => onClick(side)}
       onMouseDown={() => onMouseDown(side)}
       onMouseEnter={() => onMouseEnter(side)}

@@ -51,6 +51,8 @@ struct DaemonModel {
     snapshot: ReviewSnapshot,
     log: Vec<Event>,
     now_ms: i64,
+    trees: Vec<(nits_protocol::RefSpec, nits_protocol::TreeSnapshot)>,
+    blobs: Vec<nits_protocol::FileRender>,
 }
 
 impl DaemonModel {
@@ -118,9 +120,22 @@ impl Sim {
                 snapshot,
                 log: Vec::new(),
                 now_ms: 1_000,
+                trees: Vec::new(),
+                blobs: Vec::new(),
             },
             clients,
         }
+    }
+
+    /// Supply immutable Browse content served by the simulated daemon.
+    pub fn browse_content(
+        &mut self,
+        reference: nits_protocol::RefSpec,
+        tree: nits_protocol::TreeSnapshot,
+        blob: nits_protocol::FileRender,
+    ) {
+        self.daemon.trees.push((reference, tree));
+        self.daemon.blobs.push(blob);
     }
 
     #[must_use]
@@ -507,17 +522,95 @@ impl Sim {
                     },
                 },
             ),
+            Request::TreeSnapshot { repo_id, ref_spec } => {
+                if let Some((_, snapshot)) = self
+                    .daemon
+                    .trees
+                    .iter()
+                    .find(|(reference, tree)| *reference == ref_spec && tree.repo_id == repo_id)
+                    .cloned()
+                {
+                    self.push_down(
+                        peer,
+                        ServerMsg::Response {
+                            id,
+                            response: Response::TreeSnapshot { snapshot },
+                        },
+                    );
+                } else {
+                    self.push_down(
+                        peer,
+                        ServerMsg::Error {
+                            id,
+                            error: RpcError::Invalid {
+                                reason: "tree not supplied to simulator".into(),
+                            },
+                        },
+                    );
+                }
+            }
+            Request::BlobRender {
+                repo_id,
+                path,
+                blob_oid,
+                first_chunk,
+            } => {
+                if let Some(render) = self
+                    .daemon
+                    .blobs
+                    .iter()
+                    .find(|r| {
+                        r.header.repo_id == repo_id
+                            && r.header.path == path
+                            && r.header.target
+                                == (nits_protocol::RenderTarget::Blob { oid: blob_oid })
+                    })
+                    .cloned()
+                {
+                    self.push_down(
+                        peer,
+                        ServerMsg::StreamItem {
+                            id,
+                            item: StreamItem::Header {
+                                header: render.header,
+                            },
+                        },
+                    );
+                    for chunk in render.chunks.into_iter().filter(|c| c.index >= first_chunk) {
+                        self.push_down(
+                            peer,
+                            ServerMsg::StreamItem {
+                                id,
+                                item: StreamItem::Chunk {
+                                    repo_id,
+                                    path: path.clone(),
+                                    chunk,
+                                },
+                            },
+                        );
+                    }
+                    self.push_down(peer, ServerMsg::StreamEnd { id });
+                } else {
+                    self.push_down(
+                        peer,
+                        ServerMsg::Error {
+                            id,
+                            error: RpcError::Invalid {
+                                reason: "blob not supplied to simulator".into(),
+                            },
+                        },
+                    );
+                }
+            }
             Request::ListReviews { .. }
             | Request::DefaultBase { .. }
             | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
             | Request::ResolveTargets { .. }
             | Request::ListCommits { .. }
-            | Request::TreeSnapshot { .. }
             | Request::Search { .. }
             | Request::FileRender { .. }
             | Request::ChangeRender { .. }
-            | Request::BlobRender { .. }
             | Request::RenderChunk { .. }
             | Request::Unsubscribe { .. }
             | Request::Shutdown => self.push_down(

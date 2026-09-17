@@ -172,6 +172,13 @@ When a review's resolved head/base changes:
 
 `File` anchors follow the path, including detected renames; they become `Outdated` only if the
 file disappears. `Lines` anchors follow renames the same way. `Review` anchors never change.
+Browse comments record `CommentContext::Browse { reference }` and stay pinned to their
+original blob; review-target refresh does not reanchor them through an unrelated tree.
+Their reference is provenance, not a moving content pointer. Thread navigation reopens
+the anchor blob, including persisted working-tree snapshots. Diff comments record
+`CommentContext::Diff { change }`; schema 4 wraps legacy diff contexts in this variant
+and leaves absent contexts absent.
+
 Comments are never dropped by ref movement, and an `Outdated` comment is re-tried from its last
 good anchor on every resolution, so it returns to `Live` when the content does.
 
@@ -285,7 +292,7 @@ Two independent versions, both typed in `nits-protocol::version`.
 - Deprecation path: a daemon may keep serving an old minor for a time and attach
   `Welcome.upgrade: UpgradeNotice { latest, message }`; clients surface it. Once dropped, the
   handshake is rejected with the supported list, so the error is specific and actionable.
-- Protocol 0.7 currently serves **only minor 0.7**: older minors are retired and
+- Protocol 0.8 currently serves **only minor 0.8**: older minors are retired and
   rejected during Hello, before any event or snapshot. The daemon has one serializer;
   the same-major compatibility predicate alone does not prove it can encode an old
   minor. Adding a supported minor requires its serializer. The stable shutdown-only
@@ -302,12 +309,16 @@ Two independent versions, both typed in `nits-protocol::version`.
   restamp; newer → refuse to open with a clear error (a newer `nits` wrote this; upgrade).
 - Events are stored as JSON with a per-event `schema` tag, so the event log itself migrates by
   re-serialisation, and materialised views can always be rebuilt from the migrated log.
-- Schema 2 adds informational kinds/lifecycles. The 1→2 migration reserializes
-  and restamps stored events and rebuilds views, retaining old Note roots and all
+- Schema 2 adds informational kinds/lifecycles. The 1→2 migration restamps raw
+  event envelopes and rebuilds views, retaining old Note roots and all
   replies/resolutions unchanged. Older binaries refuse the schema 2 store.
 - Schema 3 adds the review-request view. The 2→3 migration rebuilds views from
   unchanged historical events, including requests sent before this upgrade.
   Older binaries refuse the schema 3 store.
+- Schema 4 distinguishes Diff and Browse comment provenance. The 3→4 migration
+  wraps legacy non-null diff contexts, preserves absent contexts and all history,
+  and rebuilds views. Earlier migration steps retain raw payloads until this
+  transformation runs, so schema 1, 2 and 3 stores can upgrade directly.
 - The daemon reports `schema` in `Welcome` for diagnostics only; clients never depend on it.
 
 ## 5. Client core (sans-I/O)

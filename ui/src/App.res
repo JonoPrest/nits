@@ -506,6 +506,7 @@ module Shell = {
                 <DiffView
                   diff
                   layout=model.prefs.layout
+                  visual=?model.visual
                   focus=model.focus
                   scroll=?model.scroll
                   chrome=model.chrome

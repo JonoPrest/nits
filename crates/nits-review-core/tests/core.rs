@@ -1442,3 +1442,101 @@ fn review_requests_are_durable_state_separate_from_findings() {
         Err(CoreError::NotFound { .. })
     ));
 }
+
+#[test]
+fn browse_comments_pin_arbitrary_ref_blobs_through_review_refresh_and_restart() {
+    use nits_protocol::{CommentContext, TreeEntryKind};
+    let w = world();
+    w.core
+        .create_review(&human(), review_id(1), ws(), "r".into(), targets())
+        .unwrap();
+    // A separate history, with a file wholly absent from the review's diff.
+    w.a.git(&["checkout", "-b", "archive", "main"]).unwrap();
+    w.a.write_file("unchanged.txt", b"one\ntwo\nthree\n")
+        .unwrap();
+    w.a.git(&["add", "."]).unwrap();
+    w.a.git(&["commit", "-m", "archive content"]).unwrap();
+    w.a.git(&["tag", "v1"]).unwrap();
+    let oid: CommitOid =
+        w.a.git(&["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+    let references = [
+        RefSpec::Branch {
+            name: "archive".into(),
+        },
+        RefSpec::Tag { name: "v1".into() },
+        RefSpec::Commit { oid },
+        RefSpec::WorkingTree,
+    ];
+    let mut originals = vec![];
+    for (index, reference) in references.into_iter().enumerate() {
+        if reference == RefSpec::WorkingTree {
+            w.a.write_file("unchanged.txt", b"one\nworking snapshot\nthree\n")
+                .unwrap();
+        }
+        let snapshot = w.core.tree_snapshot(rid(1), &reference).unwrap();
+        let blob = snapshot
+            .entries
+            .iter()
+            .find_map(|entry| match &entry.kind {
+                TreeEntryKind::File { oid, .. } if entry.path == p("unchanged.txt") => Some(*oid),
+                _ => None,
+            })
+            .unwrap();
+        let anchor = lines_anchor(rid(1), p("unchanged.txt"), Side::Head, blob, 1, 3).unwrap();
+        let comment = w
+            .core
+            .add_comment(
+                &human(),
+                review_id(1),
+                cid(index as u128 + 1),
+                CommentKind::Note,
+                anchor,
+                "browse this revision".into(),
+                Some(CommentContext::Browse { reference }),
+            )
+            .unwrap();
+        originals.push(comment);
+    }
+    // Move the reviewed branch AND the original branch; neither owns these anchors.
+    w.a.git(&["reset", "--hard"]).unwrap();
+    w.a.git(&["checkout", "feature"]).unwrap();
+    w.a.write_file("unchanged.txt", b"unrelated replacement\n")
+        .unwrap();
+    w.a.git(&["add", "."]).unwrap();
+    w.a.git(&["commit", "-m", "unrelated reviewed content"])
+        .unwrap();
+    w.a.git(&["branch", "-f", "archive", "feature"]).unwrap();
+    w.core.resolve_targets(&human(), review_id(1)).unwrap();
+    assert_eq!(w.core.comments(review_id(1)).unwrap(), originals);
+    let data = w.data.clone();
+    drop(w.core);
+    let reopened = Core::open(&data).unwrap();
+    assert_eq!(reopened.comments(review_id(1)).unwrap(), originals);
+    for original in originals {
+        let Anchor::Lines {
+            blob_oid,
+            lines,
+            side,
+            ..
+        } = original.anchor
+        else {
+            panic!()
+        };
+        let (header, _) = reopened
+            .blob_render(rid(1), &p("unchanged.txt"), blob_oid)
+            .unwrap();
+        assert_eq!(
+            header.target,
+            nits_protocol::RenderTarget::Blob { oid: blob_oid }
+        );
+        assert_eq!(
+            (side, lines.start().get(), lines.end().get()),
+            (Side::Head, 1, 3)
+        );
+        assert_eq!(original.state, CommentState::Live);
+    }
+}

@@ -9,9 +9,9 @@
 //! good anchor and flagged; deleted ones are not placed at all.
 
 use nits_protocol::{
-    Anchor, Author, BlobOid, ChangeKind, ChunkIndex, Comment, CommentId, CommentKind, CommentState,
-    CommitInfo, CommitOid, FileRenderHeader, RenderChunk, RenderContent, RenderTarget, RepoId,
-    ReviewSnapshot, Row, Side, Thread, ThreadId, ThreadResolution, Timestamp,
+    Anchor, Author, BlobOid, ChunkIndex, Comment, CommentId, CommentKind, CommentState, CommitInfo,
+    CommitOid, FileRenderHeader, RenderChunk, RenderContent, RenderTarget, RepoId, ReviewSnapshot,
+    Row, Side, Thread, ThreadId, ThreadResolution, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use strum::EnumDiscriminants;
@@ -67,10 +67,10 @@ pub struct ThreadView {
     pub suggestion: bool,
     /// Root then replies, oldest first; deleted comments are omitted.
     pub comments: Vec<CommentView>,
-    /// The file diff the root comment was made on, when recorded — the
+    /// The diff or Browse revision the root was made on, when recorded — the
     /// target of jump-to-original-diff (UI-DESIGN §Comments).
     #[serde(default)]
-    pub context: Option<ChangeKind>,
+    pub context: Option<nits_protocol::CommentContext>,
 }
 
 /// One comment as the thread panel shows it.
@@ -126,6 +126,8 @@ pub struct DiffRow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DiffView {
+    /// Content identity for clearing host row caches when a ref moves.
+    pub target: RenderTarget,
     pub file: FileRef,
     pub lang: Option<String>,
     pub content: RenderContent,
@@ -535,6 +537,7 @@ pub(crate) fn diff_view(
     else {
         return Some(DiffView {
             file,
+            target: header.target.clone(),
             lang: header.lang.clone(),
             content: header.content.clone(),
             viewed: viewed_state,
@@ -585,6 +588,7 @@ pub(crate) fn diff_view(
     }
     Some(DiffView {
         file,
+        target: header.target.clone(),
         lang: header.lang.clone(),
         content: header.content.clone(),
         viewed: viewed_state,
@@ -608,6 +612,7 @@ fn empty(
 ) -> DiffView {
     DiffView {
         file,
+        target: header.target.clone(),
         lang: header.lang.clone(),
         content: header.content.clone(),
         viewed,

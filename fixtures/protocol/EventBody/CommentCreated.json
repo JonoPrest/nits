@@ -19,9 +19,12 @@
     },
     "body": "This should be a newtype.",
     "context": {
-      "new": "c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4",
-      "old": "a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5",
-      "type": "Modified"
+      "change": {
+        "new": "c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4",
+        "old": "a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5",
+        "type": "Modified"
+      },
+      "type": "Diff"
     },
     "created": 1700000002000,
     "edited": null,

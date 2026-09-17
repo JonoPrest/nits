@@ -797,7 +797,12 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 // An outdated thread's location is gone from the current
                 // diff: open the diff it was made on instead (UI-DESIGN
                 // §Comments).
-                if t.outdated && t.context.is_some() {
+                if (t.outdated && t.context.is_some())
+                    || matches!(
+                        t.context,
+                        Some(nits_protocol::CommentContext::Browse { .. })
+                    )
+                {
                     return Ok(Action::OpenOriginalDiff { thread_id: t.id });
                 }
                 // A line thread is shown against the side it is anchored
@@ -971,35 +976,32 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             let anchor = match focus {
                 Focus::Diff { row, side } => {
                     let diff = view.diff.as_ref().ok_or(NoTarget::NoOpenFile)?;
-                    let target = open
-                        .files
-                        .iter()
-                        .find(|k| k.repo_id == diff.file.repo_id && k.path == diff.file.path)
-                        .map(|k| &k.target)
-                        .ok_or_else(nothing)?;
+                    let target = &open
+                        .open_file
+                        .as_ref()
+                        .ok_or(NoTarget::NoOpenFile)?
+                        .render
+                        .target;
                     let r = diff
                         .rows
                         .iter()
                         .find(|r| r.index == row)
                         .ok_or_else(nothing)?;
-                    line_anchor(&diff.file, target, &r.row, side).ok_or_else(nothing)?
+                    let anchor =
+                        line_anchor(&diff.file, target, &r.row, side).ok_or_else(nothing)?;
+                    let Anchor::Lines { lines, .. } = anchor else {
+                        return Err(nothing());
+                    };
+                    return Ok(Action::CommentLines {
+                        file: diff.file.clone(),
+                        side,
+                        start_line: lines.start().get(),
+                        end_line: lines.end().get(),
+                    });
                 }
                 Focus::Tree { .. } => {
                     let file = target_file(view, focus).ok_or_else(nothing)?;
-                    let blob = open
-                        .files
-                        .iter()
-                        .find(|k| k.repo_id == file.repo_id && k.path == file.path)
-                        .and_then(|k| match &k.target {
-                            RenderTarget::Diff { change } => change.new_blob(),
-                            RenderTarget::Blob { oid } => Some(*oid),
-                        })
-                        .ok_or_else(nothing)?;
-                    Anchor::File {
-                        repo_id: file.repo_id,
-                        path: file.path,
-                        blob_oid: blob,
-                    }
+                    return Ok(Action::CommentFile { file });
                 }
                 Focus::ReviewList { .. }
                 | Focus::ReviewRequest { .. }
@@ -1313,12 +1315,12 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             };
             let diff = view.diff.as_ref().ok_or(NoTarget::NoOpenFile)?;
             let open = view.review.as_ref().ok_or(NoTarget::NoOpenReview)?;
-            let target = open
-                .files
-                .iter()
-                .find(|k| k.repo_id == diff.file.repo_id && k.path == diff.file.path)
-                .map(|k| &k.target)
-                .ok_or_else(nothing)?;
+            let target = &open
+                .open_file
+                .as_ref()
+                .ok_or(NoTarget::NoOpenFile)?
+                .render
+                .target;
             // Only a commentable row starts a selection.
             let r = diff
                 .rows

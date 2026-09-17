@@ -930,3 +930,6 @@
 /* Help uses the same explicit input/list focus contract as other palettes. */
 .help-results { outline-offset: -2px; }
 [role="listbox"]:focus-visible { outline: 2px solid var(--color-accent); }
+
+.cell-comment { opacity: 0; padding: 0 4px; line-height: 1; }
+.cell-left:hover .cell-comment, .cell-right:hover .cell-comment, .cell-comment:focus-visible, .cell-focused .cell-comment { opacity: 1; }

@@ -175,8 +175,8 @@ pub enum Mutation {
         kind: CommentKind,
         anchor: Anchor,
         body: String,
-        /// The file diff being viewed (see [`Comment::context`]).
-        context: Option<ChangeKind>,
+        /// The content being viewed (see [`Comment::context`]).
+        context: Option<crate::CommentContext>,
     },
     Reply {
         review_id: ReviewId,
