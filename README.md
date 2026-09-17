@@ -30,6 +30,15 @@ An agent can inspect `get_session_identity` and set its display/routing name
 and model with `set_session_identity`, without restarting MCP. See
 [session identity and targeted requests](docs/MCP-IDENTITY.md).
 
+The repository includes the Codex-compatible [Nits review skill](skills/nits-review/SKILL.md).
+Install it from this checkout, then invoke `$nits-review` when participating in a
+Nits review (or point an agent directly at the skill file):
+
+```sh
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
+cp -R skills/nits-review "${CODEX_HOME:-$HOME/.codex}/skills/"
+```
+
 Cutting a release: [`docs/RELEASING.md`](docs/RELEASING.md).
 
 [releases]: https://github.com/JonoPrest/nits/releases

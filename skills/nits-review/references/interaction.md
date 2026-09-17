@@ -1,0 +1,178 @@
+# MCP and CLI interaction
+
+Use the installed MCP tool schemas or `nits … --help` as the argument authority.
+The examples below use symbolic IDs (`REVIEW_ID`, `REPO_ID`, `THREAD_ID`) and
+invented names/paths; substitute values returned by the selected daemon. Do not
+send these literal placeholders. No extra MCP tool exists just because Core has
+the underlying capability.
+
+## MCP
+
+At session start call `get_session_identity {}`. Its `author` is an Agent with
+`name`, `model`, `session_id`, `invoked_by` (possibly null), and `via: "Mcp"`.
+Initialization gets the name from MCP client info, model from `NITS_AGENT_MODEL`
+(otherwise `unknown`), and session ID from `NITS_SESSION_ID` or a generated value.
+Use `set_session_identity {"name":"reviewer-a","model":"ACTUAL_MODEL"}` when
+needed; both fields are required. Preserve accurate existing values. Session ID,
+invoking human and origin are immutable here. A successful update affects future
+events; reconnects and context switches preserve it. Names route requests and
+group checkpoints across sessions; they are not authenticated human identities.
+
+Call `list_contexts {}` to read configured, active and persisted selections.
+`use_context {"name":"review-box"}` switches this MCP session after a successful
+handshake, discards previous subscriptions, and leaves the CLI default unchanged.
+Failure retains the previous context. Save `context.name` from daemon reads with
+the IDs/cursors returned. Context switches do not translate IDs between daemons.
+
+A typical opening sequence is:
+
+```text
+list_workspaces {}
+list_reviews {"workspace_id":"WORKSPACE_ID"}
+get_review {"review_id":"REVIEW_ID"}
+get_diff {"review_id":"REVIEW_ID","repo_id":"REPO_ID","path":"src/parser.rs"}
+get_file {"review_id":"REVIEW_ID","repo_id":"REPO_ID","path":"src/parser.rs","side":"Head","start_line":10,"end_line":35}
+```
+
+Omit `workspace_id` only when the MCP server's working directory identifies the
+intended attached workspace. Omit both file bounds for full content, or supply
+both as inclusive 1-based source lines. Diff display row indices are not anchors.
+
+For a checkout that should have a review, call
+`ensure_directory_review {"path":"/work/example-project"}`. It attaches the repo
+if needed and creates or reuses an open working-tree review. An omitted base
+preserves a matching review's base or uses detection. Explicit `base`/`head` refs
+must match for reuse; different refs may create another review. Use returned
+workspace/repo/review IDs and then `get_review`; the bootstrap receipt's `seq` is
+not a substitute for a review snapshot watermark.
+
+For a deliberately new comparison use `create_review` with a title and targets,
+e.g. `{"repo_id":"REPO_ID","base":{"type":"Branch","name":"main"},"head":{"type":"WorkingTree"}}`.
+For the same logical review, use `update_review_target`:
+
+```json
+{"review_id":"REVIEW_ID","repo_id":"REPO_ID","revision":{"type":"Head","ref_spec":{"type":"Commit","oid":"FULL_COMMIT_OID"}}}
+```
+
+Use `type: "Base"` to change the base; a working tree cannot be a base in this
+target-update/bootstrap selector. Keep other repositories' targets intact.
+
+Start a line finding and continue it using the returned `thread_id`:
+
+```text
+add_comment {"review_id":"REVIEW_ID","repo_id":"REPO_ID","path":"src/parser.rs","side":"Head","start_line":18,"end_line":20,"body":"An empty record reaches this index operation and fails. Return the existing empty-input result before indexing."}
+reply {"review_id":"REVIEW_ID","thread_id":"THREAD_ID","body":"The guard now handles empty input; the regression test passes at COMMIT_OID."}
+```
+
+Omit line bounds for a file anchor; omit the path and all location fields for a
+review anchor. For a summary, use `add_comment` with `intent: "Informational"`,
+`review_id` and `body` only. `suggest` takes the line location, explanation `body`
+and unified-diff `patch`. Neither `add_comment` nor `suggest` accepts an arbitrary
+old blob OID, Browse context, caller-chosen comment ID, or historical diff scope.
+
+Thread state operations use the actual thread ID:
+
+```text
+resolve {"review_id":"REVIEW_ID","thread_id":"THREAD_ID","resolved":true}
+defer {"review_id":"REVIEW_ID","thread_id":"THREAD_ID","reason":"The agreed follow-up is outside this change","tracking_url":"https://example.com/issues/123"}
+resolve {"review_id":"REVIEW_ID","thread_id":"THREAD_ID","resolved":false}
+```
+
+Only use a real existing tracking URL; omit it when there is none. Informational
+threads cannot be resolved, deferred or reopened. Deferral requires an open
+finding; reopen a deferred finding before treating it as current work.
+
+To follow the snapshot above, copy its actual `seq` and `context.name`:
+
+```json
+{"review_id":"REVIEW_ID","since_seq":42,"since_context":"review-box","timeout_ms":30000,"max":100}
+```
+
+Pass every response's `last_seq` into the next `subscribe_events` call, including
+after an empty response. `review_id`, `workspace_id` and `awaiting_agent` are
+mutually exclusive; omit all for all events. `since_context` is mandatory with a
+cursor after switching contexts; supplying it consistently also catches accidental
+cross-context reuse. An `awaiting_agent` subscription uses the recipient's exact
+`get_session_identity.author.name`. Existing requests for each opened review are
+in `get_review`/`list_comments.requests`; opening one review does not discover
+older requests in all other workspaces.
+
+MCP mutation receipts give stable IDs and the primary committed `seq`. Keep these
+as evidence, but do not advance an existing subscription cursor to a mutation's
+sequence: intervening events from other participants would be skipped. When only
+following events caused after that mutation, its `seq` is a valid starting point;
+to read the mutation itself use an earlier cursor. `get_review` combines a
+snapshot with file queries, so concurrent changes require checking target events
+and refreshed content rather than assuming all subsequent reads share one state.
+
+## CLI fallback
+
+Use `--agent` on agent calls, including read commands that might bootstrap state.
+Set `NITS_AGENT_MODEL` to the actual model and `NITS_SESSION_ID` to this agent's
+stable session identity for the run. CLI otherwise uses model `unknown` and an
+empty session ID. The invoking human comes from `--user`/`NITS_USER`/`USER` and the
+host; do not set it to the agent's name or an invented approving human. For
+example, after setting those variables to the real session values:
+
+```sh
+nits --agent reviewer-a --context review-box context show
+nits --agent reviewer-a --context review-box --json workspace list
+nits --agent reviewer-a --context review-box --json review list
+nits --agent reviewer-a --context review-box --json review show REVIEW_ID
+nits --agent reviewer-a --context review-box diff REVIEW_ID src/parser.rs --repo REPO_ID
+nits --agent reviewer-a --context review-box show REVIEW_ID src/parser.rs --repo REPO_ID --side head
+```
+
+Context precedence is ad-hoc socket/data-dir/daemon-URL flags or their environment
+equivalents, then `--context`, `NITS_CONTEXT`, persisted default, implicit local.
+Inspect `context show`, especially before opening a portable reference. Prefer a
+per-command context for this task; `context use` changes the persisted default
+for future processes. MCP switches and CLI defaults do not move each other.
+
+Bootstrap with `nits --agent reviewer-a --context review-box --json /work/example-project --headless`.
+For an explicitly new review, use `review create --base main --head worktree`
+with `--workspace WORKSPACE_ID` and `--repo REPO_ID` when inference is ambiguous.
+CLI refs accept branch names, `tag:NAME`, full commit OIDs, `HEAD`, `upstream`, and
+`worktree`. For updating targets and requesting/checking revisions, see the
+[revision workflow](revisions.md).
+
+Apply the same identity/context flags to these commands:
+
+```sh
+nits comment add REVIEW_ID --repo REPO_ID --path src/parser.rs --side head --lines 18-20 --body 'Explain the concrete concern'
+nits comment add REVIEW_ID --intent informational --body 'Checked the parser changes; one empty-input finding remains open.'
+nits comment reply REVIEW_ID THREAD_ID --body 'Describe the fix, checked revision and verification'
+nits comment defer REVIEW_ID THREAD_ID --reason 'Agreed follow-up outside this change'
+nits comment reopen REVIEW_ID THREAD_ID
+nits comment resolve REVIEW_ID THREAD_ID
+nits --json events --review REVIEW_ID --since SNAPSHOT_SEQ --follow
+```
+
+`comment add --patch` takes unified-diff text, not a patch filename. `--line` or
+`--lines` requires `--path`. Replies use the thread ID, not the reply comment ID.
+`review show --json` supplies snapshot state and `seq`; `comment list --json`
+does not supply a replacement snapshot cursor.
+
+CLI `events --follow` internally resumes long-polls from `last_seq`, but prints
+events only, not that watermark. Save the last **processed event's** `seq` and
+the selected context/scope when managing a restart; keep the original cursor if
+no events arrived. This may replay already-seen events, which can be deduplicated.
+Choose only one scope (`--review`, `--workspace`, or `--awaiting`); a requests-only
+follow does not receive thread replies. On process failure, restart from the saved
+cursor with the same context. Stop/reap a follower started for a completed task.
+
+## Uncertain mutation outcomes
+
+On disconnect, an error can mean the daemon committed the mutation but its reply
+was lost. MCP reconnects before the next call and does not replay interrupted
+calls. Inspect the fresh snapshot and replay from the previous cursor; look for
+the intended comment/request/state with this agent's provenance before retrying.
+If success still cannot be distinguished from failure, report uncertainty and
+avoid another potentially duplicate mutation until reconciled.
+
+Core mutations support client-generated comment IDs and client sequence
+idempotency. The MCP and CLI convenience commands allocate these internally;
+they expose receipts, not a caller-supplied replay key. Repeating a CLI invocation
+or MCP tool call is a new operation. A custom protocol client may preserve its
+original IDs and client sequence for supported replay, but do not invent an
+`idempotency_key` argument or claim that re-running a convenience call is safe.
