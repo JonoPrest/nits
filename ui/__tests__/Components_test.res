@@ -2140,6 +2140,7 @@ describe("Commented lines and the inline composer", () => {
         lines: {start: 9, end_: 9},
         contextHash: "0",
       }),
+      submissionError: None,
       purpose: Comment({intent: Finding, context: None}),
     }
     expect(View.Draft.isDocked(draft))->toBe(false)
@@ -2158,6 +2159,7 @@ describe("Commented lines and the inline composer", () => {
   test("a review-level draft still docks", () => {
     let draft: View.Draft.t = {
       anchor: Review({}),
+      submissionError: None,
       purpose: Comment({intent: Finding, context: None}),
     }
     expect(View.Draft.isDocked(draft))->toBe(true)
@@ -2190,6 +2192,7 @@ describe("The shell's composer placement", () => {
       lines: {start: 9, end_: 9},
       contextHash: "0",
     }),
+    submissionError: None,
     purpose: Comment({intent: Finding, context: None}),
   }
 
@@ -2233,6 +2236,7 @@ describe("The shell's composer placement", () => {
   test("a review-level draft still docks, in both tabs", () => {
     let review: View.Draft.t = {
       anchor: Review({}),
+      submissionError: None,
       purpose: Comment({intent: Finding, context: None}),
     }
     [View.Tab.FilesChanged, Browse]->Array.forEach(
@@ -2305,7 +2309,7 @@ describe("Informational conversation", () => {
         indexOffset=0
         dispatch
         chrome
-        draft={{purpose: Reply({threadId: note.id}), anchor: Review({})}}
+        draft={{submissionError: None, purpose: Reply({threadId: note.id}), anchor: Review({})}}
       />,
     )
     expect(Screen.getByPlaceholderText("Reply…"))->toBeTruthy
@@ -2317,7 +2321,11 @@ describe("Informational conversation", () => {
     let model = {
       ...Fixtures.parse(View.ViewModel.schema, "client", "ViewModel", "default"),
       tab: Conversation,
-      draft: Some({purpose: Comment({intent: Informational, context: None}), anchor: Review({})}),
+      draft: Some({
+        submissionError: None,
+        purpose: Comment({intent: Informational, context: None}),
+        anchor: Review({}),
+      }),
     }
     let dispatch = fn()
     let core: Core.t = {
@@ -2471,7 +2479,11 @@ describe("Deferred findings", () => {
   test(
     "deferral composer requires a reason, includes optional URL and supports keyboard submission",
     () => {
-      let draft: View.Draft.t = {anchor: Review({}), purpose: Defer({threadId: "finding"})}
+      let draft: View.Draft.t = {
+        anchor: Review({}),
+        submissionError: None,
+        purpose: Defer({threadId: "finding"}),
+      }
       let dispatch = fn()
       let _ = render(<Composer draft pendingRefresh=false dispatch />)
       let reason = Screen.getByPlaceholderText(
@@ -2494,4 +2506,43 @@ describe("Deferred findings", () => {
       expect(dispatch)->toHaveBeenLastCalledWith(Action.DraftDiscarded({}))
     },
   )
+})
+
+test("deferral rejection is visible and keeps both inputs available for correction", () => {
+  let draft: View.Draft.t = {
+    anchor: Review({}),
+    purpose: Defer({threadId: "finding"}),
+    submissionError: None,
+  }
+  let dispatch = fn()
+  let {container, rerender} = render(<Composer draft pendingRefresh=false dispatch />)
+  let reason = Screen.getByPlaceholderText(
+    "Reason for deferring this unfixed finding (required)…",
+  )
+  let url = Screen.getByPlaceholderText("External tracking URL (optional HTTP(S))")
+  FireEvent.change(reason, {"target": {"value": "External follow-up"}})
+  FireEvent.change(url, {"target": {"value": "example.com/issues/288"}})
+  FireEvent.click(Screen.getByText("Submit"))
+  // A rejected action returns this Draft patch; the real Rust bridge test
+  // verifies the parse failure, patch delivery, and absence of a committed event.
+  let message = "Invalid tracking URL. Enter a complete http:// or https:// URL."
+  rerender(
+    <Composer draft={{...draft, submissionError: Some(message)}} pendingRefresh=false dispatch />,
+  )
+  let alert = Element.querySelector(container, "[role='alert']")->Nullable.getExn
+  expect(Element.textContent(alert))->toContain(message)
+  expect(Element.value(reason))->toBe("External follow-up")
+  expect(Element.value(url))->toBe("example.com/issues/288")
+  FireEvent.change(url, {"target": {"value": "https://example.com/issues/288"}})
+  FireEvent.keyDown(url, {"key": "Enter", "ctrlKey": true})
+  expect(dispatch)->toHaveBeenLastCalledWith(
+    Action.DeferThread({
+      threadId: "finding",
+      reason: "External follow-up",
+      trackingUrl: Some("https://example.com/issues/288"),
+    }),
+  )
+  rerender(<Composer draft pendingRefresh=false dispatch />)
+  expect(Element.querySelector(container, "[role='alert']"))->toBeNull
+  expect(Element.value(reason))->toBe("External follow-up")
 })

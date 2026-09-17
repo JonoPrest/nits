@@ -56,7 +56,11 @@ module DraftPurpose = {
 
 module Draft = {
   @schema
-  type t = {anchor: Domain.Anchor.t, purpose: DraftPurpose.t}
+  type t = {
+    anchor: Domain.Anchor.t,
+    purpose: DraftPurpose.t,
+    @as("submission_error") submissionError: @s.null option<string>,
+  }
   let thread = (draft: t) =>
     switch draft.purpose {
     | Reply({threadId}) | Defer({threadId}) => Some(threadId)

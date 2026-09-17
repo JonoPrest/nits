@@ -62,6 +62,13 @@ let make = (
     {pendingRefresh
       ? <div className="composer-pending"> {React.string("changes pending")} </div>
       : React.null}
+    {switch draft.submissionError {
+    | Some(message) =>
+      <UI.Panel title="Unable to submit" role="alert">
+        <p> {React.string(message)} </p>
+      </UI.Panel>
+    | None => React.null
+    }}
     <textarea
       className="composer-input"
       autoFocus=true

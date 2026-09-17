@@ -171,6 +171,9 @@ reopening returns the finding to `Open`, and explicit resolution records a fix.
 A deferral can only be recorded from `Open`; reopen first to change its reason,
 so concurrent deferrals cannot silently overwrite attribution. Informational
 threads cannot be deferred. No disposition implies approval or deployment safety.
+Browser and desktop actions share the host's validated JSON boundary. A rejected
+submission returns an error in the active draft, preserving the editor's text
+and allowing correction without committing an event.
 MCP `defer`, CLI `comment defer --reason ... [--tracking-url ...]`, and the UI use
 the same Core mutation. `resolve` with `resolved: false`, CLI `comment reopen`,
 and the UI's reopen action restore current-scope work. Fresh review snapshots

@@ -2932,3 +2932,25 @@ fn requests_have_keyboard_navigation_and_open_changes_without_resolving_findings
     assert_eq!(core.view().threads, findings);
     assert_eq!(core.view().requests.len(), 2);
 }
+
+#[test]
+fn rejected_action_keeps_the_draft_and_only_renders_correction_feedback() {
+    let mut core = ready();
+    let thread_id = core.view().threads[0].id;
+    core.handle(Input::User(Action::DeferOpened { thread_id }))
+        .unwrap();
+    let mut expected = core.view().clone();
+    let reason = "Invalid tracking URL. Enter a complete http:// or https:// URL.";
+    expected.draft.as_mut().unwrap().submission_error = Some(reason.into());
+    assert_eq!(
+        core.handle(Input::InvalidAction {
+            reason: reason.into()
+        })
+        .unwrap(),
+        vec![Effect::Render(nits_client_core::ViewDelta::new(&[
+            ViewSection::Draft
+        ]))]
+    );
+    assert_eq!(core.view(), &expected);
+    assert_eq!(core.pending_count(), 0);
+}

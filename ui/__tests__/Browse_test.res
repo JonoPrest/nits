@@ -62,6 +62,7 @@ let draft = (diff: View.DiffView.t): View.Draft.t => {
     lines: {start: 1, end_: 2},
     contextHash: "0000000000000000",
   }),
+  submissionError: None,
   purpose: Comment({intent: Finding, context: Some(Browse({reference: Tag({name: "v1"})}))}),
 }
 

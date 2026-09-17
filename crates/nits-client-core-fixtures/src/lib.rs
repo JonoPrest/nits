@@ -312,6 +312,7 @@ struct_fixture!(
     Draft,
     "Draft",
     Draft {
+        submission_error: None,
         purpose: DraftPurpose::Reply {
             thread_id: thread_id()?
         },

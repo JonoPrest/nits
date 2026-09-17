@@ -17,6 +17,7 @@ nits-protocol = { workspace = true }
 nits-config = { workspace = true }
 nitsd = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -26,9 +27,6 @@ thiserror = { workspace = true }
 gethostname = { workspace = true }
 clap = { workspace = true }
 fastrand = "2.5.0"
-
-[dev-dependencies]
-serde_json = { workspace = true }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -55,8 +55,11 @@ impl std::fmt::Display for HostGone {
 // `tauri::command` requires `State` by value.
 #[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
-fn dispatch(host: State<'_, Host>, action: Action) -> Result<(), HostGone> {
-    host.handle.dispatch(action).then_some(()).ok_or(HostGone)
+fn dispatch(host: State<'_, Host>, action: serde_json::Value) -> Result<(), HostGone> {
+    host.handle
+        .dispatch_json(action)
+        .then_some(())
+        .ok_or(HostGone)
 }
 
 #[allow(clippy::needless_pass_by_value)]

@@ -96,6 +96,10 @@ pub type Key = String;
 #[strum_discriminants(name(InputKind), derive(Hash))]
 pub enum Input {
     User(Action),
+    /// An adapter rejected action deserialization before a domain action existed.
+    InvalidAction {
+        reason: String,
+    },
     Server(ServerMsg),
     Transport(TransportEvent),
     /// Answer to an `Effect::Load`; `None` when the key is absent.
@@ -762,6 +766,14 @@ impl ClientCore {
     pub fn handle(&mut self, input: Input) -> Result<Vec<Effect>, CoreError> {
         let mut effects = match input {
             Input::User(action) => self.user(action)?,
+            Input::InvalidAction { reason } => {
+                if let Some(draft) = &mut self.view.draft {
+                    draft.submission_error = Some(reason);
+                    vec![render(&[ViewSection::Draft])]
+                } else {
+                    Vec::new()
+                }
+            }
             Input::Server(msg) => self.server(msg)?,
             Input::Transport(ev) => self.transport(ev),
             Input::Stored { key, value } if key == ViewPrefs::KEY => self.prefs_stored(value),
@@ -1931,6 +1943,7 @@ impl ClientCore {
                 };
                 self.visual_anchor = None;
                 self.view.draft = Some(Draft {
+                    submission_error: None,
                     purpose: DraftPurpose::Comment {
                         intent: nits_protocol::CommentIntent::Finding,
                         context: self.comment_context(&anchor),
@@ -1962,6 +1975,7 @@ impl ClientCore {
                 };
                 self.visual_anchor = None;
                 self.view.draft = Some(Draft {
+                    submission_error: None,
                     purpose: DraftPurpose::Comment {
                         intent: nits_protocol::CommentIntent::Finding,
                         context: self.context_for_render(&source),
@@ -2511,6 +2525,7 @@ impl ClientCore {
                 }
                 self.visual_anchor = None;
                 self.view.draft = Some(Draft {
+                    submission_error: None,
                     purpose: DraftPurpose::Comment {
                         intent: nits_protocol::CommentIntent::Finding,
                         context: self.comment_context(&anchor),
@@ -2535,6 +2550,7 @@ impl ClientCore {
                     .and_then(|t| open.snapshot.comments.iter().find(|c| c.id == t.root))
                     .ok_or(CoreError::UnknownThread(thread_id))?;
                 self.view.draft = Some(Draft {
+                    submission_error: None,
                     purpose: DraftPurpose::Reply { thread_id },
                     anchor: root.anchor.clone(),
                 });
@@ -2671,6 +2687,7 @@ impl ClientCore {
                     .find(|c| c.id == thread.root)
                     .ok_or(CoreError::UnknownThread(thread_id))?;
                 self.view.draft = Some(Draft {
+                    submission_error: None,
                     anchor: root.anchor.clone(),
                     purpose: DraftPurpose::Defer { thread_id },
                 });

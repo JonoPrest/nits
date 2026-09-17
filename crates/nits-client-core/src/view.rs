@@ -56,6 +56,8 @@ pub enum ConnectionView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Draft {
+    /// Rejected wire input leaves the editor open for correction. Text stays in the host.
+    pub submission_error: Option<String>,
     pub anchor: Anchor,
     pub purpose: DraftPurpose,
 }

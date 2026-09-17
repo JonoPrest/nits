@@ -35,7 +35,9 @@ pub struct TrackingUrl(String);
 impl TryFrom<String> for TrackingUrl {
     type Error = String;
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        let parsed = url::Url::parse(&value).map_err(|e| format!("invalid tracking URL: {e}"))?;
+        let parsed = url::Url::parse(&value).map_err(|error| {
+            format!("Invalid tracking URL. Enter a complete http:// or https:// URL ({error}).")
+        })?;
         if !matches!(parsed.scheme(), "http" | "https")
             || parsed.host_str().is_none()
             || !parsed.username().is_empty()
