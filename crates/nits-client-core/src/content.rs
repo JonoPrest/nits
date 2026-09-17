@@ -511,13 +511,6 @@ impl ClientCore {
         let mut sections = Vec::new();
         match (key, value) {
             (CacheKey::Header { render }, CacheValue::Header { header }) => {
-                if let Some(open) = &mut self.view.review
-                    && !open.files.contains(&render)
-                    && open.original.as_ref() != Some(&render)
-                    && open.open_file.as_ref().map(|f| &f.render) != Some(&render)
-                {
-                    open.files.push(render.clone());
-                }
                 if after == AfterHeader::WantChunks {
                     self.want_chunks_for(&render, &header, effects);
                 }
@@ -824,8 +817,10 @@ impl ClientCore {
     /// scoped head tree (UI-DESIGN §Browse).
     fn blob_render_of(&self, file: &FileRef) -> Option<RenderKey> {
         let open = self.view.review.as_ref()?;
-        let root = match (self.view.tab, self.browse_root(file.repo_id)) {
-            (crate::Tab::Browse, Some(root)) => root,
+        let picked = self.browse.as_ref().filter(|b| b.repo_id == file.repo_id);
+        let root = match (self.view.tab, picked) {
+            // A pending ref must not fall back to the review's head tree.
+            (crate::Tab::Browse, Some(browse)) => browse.root?,
             (crate::Tab::Browse | crate::Tab::FilesChanged | crate::Tab::Conversation, _) => {
                 open.current_targets()
                     .iter()
@@ -856,18 +851,11 @@ impl ClientCore {
         })
     }
 
-    // ---- viewport -------------------------------------------------------
-
-    pub(crate) fn viewport(
-        &mut self,
-        file: FileRef,
-        first_row: u32,
-        last_row: u32,
-    ) -> Result<Vec<Effect>, CoreError> {
-        let Some(open) = &self.view.review else {
-            return Err(CoreError::NoOpenReview);
-        };
-        let review_id = open.snapshot.review.id;
+    /// Resolve a file once for both opening it and capturing a comment's
+    /// anchor/context. Original thread content keeps its pinned render;
+    /// Browse always uses the selected tree, including unchanged files.
+    pub(crate) fn render_of_file(&self, file: &FileRef) -> Option<RenderKey> {
+        let open = self.view.review.as_ref()?;
         let original = open
             .original
             .as_ref()
@@ -879,29 +867,38 @@ impl ClientCore {
             .cloned();
         // In Browse at a picked ref, every file opens as that ref's blob —
         // even ones the review's diff also touches.
-        let browsing = self.view.tab == crate::Tab::Browse;
-        if original.is_none()
-            && browsing
-            && self
-                .browse
-                .as_ref()
-                .is_some_and(|b| b.repo_id == file.repo_id && b.root.is_none())
-        {
-            return Err(CoreError::UnknownFile(file));
-        }
-        let Some(render) = original.or_else(|| {
-            if browsing {
-                self.blob_render_of(&file)
+        original.or_else(|| {
+            if self.view.tab == crate::Tab::Browse {
+                self.blob_render_of(file)
             } else {
                 open.files
                     .iter()
                     .find(|r| r.repo_id == file.repo_id && r.path == file.path)
                     .cloned()
-                    .or_else(|| self.blob_render_of(&file))
+                    .or_else(|| self.blob_render_of(file))
             }
-        }) else {
-            return Err(CoreError::UnknownFile(file));
-        };
+        })
+    }
+
+    // ---- viewport -------------------------------------------------------
+
+    pub(crate) fn viewport(
+        &mut self,
+        file: FileRef,
+        first_row: u32,
+        last_row: u32,
+    ) -> Result<Vec<Effect>, CoreError> {
+        let review_id = self
+            .view
+            .review
+            .as_ref()
+            .ok_or(CoreError::NoOpenReview)?
+            .snapshot
+            .review
+            .id;
+        let render = self
+            .render_of_file(&file)
+            .ok_or(CoreError::UnknownFile(file))?;
         let (first_row, last_row) = (first_row.min(last_row), first_row.max(last_row));
         let mut effects = Vec::new();
         let changed_file = self.open_file().is_none_or(|f| f.render != render);

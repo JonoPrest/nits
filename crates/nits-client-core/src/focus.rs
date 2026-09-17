@@ -1001,20 +1001,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 }
                 Focus::Tree { .. } => {
                     let file = target_file(view, focus).ok_or_else(nothing)?;
-                    let blob = open
-                        .files
-                        .iter()
-                        .find(|k| k.repo_id == file.repo_id && k.path == file.path)
-                        .and_then(|k| match &k.target {
-                            RenderTarget::Diff { change } => change.new_blob(),
-                            RenderTarget::Blob { oid } => Some(*oid),
-                        })
-                        .ok_or_else(nothing)?;
-                    Anchor::File {
-                        repo_id: file.repo_id,
-                        path: file.path,
-                        blob_oid: blob,
-                    }
+                    return Ok(Action::CommentFile { file });
                 }
                 Focus::ReviewList { .. }
                 | Focus::ReviewRequest { .. }
