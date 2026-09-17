@@ -528,7 +528,10 @@ async fn file_render_streams_requested_chunk_first_and_can_be_cancelled(t: Trans
     c.cancel(id);
     let mut saw_cancelled = false;
     while let Some(item) = rx.recv().await {
-        if matches!(item, Err(RpcError::Cancelled)) {
+        if matches!(
+            item,
+            Err(nitsd::client::ClientError::Rpc(RpcError::Cancelled))
+        ) {
             saw_cancelled = true;
         }
     }

@@ -1,0 +1,240 @@
+//! A peer drops an accepted mutation without acknowledging it. MCP must answer
+//! with uncertainty, keep ping responsive, and reconnect only for the next call.
+
+use std::future::Future;
+use std::time::Duration;
+
+use nits_mcp::jsonrpc::Incoming;
+use nits_mcp::server::AgentIdentity;
+use nits_mcp::{Endpoint, Server};
+use nits_protocol::{
+    BuildInfo, ClientMsg, Envelope, ProtocolVersion, Request, Response, ReviewId, SchemaVersion,
+    ServerMsg,
+};
+use nitsd::transport::{self, ByteRead, ByteWrite};
+use serde_json::{Value, json};
+use tokio::net::{UnixListener, UnixStream};
+
+async fn bounded<T>(future: impl Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(3), future)
+        .await
+        .expect("MCP call hung")
+}
+
+fn req(method: &str, params: Value) -> Incoming {
+    Incoming {
+        jsonrpc: "2.0".into(),
+        id: Some(json!(1)),
+        method: method.into(),
+        params,
+    }
+}
+
+async fn accept_hello(
+    listener: &UnixListener,
+) -> (ByteRead<UnixStream>, ByteWrite<UnixStream>, ClientMsg) {
+    loop {
+        let (socket, _) = listener.accept().await.unwrap();
+        let (mut rd, wr) = transport::byte_stream(socket);
+        // RequireRunning probes the socket before doing a real handshake.
+        let Some(hello) = transport::recv_msg::<_, ClientMsg>(&mut rd).await.unwrap() else {
+            continue;
+        };
+        assert!(matches!(hello.msg, ClientMsg::Hello { .. }));
+        return (rd, wr, hello.msg);
+    }
+}
+
+async fn accept_client(
+    listener: &UnixListener,
+) -> (ByteRead<UnixStream>, ByteWrite<UnixStream>, ClientMsg) {
+    let (rd, mut wr, hello) = accept_hello(listener).await;
+    transport::send_msg(
+        &mut wr,
+        &Envelope::current(ServerMsg::Welcome {
+            protocol: ProtocolVersion::CURRENT,
+            daemon: BuildInfo {
+                name: "test-daemon".into(),
+                version: "0".into(),
+            },
+            schema: SchemaVersion::CURRENT,
+            upgrade: None,
+        }),
+    )
+    .await
+    .unwrap();
+    (rd, wr, hello)
+}
+
+fn server(socket: &std::path::Path) -> Server {
+    Server::new(
+        Endpoint {
+            context: nits_config::Context::Local {
+                data_dir: Some(socket.parent().unwrap().to_owned()),
+                socket: Some(socket.to_owned()),
+            },
+            start: nitsd::contexts::StartPolicy::RequireRunning,
+        },
+        AgentIdentity {
+            model: "test-model".into(),
+            session_id: "session".into(),
+            invoked_by: None,
+        },
+        BuildInfo {
+            name: "test-mcp".into(),
+            version: "0".into(),
+        },
+    )
+}
+
+#[tokio::test]
+async fn lost_mutation_is_not_replayed_and_next_call_reconnects_with_same_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("daemon.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut rd, wr, before) = accept_client(&listener).await;
+        let mutation = transport::recv_msg::<_, ClientMsg>(&mut rd)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            mutation.msg,
+            ClientMsg::Request {
+                request: Request::Mutate { .. },
+                ..
+            }
+        ));
+        // The peer accepted the mutation. Its outcome is now unknown.
+        drop((rd, wr));
+        let (mut rd, mut wr, after) = accept_client(&listener).await;
+        match (before, after) {
+            (
+                ClientMsg::Hello {
+                    client_id: old,
+                    author: before,
+                    ..
+                },
+                ClientMsg::Hello {
+                    client_id: new,
+                    author: after,
+                    ..
+                },
+            ) => {
+                assert_ne!(old, new, "new Ops resets its mutation sequence");
+                assert_eq!(before, after, "MCP provenance must survive reconnect");
+            }
+            other => panic!("expected two handshakes: {other:?}"),
+        }
+        let msg = transport::recv_msg::<_, ClientMsg>(&mut rd)
+            .await
+            .unwrap()
+            .unwrap();
+        let ClientMsg::Request {
+            id,
+            request: Request::ListWorkspaces,
+        } = msg.msg
+        else {
+            panic!("the uncertain mutation was replayed: {:?}", msg.msg);
+        };
+        transport::send_msg(
+            &mut wr,
+            &Envelope::current(ServerMsg::Response {
+                id,
+                response: Response::Workspaces { workspaces: vec![] },
+            }),
+        )
+        .await
+        .unwrap();
+    });
+    let mut server = server(&socket);
+    let init = bounded(server.handle(req(
+        "initialize",
+        json!({ "clientInfo": { "name": "test-agent" } }),
+    )))
+    .await
+    .unwrap();
+    assert!(init.error.is_none());
+    let lost = bounded(server.handle(req(
+        "tools/call",
+        json!({
+            "name": "update_review",
+            "arguments": {"review_id": ReviewId::from_parts(1, 1), "title": "renamed", "status": "Open"}
+        }),
+    )))
+    .await
+    .unwrap()
+    .result
+    .unwrap();
+    assert_eq!(lost["isError"], true);
+    let message = lost["content"][0]["text"].as_str().unwrap();
+    assert!(message.contains("may have committed"), "{message}");
+    assert!(
+        message.contains("next tool call will reconnect"),
+        "{message}"
+    );
+    let ping = bounded(server.handle(req("ping", json!({}))))
+        .await
+        .unwrap();
+    assert_eq!(ping.result, Some(json!({})));
+    let recovered = bounded(server.handle(req(
+        "tools/call",
+        json!({ "name": "list_workspaces", "arguments": {} }),
+    )))
+    .await
+    .unwrap()
+    .result
+    .unwrap();
+    assert_eq!(recovered["structuredContent"]["workspaces"], json!([]));
+    bounded(peer).await.unwrap();
+}
+
+#[tokio::test]
+async fn stalled_reconnect_times_out_and_leaves_ping_responsive() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("daemon.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+    let peer = tokio::spawn(async move {
+        drop(accept_client(&listener).await);
+        let connection = accept_hello(&listener).await;
+        seen_tx.send(()).unwrap();
+        // A listening but unresponsive replacement must not wedge stdio.
+        std::future::pending::<()>().await;
+        drop(connection);
+    });
+    let mut server = server(&socket);
+    let initialized = bounded(server.handle(req("initialize", json!({}))))
+        .await
+        .unwrap();
+    assert!(initialized.error.is_none());
+    assert!(
+        bounded(server.client().unwrap().next_unsolicited())
+            .await
+            .is_none()
+    );
+    {
+        let query = server.handle(req(
+            "tools/call",
+            json!({ "name": "list_workspaces", "arguments": {} }),
+        ));
+        tokio::pin!(query);
+        tokio::select! {
+            reply = &mut query => panic!("unexpected reply before handshake: {reply:?}"),
+            () = bounded(async { seen_rx.await.unwrap() }) => {}
+        }
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(21)).await;
+        let reply = bounded(query).await.unwrap().result.unwrap();
+        assert_eq!(reply["isError"], true);
+        let message = reply["content"][0]["text"].as_str().unwrap();
+        assert!(message.contains("timed out"), "{message}");
+        assert!(message.contains("call the tool again"), "{message}");
+        tokio::time::resume();
+    }
+    let ping = bounded(server.handle(req("ping", json!({}))))
+        .await
+        .unwrap();
+    assert_eq!(ping.result, Some(json!({})));
+    peer.abort();
+}

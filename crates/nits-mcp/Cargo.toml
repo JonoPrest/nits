@@ -29,6 +29,7 @@ gethostname = { workspace = true }
 nits-config = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 nits-config = { path = "../nits-config" }
 nits-review-core = { workspace = true }
 nits-test-support = { workspace = true }

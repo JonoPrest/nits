@@ -10,7 +10,7 @@ use nits_protocol::{
     AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, Human, Mutation, NonEmpty,
     RenderOpts, RepoPath, ReviewTarget, Since, SubscribeScope,
 };
-use nitsd::client::{Client, Identity};
+use nitsd::client::{Client, ClientError, Identity};
 use nitsd::ops::{Ops, OpsError};
 use nitsd::render_text as text;
 use serde::Deserialize;
@@ -50,12 +50,15 @@ fn empty_object() -> Value {
 /// MCP protocol revision this server implements.
 pub const MCP_VERSION: &str = "2025-06-18";
 
+// Include the managed daemon's startup budget, then bound negotiation too.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// How to reach the daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoint {
     pub context: nits_config::Context,
-    /// Start the daemon on `initialize` if it is not running (local and
-    /// ssh contexts), so an agent can always get going.
+    /// Start the daemon when initializing or reconnecting if it is not
+    /// running (local and ssh contexts), so an agent can always get going.
     pub start: nitsd::contexts::StartPolicy,
 }
 
@@ -94,13 +97,32 @@ pub enum ToolError {
     Invalid(String),
     #[error("not connected: call initialize first")]
     NotInitialized,
+    #[error(
+        "cannot connect to daemon: {0}; start the daemon or check its context, then call the tool again"
+    )]
+    Connecting(String),
+    #[error(
+        "daemon connection closed; this call was not retried and an in-flight mutation may have committed. The next tool call will reconnect; inspect daemon state before repeating a mutation"
+    )]
+    Disconnected,
     #[error(transparent)]
-    Ops(#[from] OpsError),
+    Ops(OpsError),
 }
 
-impl From<nitsd::client::ClientError> for ToolError {
-    fn from(e: nitsd::client::ClientError) -> Self {
-        ToolError::Ops(e.into())
+impl From<OpsError> for ToolError {
+    fn from(e: OpsError) -> Self {
+        match e {
+            OpsError::Client(ref source) if matches!(**source, ClientError::Closed) => {
+                Self::Disconnected
+            }
+            other => Self::Ops(other),
+        }
+    }
+}
+
+impl From<ClientError> for ToolError {
+    fn from(e: ClientError) -> Self {
+        Self::from(OpsError::from(e))
     }
 }
 
@@ -116,12 +138,20 @@ impl From<nits_protocol::InvariantError> for ToolError {
     }
 }
 
+/// Keep MCP provenance across reconnects, but use a fresh daemon client ID
+/// because each new Ops starts its mutation sequence at zero.
+#[derive(Debug)]
+struct Session {
+    author: Author,
+    ops: Ops,
+}
+
 #[derive(Debug)]
 pub struct Server {
     endpoint: Endpoint,
     agent: AgentIdentity,
     build: BuildInfo,
-    ops: Option<Ops>,
+    session: Option<Session>,
 }
 
 impl Server {
@@ -131,14 +161,14 @@ impl Server {
             endpoint,
             agent,
             build,
-            ops: None,
+            session: None,
         }
     }
 
     /// The daemon connection, once `initialize` has run.
     #[must_use]
     pub fn client(&self) -> Option<&Client> {
-        self.ops.as_ref().map(Ops::client)
+        self.session.as_ref().map(|s| s.ops.client())
     }
 
     /// Handle one line of stdin. Notifications produce no reply.
@@ -227,18 +257,12 @@ impl Server {
             invoked_by: self.agent.invoked_by.clone(),
             via: AgentVia::Mcp,
         };
-        let (ts, r) = nitsd::ids::fresh_parts();
-        let identity = Identity {
-            client_id: ClientId::from_parts(ts, r),
-            client: self.build.clone(),
-            author,
-        };
-        let client =
-            nitsd::contexts::connect(&self.endpoint.context, identity, self.endpoint.start)
-                .await
-                .map_err(|e| ToolError::Invalid(format!("connecting to daemon: {e}")))?;
+        let client = self.connect(author.clone()).await?;
         let daemon = client.welcome.daemon.clone();
-        self.ops = Some(Ops::new(client));
+        self.session = Some(Session {
+            author,
+            ops: Ops::new(client),
+        });
         Ok(json!({
             "protocolVersion": MCP_VERSION,
             "capabilities": { "tools": {} },
@@ -251,16 +275,55 @@ impl Server {
         }))
     }
 
+    async fn connect(&self, author: Author) -> Result<Client, ToolError> {
+        let (ts, r) = nitsd::ids::fresh_parts();
+        let identity = Identity {
+            client_id: ClientId::from_parts(ts, r),
+            client: self.build.clone(),
+            author,
+        };
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            nitsd::contexts::connect(&self.endpoint.context, identity, self.endpoint.start),
+        )
+        .await
+        .map_err(|_| ToolError::Connecting(format!("timed out after {CONNECT_TIMEOUT:?}")))?
+        .map_err(|e| ToolError::Connecting(e.to_string()))
+    }
+
     fn ops(&self) -> Result<&Ops, ToolError> {
-        self.ops.as_ref().ok_or(ToolError::NotInitialized)
+        self.session
+            .as_ref()
+            .map(|s| &s.ops)
+            .ok_or(ToolError::NotInitialized)
     }
 
     fn ops_mut(&mut self) -> Result<&mut Ops, ToolError> {
-        self.ops.as_mut().ok_or(ToolError::NotInitialized)
+        self.session
+            .as_mut()
+            .map(|s| &mut s.ops)
+            .ok_or(ToolError::NotInitialized)
+    }
+
+    /// Reconnect before a new tool call, preserving the initialized agent's
+    /// provenance. Never replay a call that encountered transport loss: its
+    /// mutations may already have committed, even if no response arrived.
+    async fn ensure_connected(&mut self) -> Result<(), ToolError> {
+        let session = self.session.as_ref().ok_or(ToolError::NotInitialized)?;
+        if session.ops.client().is_closed() {
+            let author = session.author.clone();
+            let client = self.connect(author.clone()).await?;
+            self.session = Some(Session {
+                author,
+                ops: Ops::new(client),
+            });
+        }
+        Ok(())
     }
 
     /// Run a decoded tool call. Public so tests can bypass JSON-RPC.
     pub async fn call(&mut self, call: ToolCall) -> Result<Value, ToolError> {
+        self.ensure_connected().await?;
         match call.classify() {
             Call::Query(q) => self.call_query(q).await,
             Call::Mutating(m) => self.call_mutating(m).await,

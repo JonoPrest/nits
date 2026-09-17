@@ -51,24 +51,49 @@ pub enum Unsolicited {
 
 enum Pending {
     Single(oneshot::Sender<Result<Response, RpcError>>),
-    Stream(mpsc::UnboundedSender<Result<StreamItem, RpcError>>),
+    Stream(mpsc::UnboundedSender<Result<StreamItem, ClientError>>),
+}
+
+/// Registration and final cleanup share one lock: a closed connection can
+/// never acquire a new pending request after its final cleanup.
+#[derive(Debug)]
+enum ConnectionState {
+    Open(HashMap<RequestId, Pending>),
+    Closed,
+}
+
+impl ConnectionState {
+    fn close(&mut self) {
+        if let Self::Open(pending) = std::mem::replace(self, Self::Closed) {
+            for request in pending.into_values() {
+                match request {
+                    // Dropping the sender completes the waiter with Closed.
+                    Pending::Single(_) => {}
+                    Pending::Stream(tx) => {
+                        // EOF without StreamEnd must not look like a complete render.
+                        let _ = tx.send(Err(ClientError::Closed));
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct Client {
     out: mpsc::UnboundedSender<ClientMsg>,
     next_id: AtomicU64,
-    pending: Arc<Mutex<HashMap<RequestId, Pending>>>,
+    state: Arc<Mutex<ConnectionState>>,
     unsolicited: Mutex<mpsc::UnboundedReceiver<Unsolicited>>,
-    /// The demux task. Aborted on drop so the read half is released; with
-    /// a split stream (stdio) the peer only sees EOF once both halves go.
-    reader: tokio::task::AbortHandle,
+    /// Both I/O halves share a task, so either failure releases both halves.
+    /// Aborted on drop to release even a writer blocked on a full socket.
+    io: tokio::task::AbortHandle,
     pub welcome: Welcome,
 }
 
 impl Drop for Client {
     fn drop(&mut self) {
-        self.reader.abort();
+        self.io.abort();
     }
 }
 
@@ -166,38 +191,41 @@ impl Client {
         };
 
         let (out, mut out_rx) = mpsc::unbounded_channel::<ClientMsg>();
-        let v = welcome.protocol;
-        tokio::spawn(async move {
-            while let Some(msg) = out_rx.recv().await {
-                if transport::send_msg(&mut wr, &Envelope { v, msg })
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
-        });
-
-        let pending: Arc<Mutex<HashMap<RequestId, Pending>>> = Arc::default();
+        let state = Arc::new(Mutex::new(ConnectionState::Open(HashMap::new())));
         let (un_tx, un_rx) = mpsc::unbounded_channel();
-        let demux = Arc::clone(&pending);
-        let reader = tokio::spawn(async move {
-            loop {
-                let Ok(Some(env)) = transport::recv_msg::<_, ServerMsg>(&mut rd).await else {
-                    break;
-                };
-                dispatch(&demux, &un_tx, env.msg).await;
+        let demux = Arc::clone(&state);
+        let v = welcome.protocol;
+        let io = tokio::spawn(async move {
+            // Keep reading while writes are blocked, and vice versa. Finishing
+            // either loop cancels the other before closing all pending calls.
+            tokio::select! {
+                () = async {
+                    while let Some(msg) = out_rx.recv().await {
+                        if transport::send_msg(&mut wr, &Envelope { v, msg })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                } => {}
+                () = async {
+                    while let Ok(Some(env)) = transport::recv_msg::<_, ServerMsg>(&mut rd).await {
+                        dispatch(&demux, &un_tx, env.msg).await;
+                    }
+                } => {}
             }
-            demux.lock().await.clear();
+            out_rx.close();
+            demux.lock().await.close();
         })
         .abort_handle();
 
         Ok(Self {
             out,
             next_id: AtomicU64::new(1),
-            pending,
+            state,
             unsolicited: Mutex::new(un_rx),
-            reader,
+            io,
             welcome,
         })
     }
@@ -206,36 +234,57 @@ impl Client {
         RequestId::new(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// Send a single-response request.
+    /// Whether transport failure has closed this connection. A live connection
+    /// can still fail during the next request; callers must handle that error.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.out.is_closed()
+    }
+
+    async fn register(
+        &self,
+        id: RequestId,
+        pending: Pending,
+        request: Request,
+    ) -> Result<(), ClientError> {
+        let mut state = self.state.lock().await;
+        let ConnectionState::Open(requests) = &mut *state else {
+            return Err(ClientError::Closed);
+        };
+        requests.insert(id, pending);
+        if self.out.send(ClientMsg::Request { id, request }).is_err() {
+            state.close();
+            return Err(ClientError::Closed);
+        }
+        Ok(())
+    }
+
+    /// Send a single-response request. Transport loss fails the call; requests
+    /// are never replayed because a mutation may already have committed.
     pub async fn request(&self, request: Request) -> Result<Response, ClientError> {
         let id = self.next_id();
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, Pending::Single(tx));
-        self.out
-            .send(ClientMsg::Request { id, request })
-            .map_err(|_| ClientError::Closed)?;
+        self.register(id, Pending::Single(tx), request).await?;
         rx.await
             .map_err(|_| ClientError::Closed)?
             .map_err(ClientError::Rpc)
     }
 
-    /// Send a streaming request. The receiver closes after `StreamEnd`.
+    /// Send a streaming request. The receiver closes after `StreamEnd`;
+    /// transport loss first delivers [`ClientError::Closed`].
     pub async fn stream(
         &self,
         request: Request,
     ) -> Result<
         (
             RequestId,
-            mpsc::UnboundedReceiver<Result<StreamItem, RpcError>>,
+            mpsc::UnboundedReceiver<Result<StreamItem, ClientError>>,
         ),
         ClientError,
     > {
         let id = self.next_id();
         let (tx, rx) = mpsc::unbounded_channel();
-        self.pending.lock().await.insert(id, Pending::Stream(tx));
-        self.out
-            .send(ClientMsg::Request { id, request })
-            .map_err(|_| ClientError::Closed)?;
+        self.register(id, Pending::Stream(tx), request).await?;
         Ok((id, rx))
     }
 
@@ -266,39 +315,42 @@ impl Client {
 }
 
 async fn dispatch(
-    pending: &Mutex<HashMap<RequestId, Pending>>,
+    state: &Mutex<ConnectionState>,
     unsolicited: &mpsc::UnboundedSender<Unsolicited>,
     msg: ServerMsg,
 ) {
+    let mut state = state.lock().await;
+    let ConnectionState::Open(pending) = &mut *state else {
+        return;
+    };
     match msg {
         ServerMsg::Response { id, response } => {
-            if let Some(Pending::Single(tx)) = pending.lock().await.remove(&id) {
+            if let Some(Pending::Single(tx)) = pending.remove(&id) {
                 let _ = tx.send(Ok(response));
             }
         }
         ServerMsg::StreamItem { id, item } => {
-            if let Some(Pending::Stream(tx)) = pending.lock().await.get(&id) {
+            if let Some(Pending::Stream(tx)) = pending.get(&id) {
                 let _ = tx.send(Ok(item));
             }
         }
         ServerMsg::StreamEnd { id } => {
-            pending.lock().await.remove(&id);
+            pending.remove(&id);
         }
         ServerMsg::Error { id, error } => {
             if id == RequestId::new(0) {
                 let _ = unsolicited.send(Unsolicited::Error(error));
                 return;
             }
-            let mut p = pending.lock().await;
-            match p.get(&id) {
+            match pending.get(&id) {
                 Some(Pending::Single(_)) => {
-                    if let Some(Pending::Single(tx)) = p.remove(&id) {
+                    if let Some(Pending::Single(tx)) = pending.remove(&id) {
                         let _ = tx.send(Err(error));
                     }
                 }
                 Some(Pending::Stream(tx)) => {
                     // The stream stays registered until StreamEnd.
-                    let _ = tx.send(Err(error));
+                    let _ = tx.send(Err(ClientError::Rpc(error)));
                 }
                 None => {}
             }
@@ -312,3 +364,6 @@ async fn dispatch(
         ServerMsg::Welcome { .. } | ServerMsg::Rejected { .. } => {}
     }
 }
+
+#[cfg(test)]
+mod tests;

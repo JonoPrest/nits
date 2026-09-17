@@ -272,7 +272,7 @@ impl Ops {
         let mut header = None;
         let mut chunks = Vec::new();
         while let Some(item) = rx.recv().await {
-            match item.map_err(OpsError::Rpc)? {
+            match item? {
                 StreamItem::Header { header: h } => header = Some(h),
                 StreamItem::Chunk { chunk, .. } => chunks.push(chunk),
                 StreamItem::ReviewSnapshot { .. } | StreamItem::TreeSnapshot { .. } => {}
