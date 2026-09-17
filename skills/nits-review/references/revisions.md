@@ -55,7 +55,8 @@ result if a target may have moved. For exact older captures prefer MCP's explici
 --answer-checkpoint CHECKPOINT_ID` links a new current check to that earlier round.
 
 For another round, `get_checkpoint_delta {"review_id":"REVIEW_ID","checkpoint_id":CHECKPOINT_ID}`
-lists checked-head to current-head targets and files across the review's repos.
+lists checked-head to current-head targets and files across the review's repos,
+with source `context` alongside them. Keep that context with the delta's IDs.
 Read each changed file with `get_diff.scope: {"type":"SinceCheckpoint","checkpoint_id":CHECKPOINT_ID}`;
 CLI uses `files`/`diff --since-checkpoint CHECKPOINT_ID`. This does not change the
 original review base, targets, or conversation. Since current head can move

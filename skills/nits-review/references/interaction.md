@@ -97,10 +97,12 @@ cross-context reuse. An `awaiting_agent` subscription uses the recipient's exact
 in `get_review`/`list_comments.requests`; opening one review does not discover
 older requests in all other workspaces.
 
-MCP mutation receipts give stable IDs and the primary committed `seq`. Keep these
-as evidence, but do not advance an existing subscription cursor to a mutation's
-sequence: intervening events from other participants would be skipped. When only
-following events caused after that mutation, its `seq` is a valid starting point;
+MCP mutation receipts give stable IDs; most include the primary committed `seq`.
+`record_checkpoint` returns the checkpoint record with its sequence-derived `id`,
+not a separate `seq` field. Keep receipts as evidence, but do not advance an
+existing subscription cursor to a mutation's sequence: intervening events from
+other participants would be skipped. When only following events caused after that
+mutation, its `seq` (or checkpoint ID) is a valid starting point;
 to read the mutation itself use an earlier cursor. `get_review` combines a
 snapshot with file queries, so concurrent changes require checking target events
 and refreshed content rather than assuming all subsequent reads share one state.
@@ -148,7 +150,8 @@ nits comment resolve REVIEW_ID THREAD_ID
 nits --json events --review REVIEW_ID --since SNAPSHOT_SEQ --follow
 ```
 
-`comment add --patch` takes unified-diff text, not a patch filename. `--line` or
+`comment add --patch` takes unified-diff text, not a patch filename. Pass it as
+`--patch="$patch"` so the leading `---` is parsed as the value. `--line` or
 `--lines` requires `--path`. Replies use the thread ID, not the reply comment ID.
 `review show --json` supplies snapshot state and `seq`; `comment list --json`
 does not supply a replacement snapshot cursor.
