@@ -127,6 +127,252 @@ fn default_base_finds_a_nonstandard_trunk() {
     );
 }
 
+/// Keep local main at A, origin/main at B (which deletes an unrelated file),
+/// and a feature created explicitly from main. No network remote is needed.
+fn stale_main_repo() -> TestRepo {
+    let t = RepoBuilder::new()
+        .commit("base", files!["old-frontend.txt" => "obsolete\n"])
+        .branch("remote-main")
+        .commit_removing("remove old frontend", &["old-frontend.txt"])
+        .checkout("main")
+        .build()
+        .unwrap();
+    t.git(&[
+        "update-ref",
+        "refs/remotes/origin/main",
+        "refs/heads/remote-main",
+    ])
+    .unwrap();
+    t.git(&["branch", "-D", "remote-main"]).unwrap();
+    t.git(&["checkout", "-q", "-b", "feature", "main"]).unwrap();
+    t.write_file("feature.txt", b"feature\n").unwrap();
+    t.git(&["add", "feature.txt"]).unwrap();
+    t.git(&["commit", "-q", "-m", "feature"]).unwrap();
+    t
+}
+
+fn assert_feature_only_default_base(t: &TestRepo, expected: CommitOid) {
+    let refs_before = t.git(&["show-ref"]).unwrap();
+    let head_before = t.rev_parse("HEAD").unwrap();
+    let repo = Repo::open(t.path()).unwrap();
+    let base_spec = repo.default_base().unwrap();
+    assert_eq!(base_spec, RefSpec::Commit { oid: expected });
+    let base = repo.resolve(&base_spec).unwrap();
+    let head = repo.resolve(&RefSpec::Head).unwrap();
+    let paths: Vec<_> = repo
+        .changed_files(base.tree, head.tree)
+        .unwrap()
+        .into_iter()
+        .map(|change| change.path.to_string())
+        .collect();
+    assert_eq!(paths, vec!["feature.txt"]);
+    assert_eq!(t.git(&["show-ref"]).unwrap(), refs_before);
+    assert_eq!(t.rev_parse("HEAD").unwrap(), head_before);
+    assert_eq!(t.git(&["status", "--porcelain"]).unwrap(), "");
+}
+
+#[test]
+fn default_base_excludes_remote_trunk_changes_after_a_rebase_with_stale_main() {
+    let t = stale_main_repo();
+    t.git(&["rebase", "refs/remotes/origin/main"]).unwrap();
+    let remote = commit(&t.rev_parse("refs/remotes/origin/main").unwrap());
+
+    // The named reflog source `main` still points to A after the rebase.
+    assert_feature_only_default_base(&t, remote);
+
+    // Repositories with expired reflogs go through local ancestor ranking.
+    t.git(&["reflog", "expire", "--expire=all", "--all"])
+        .unwrap();
+    assert_feature_only_default_base(&t, remote);
+}
+
+#[test]
+fn default_base_in_linked_worktree_uses_remote_trunk_shared_with_stale_main() {
+    let t = stale_main_repo();
+    t.git(&["rebase", "refs/remotes/origin/main"]).unwrap();
+    let remote = commit(&t.rev_parse("refs/remotes/origin/main").unwrap());
+    t.git(&["checkout", "-q", "main"]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("feature");
+    t.git(&["worktree", "add", "-q", path.to_str().unwrap(), "feature"])
+        .unwrap();
+    let refs_before = t.git(&["show-ref"]).unwrap();
+
+    let repo = Repo::open(&path).unwrap();
+    let base_spec = repo.default_base().unwrap();
+    assert_eq!(base_spec, RefSpec::Commit { oid: remote });
+    let base = repo.resolve(&base_spec).unwrap();
+    let head = repo.resolve(&RefSpec::WorkingTree).unwrap();
+    let paths: Vec<_> = repo
+        .changed_files(base.tree, head.tree)
+        .unwrap()
+        .into_iter()
+        .map(|change| change.path.to_string())
+        .collect();
+    assert_eq!(paths, vec!["feature.txt"]);
+    assert_eq!(t.git(&["show-ref"]).unwrap(), refs_before);
+}
+
+#[test]
+fn default_base_uses_remote_merge_base_when_remote_has_advanced_again() {
+    let t = stale_main_repo();
+    t.git(&["rebase", "refs/remotes/origin/main"]).unwrap();
+    let rebased_onto = commit(&t.rev_parse("refs/remotes/origin/main").unwrap());
+    t.git(&["checkout", "-q", "--detach", "refs/remotes/origin/main"])
+        .unwrap();
+    t.write_file("later-trunk.txt", b"not in the feature\n")
+        .unwrap();
+    t.git(&["add", "later-trunk.txt"]).unwrap();
+    t.git(&["commit", "-q", "-m", "later trunk change"])
+        .unwrap();
+    t.git(&["update-ref", "refs/remotes/origin/main", "HEAD"])
+        .unwrap();
+    t.git(&["checkout", "-q", "feature"]).unwrap();
+
+    assert_feature_only_default_base(&t, rebased_onto);
+}
+
+#[test]
+fn default_base_keeps_local_trunk_when_feature_has_not_incorporated_remote() {
+    let t = stale_main_repo();
+    let repo = Repo::open(t.path()).unwrap();
+    let base_spec = repo.default_base().unwrap();
+    assert_eq!(
+        base_spec,
+        RefSpec::Branch {
+            name: "main".into()
+        }
+    );
+    let base = repo.resolve(&base_spec).unwrap();
+    let head = repo.resolve(&RefSpec::Head).unwrap();
+    let paths: Vec<_> = repo
+        .changed_files(base.tree, head.tree)
+        .unwrap()
+        .into_iter()
+        .map(|change| change.path.to_string())
+        .collect();
+    assert_eq!(paths, vec!["feature.txt"]);
+}
+
+#[test]
+fn default_base_keeps_diverged_local_trunk() {
+    let t = stale_main_repo();
+    t.git(&["rebase", "refs/remotes/origin/main"]).unwrap();
+    t.git(&["checkout", "-q", "main"]).unwrap();
+    t.write_file("local-trunk.txt", b"local trunk work\n")
+        .unwrap();
+    t.git(&["add", "local-trunk.txt"]).unwrap();
+    t.git(&["commit", "-q", "-m", "diverged local trunk"])
+        .unwrap();
+    t.git(&["checkout", "-q", "feature"]).unwrap();
+
+    assert_eq!(
+        Repo::open(t.path()).unwrap().default_base().unwrap(),
+        RefSpec::Branch {
+            name: "main".into()
+        }
+    );
+}
+
+#[test]
+fn default_base_preserves_stack_parents_with_a_stale_local_trunk() {
+    for parent in ["stack-parent", "origin/parent"] {
+        let t = stale_main_repo();
+        t.git(&["rebase", "refs/remotes/origin/main"]).unwrap();
+        t.git(&["branch", "-m", parent]).unwrap();
+        // `origin/parent` is a literal local branch, distinct from `parent`.
+        t.git(&["branch", "parent", "refs/heads/main"]).unwrap();
+        t.git(&["checkout", "-q", "-b", "child", parent]).unwrap();
+        t.write_file("child.txt", b"child\n").unwrap();
+        t.git(&["add", "child.txt"]).unwrap();
+        t.git(&["commit", "-q", "-m", "child"]).unwrap();
+
+        let repo = Repo::open(t.path()).unwrap();
+        let expected = RefSpec::Branch {
+            name: parent.into(),
+        };
+        assert_eq!(repo.default_base().unwrap(), expected);
+        t.git(&["reflog", "expire", "--expire=all", "--all"])
+            .unwrap();
+        assert_eq!(repo.default_base().unwrap(), expected);
+        let base = repo.resolve(&expected).unwrap();
+        let head = repo.resolve(&RefSpec::Head).unwrap();
+        let paths: Vec<_> = repo
+            .changed_files(base.tree, head.tree)
+            .unwrap()
+            .into_iter()
+            .map(|change| change.path.to_string())
+            .collect();
+        assert_eq!(paths, vec!["child.txt"]);
+    }
+}
+
+#[test]
+fn default_base_uses_configured_trunk_upstream_with_different_remote_and_branch_names() {
+    let t = stale_main_repo();
+    t.git(&["rebase", "refs/remotes/origin/main"]).unwrap();
+    let remote = commit(&t.rev_parse("refs/remotes/origin/main").unwrap());
+    t.git(&["branch", "-m", "main", "release/stable"]).unwrap();
+    t.git(&["config", "init.defaultBranch", "release/stable"])
+        .unwrap();
+    t.git(&[
+        "remote",
+        "add",
+        "upstream",
+        "https://example.invalid/repo.git",
+    ])
+    .unwrap();
+    t.git(&[
+        "update-ref",
+        "refs/remotes/upstream/releases/current",
+        &remote.to_string(),
+    ])
+    .unwrap();
+    t.git(&[
+        "branch",
+        "--set-upstream-to=upstream/releases/current",
+        "release/stable",
+    ])
+    .unwrap();
+    // A different origin tip must not override the configured upstream.
+    t.git(&["update-ref", "refs/remotes/origin/release/stable", "HEAD"])
+        .unwrap();
+
+    assert_feature_only_default_base(&t, remote);
+}
+
+#[test]
+fn default_base_remote_and_local_refs_are_unambiguous_with_same_named_tags() {
+    let t = stale_main_repo();
+    t.git(&["rebase", "refs/remotes/origin/main"]).unwrap();
+    let remote = commit(&t.rev_parse("refs/remotes/origin/main").unwrap());
+    t.git(&["tag", "main", "refs/heads/feature"]).unwrap();
+    t.git(&["tag", "feature", "refs/heads/main"]).unwrap();
+    t.git(&["tag", "origin/main", "refs/heads/main"]).unwrap();
+    t.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+    ])
+    .unwrap();
+
+    assert_feature_only_default_base(&t, remote);
+}
+
+#[test]
+fn default_base_keeps_checked_out_trunk_even_when_remote_is_ahead_and_tag_is_ambiguous() {
+    let t = stale_main_repo();
+    t.git(&["checkout", "-q", "main"]).unwrap();
+    t.git(&["tag", "main", "refs/heads/feature"]).unwrap();
+
+    assert_eq!(
+        Repo::open(t.path()).unwrap().default_base().unwrap(),
+        RefSpec::Branch {
+            name: "main".into()
+        }
+    );
+}
+
 #[test]
 fn default_base_uses_the_parent_of_a_stacked_branch() {
     let t = RepoBuilder::new()

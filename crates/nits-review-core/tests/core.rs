@@ -147,6 +147,58 @@ fn head_blob(core: &Core, review: ReviewId, repo: RepoId, path: &str) -> nits_pr
 }
 
 #[test]
+fn explicit_review_base_is_preserved_when_remote_trunk_is_newer() {
+    let w = world();
+    w.a.git(&["checkout", "-q", "--detach", "main"]).unwrap();
+    w.a.git(&["rm", "README.md"]).unwrap();
+    w.a.git(&["commit", "-q", "-m", "unrelated trunk change"])
+        .unwrap();
+    w.a.git(&["update-ref", "refs/remotes/origin/main", "HEAD"])
+        .unwrap();
+    w.a.git(&["checkout", "-q", "feature"]).unwrap();
+    w.a.git(&["rebase", "refs/remotes/origin/main"]).unwrap();
+    assert_eq!(
+        w.core.default_base(rid(1)).unwrap(),
+        RefSpec::Commit {
+            oid: w
+                .a
+                .rev_parse("refs/remotes/origin/main")
+                .unwrap()
+                .parse()
+                .unwrap()
+        }
+    );
+
+    let explicit_base = RefSpec::Branch {
+        name: "main".into(),
+    };
+    let rec = w
+        .core
+        .create_review(
+            &human(),
+            review_id(1),
+            ws(),
+            "explicit base".into(),
+            NonEmpty::singleton(ReviewTarget {
+                repo_id: rid(1),
+                base: explicit_base.clone(),
+                head: RefSpec::WorkingTree,
+            }),
+        )
+        .unwrap();
+    assert_eq!(rec.review.targets.first().base, explicit_base);
+    let mut paths: Vec<_> = w
+        .core
+        .files(review_id(1))
+        .unwrap()
+        .into_iter()
+        .map(|file| file.path.to_string())
+        .collect();
+    paths.sort();
+    assert_eq!(paths, vec!["README.md", "new.txt", "src/main.rs"]);
+}
+
+#[test]
 fn multi_repo_review_lists_files_ordered_by_repo_display_name() {
     let w = world();
     let rec = w
