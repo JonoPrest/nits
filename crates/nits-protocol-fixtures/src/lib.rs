@@ -215,6 +215,8 @@ registry!(
     DirectoryReview,
     DirectoryReviewOutcome,
     ReviewSnapshot,
+    ReviewRequest,
+    ReviewRequestId,
     Response,
     StreamItem,
     EntityKind,
@@ -685,6 +687,17 @@ fn event(body: EventBody) -> Event {
     }
 }
 
+fn review_request() -> ReviewRequest {
+    ReviewRequest {
+        id: ReviewRequestId::from_event_seq(Seq::new(40)),
+        review_id: review_id(),
+        requester: human_author(),
+        recipient: "review-agent".into(),
+        note: "Please review the updated parser.".into(),
+        created: Timestamp::from_millis(1_700_000_000_000),
+    }
+}
+
 fn review_snapshot() -> Result<ReviewSnapshot, FixtureError> {
     Ok(ReviewSnapshot {
         review: review()?,
@@ -692,6 +705,7 @@ fn review_snapshot() -> Result<ReviewSnapshot, FixtureError> {
         threads: vec![thread()],
         comments: vec![comment()?, reply_comment()?],
         viewed: vec![viewed_mark()?],
+        requests: vec![review_request()],
         seq: Seq::new(42),
     })
 }
@@ -1482,6 +1496,12 @@ enum_fixture!(
         },
     ]
 );
+struct_fixture!(
+    ReviewRequestId,
+    "ReviewRequestId",
+    ReviewRequestId::from_event_seq(Seq::new(40))
+);
+struct_fixture!(ReviewRequest, "ReviewRequest", review_request());
 struct_fixture!(ReviewSnapshot, "ReviewSnapshot", review_snapshot()?);
 enum_fixture!(
     Response,

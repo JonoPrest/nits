@@ -84,6 +84,7 @@ All mutable state is an **append-only event log**. Materialized views are derive
 events:            seq (u64) → Event           source of truth
 reviews:           review_id → ReviewView
 comments_by_review review_id, comment_id → CommentView
+review_requests    review_id, event_seq → ReviewRequest
 anchors_by_blob:   (repo, blob_oid) → [comment_id]   for fast re-anchoring
 workspaces:        workspace_id → Workspace
 ```
@@ -233,7 +234,7 @@ TreeDelta    { from_root, to_root, added: [TreeEntry], removed: [path], changed:
 - **Unix socket**, length-prefixed JSON frames. Multiplexed: `Request{id}` / `Response{id}` / `Event{seq}`.
 - **WebSocket**, same JSON envelopes, one per binary (or text) message — the socket does the framing, so no length prefix. Plain TCP, opt-in via `nits daemon serve --ws-listen <addr>`, for browser clients and remote daemons. Inside `nitsd`, servers and context-aware clients share `FrameRead`/`FrameWrite`; `DaemonEndpoint = Local | Ssh | WebSocket` resolves lifecycle once and every UI reconnect dials the selected framing through the same path as CLI/MCP.
 - **MCP**, `nits mcp` on stdio (newline-delimited JSON-RPC), proxying to the daemon's unix socket or ws port. Tools: `list_contexts`, `use_context`, `list_workspaces`, `list_reviews`, `get_review` (snapshot + changed files), `create_review`, `ensure_directory_review`, `update_review`, `update_review_target`, `get_diff`, `get_file` (numbered text, any side, unchanged files too), `list_comments`, `add_comment` (review / file / line anchors), `suggest`, `reply`, `resolve`, `request_review`, `subscribe_events` (long-poll; pass `last_seq` back as `since_seq`). Author is `Agent{name: clientInfo.name, model: $NITS_AGENT_MODEL, session_id: $NITS_SESSION_ID, invoked_by: $USER@host, via: Mcp}`. `mark_viewed` is deliberately not offered. Anchors go up with a zero `context_hash`; the daemon computes the real one.
-- **MCP mutation results** are compact receipts in both text and structured content. `create_review` returns `{review_id, seq}`; `update_review` returns `{review_id, status, seq}`; `update_review_target` returns `{review_id, repo_id, seq}`; `add_comment`, `suggest`, and `reply` return `{comment_id, thread_id, seq}`; `resolve` returns `{review_id, thread_id, resolution, seq}` with `resolution` as `"Open"` or `"Resolved"`; `request_review` returns `{review_id, agent, seq}`. These replace the former nested `event` fields, and `create_review` no longer embeds `review` or `resolved` (use `get_review`). `seq` identifies the committed mutation's primary event, not a later snapshot watermark. Passing it to `subscribe_events.since_seq` yields subsequent full event envelopes, including target resolution and reanchoring caused by the mutation. To include the mutation itself, resume from a cursor before its `seq` (or `seq - 1`); continue subsequent polls from `last_seq`. Full heterogeneous event schemas appear only on `subscribe_events`. Daemon/CLI event responses are unchanged.
+- **MCP mutation results** are compact receipts in both text and structured content. `create_review` returns `{review_id, seq}`; `update_review` returns `{review_id, status, seq}`; `update_review_target` returns `{review_id, repo_id, seq}`; `add_comment`, `suggest`, and `reply` return `{comment_id, thread_id, seq}`; `resolve` returns `{review_id, thread_id, resolution, seq}` with `resolution` as `"Open"` or `"Resolved"`; `request_review` returns `{request_id, review_id, agent, seq}`. These replace the former nested `event` fields, and `create_review` no longer embeds `review` or `resolved` (use `get_review`). `seq` identifies the committed mutation's primary event, not a later snapshot watermark. Passing it to `subscribe_events.since_seq` yields subsequent full event envelopes, including target resolution and reanchoring caused by the mutation. To include the mutation itself, resume from a cursor before its `seq` (or `seq - 1`); continue subsequent polls from `last_seq`. Full heterogeneous event schemas appear only on `subscribe_events`. Daemon/CLI event responses are unchanged.
 - **Directory bootstrap**: `ensure_directory_review {path, base?, head?}` discovers and canonicalizes the checkout beside the daemon, attaches it if needed, and returns `{workspace_id, repo_id, review_id, base, head, outcome, seq}`. `head` defaults to `WorkingTree`; omitted `base` preserves a matching open review's base or uses daemon detection. Explicit refs must match for reuse; differing refs create a separate review. To change the same logical review, use `update_review_target {review_id, repo_id, revision: {type: "Base" | "Head", ref_spec}}`; it retains threads/history and reanchors comments. Bootstrap validates refs before creating state and runs under the writer queue so concurrent calls reuse the same IDs. Its `seq` is the first bootstrap event when created and the current log position when reused. CLI directory opening uses the same operation; remote paths are never resolved on the client.
 - **CLI/MCP connection loss**: EOF, malformed frames, and failed writes close both transport halves and fail all pending requests; request registration shares the closure lock. Streams report interruption instead of accepting a partial render. MCP preserves initialization and agent provenance, reconnecting before the next tool call with the selected context/start policy and a 20-second connection deadline. Interrupted calls are never replayed automatically: a mutation may have committed before its reply was lost, so the tool error asks the agent to inspect state before repeating it.
 - **CLI**, `nits`, the same recipes (`nitsd::ops`) printed as text or `--json`. Human author from `$USER`/`--user`; `--agent NAME` attributes to `Agent{via: Cli, invoked_by: user}` for scripts driven by an agent. `events --follow` is a loop of long-polls resuming from `last_seq`.
@@ -246,7 +247,7 @@ TreeDelta    { from_root, to_root, added: [TreeEntry], removed: [path], changed:
 - **Upgrade shutdown**: when the current handshake is rejected, `daemon stop` may redial using the newest advertised protocol that the current major can still serialise. Only the stable `Shutdown`/`ShuttingDown` lifecycle exchange gets this fallback; ordinary requests never pretend to speak a rejected version. This releases an older daemon's socket so the upgraded `nits daemon start` can launch its matching binary.
 
 - **Subscriptions**: `subscribe(scope, since_seq)` streams events from `since_seq`. An explicit cursor replays the requested gap even on the same connection after earlier delivery. Long-polls acknowledge only the events returned to the caller; queued events beyond a poll's limit or timeout remain replayable. Keep a cursor for each scope when alternating reviews. Reconnect = resubscribe from last seen seq; no other sync mechanism.
-- **Review open is one streamed request.** `open_review(id)` answers with an ordered stream — `ReviewSnapshot` (review, threads, comments) → `TreeSnapshot` per target ref → `FileRenderHeader` per changed file → first `RenderChunk` per file — rather than the client issuing hundreds of round-trips over SSH. The client consumes and its cache fills as a side effect; per-item requests remain for cache misses and viewport-driven chunks.
+- **Review open is one streamed request.** `open_review(id)` answers with an ordered stream — `ReviewSnapshot` (review, threads, comments, requests) → `TreeSnapshot` per target ref → `FileRenderHeader` per changed file → first `RenderChunk` per file — rather than the client issuing hundreds of round-trips over SSH. The client consumes and its cache fills as a side effect; per-item requests remain for cache misses and viewport-driven chunks.
 - **Fresh clients never replay the log.** A client with no `last_seq` gets a materialized `ReviewSnapshot` plus `subscribe(since = current_seq)`. Only reconnects with a known `last_seq` replay, and only the gap.
 
 Encoding is an isolated layer; the Rust↔Rust hop may move to capnproto/flatbuffers later if measured to matter. JSON is the fixed contract between `nits-client-core` and the UI.
@@ -284,7 +285,7 @@ Two independent versions, both typed in `nits-protocol::version`.
 - Deprecation path: a daemon may keep serving an old minor for a time and attach
   `Welcome.upgrade: UpgradeNotice { latest, message }`; clients surface it. Once dropped, the
   handshake is rejected with the supported list, so the error is specific and actionable.
-- Protocol 0.6 currently serves **only minor 0.6**: older minors are retired and
+- Protocol 0.7 currently serves **only minor 0.7**: older minors are retired and
   rejected during Hello, before any event or snapshot. The daemon has one serializer;
   the same-major compatibility predicate alone does not prove it can encode an old
   minor. Adding a supported minor requires its serializer. The stable shutdown-only
@@ -304,6 +305,9 @@ Two independent versions, both typed in `nits-protocol::version`.
 - Schema 2 adds informational kinds/lifecycles. The 1→2 migration reserializes
   and restamps stored events and rebuilds views, retaining old Note roots and all
   replies/resolutions unchanged. Older binaries refuse the schema 2 store.
+- Schema 3 adds the review-request view. The 2→3 migration rebuilds views from
+  unchanged historical events, including requests sent before this upgrade.
+  Older binaries refuse the schema 3 store.
 - The daemon reports `schema` in `Welcome` for diagnostics only; clients never depend on it.
 
 ## 5. Client core (sans-I/O)
@@ -432,7 +436,20 @@ Tailwind v4 via `@tailwindcss/vite`; no CSS-in-JS, no runtime style computation.
 
 - Agents connect via MCP (or `nits` CLI) with `Author::Agent{...}` provenance. Provenance is a structured field, not a tag.
 - MCP `get_session_identity` returns this session's current `author`; `set_session_identity` takes a name and model for future events. The adapter negotiates a replacement daemon connection, preserving the session ID, invoking human and `Agent`/`Mcp` provenance. A fresh client ID accompanies the fresh mutation counter. Only after a successful handshake does the new identity become active; failure leaves the previous identity and connection intact. Reads need no live daemon. These are session-local connection settings, not core mutations or event-log entries, and cannot change another MCP session or historical authors. See [MCP identity usage](MCP-IDENTITY.md).
-- `ReviewRequested` events show as a card in human clients; agents can subscribe to events addressed to them (`awaiting_agent`).
+- `ReviewRequested` events materialize as `ReviewRequest { id: ReviewRequestId,
+  review_id, requester, recipient, note, created }`. Identity is the committed
+  event sequence wrapped in its own type, stable across schema upgrades and
+  rebuilds. Requests carry no approval, resolution, or revision checkpoint.
+- Review snapshots, MCP `get_review` / `list_comments`, and CLI `review show`
+  include a separate `requests` collection. Fresh clients discover requests
+  without historical replay. All snapshot fields and its subscription cursor
+  come from one redb read transaction; clients retain live invitations received
+  ahead of an in-flight snapshot response and merge them by identity.
+- Human Conversation shows request cards and a separate request count. `g r`
+  focuses the list, `j` / `k` select a card, and Enter opens the review's current
+  changes. Requests never enter finding counts or resolve/approval controls.
+  Agents can subscribe to subsequent requests addressed to them (`awaiting_agent`)
+  starting from the snapshot's cursor.
 - The exact `author.name` returned by the identity tools is the routing key for `request_review.agent` and `subscribe_events.awaiting_agent`. Choose distinct names for collaborating agents and keep them stable; changing a name does not rename already addressed requests or saved subscription cursors. A model update can keep the same name. Names are labels, not unique session IDs or authentication credentials.
 - **Suggestions**: a comment kind carrying a unified diff against a specific `blob_oid`. The UI renders "apply", which writes to the working tree and records `SuggestionApplied`.
 - Threads keep agent `session_id`, so a human reply to an agent comment can be routed back to that session.

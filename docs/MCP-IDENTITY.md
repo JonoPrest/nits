@@ -57,7 +57,15 @@ string is used in `request_review`:
 }
 ```
 
-The recipient calls `subscribe_events` with that string as `awaiting_agent`:
+A recipient opening a review first calls `get_review` (or `list_comments`). Its
+`requests` collection includes every invitation's stable `id`, `requester`,
+`recipient`, `note`, and `created` time, including requests sent while disconnected.
+Filter `recipient` using the exact identity name. Requests are separate from
+finding threads and imply no approval or completion. The `request_review` receipt
+also returns the stable identity as `request_id`.
+
+Use the snapshot's `seq` to continue with `subscribe_events`, passing the same
+string as `awaiting_agent`:
 
 ```json
 { "awaiting_agent": "reviewer-a", "since_seq": 42, "since_context": "build-box", "timeout_ms": 30000 }

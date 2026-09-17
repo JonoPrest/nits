@@ -298,6 +298,8 @@ pub struct ViewModel {
     pub threads: Vec<ThreadView>,
     /// Review-level threads (the conversation panel).
     pub conversation: Vec<ThreadView>,
+    /// Durable review invitations, separate from finding and note threads.
+    pub requests: Vec<nits_protocol::ReviewRequest>,
     pub stepper: Option<CommitStepper>,
     /// Where keys go (§6.4). Always valid for the current lists.
     pub focus: Focus,

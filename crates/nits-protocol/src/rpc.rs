@@ -385,6 +385,8 @@ pub struct ReviewSnapshot {
     pub threads: Vec<Thread>,
     pub comments: Vec<Comment>,
     pub viewed: Vec<ViewedMark>,
+    /// Durable requests, in creation event order, independent of finding threads.
+    pub requests: Vec<crate::ReviewRequest>,
     /// The log position this snapshot reflects; subscribe `After` it.
     pub seq: Seq,
 }

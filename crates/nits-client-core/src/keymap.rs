@@ -22,6 +22,7 @@ pub enum Context {
     Tree,
     Diff,
     Thread,
+    Requests,
     Composer,
     CommitStepper,
     Help,
@@ -143,6 +144,7 @@ pub enum Command {
     FocusDiff,
     /// Focus the thread list.
     FocusThreads,
+    FocusRequests,
     /// Focus the commits list.
     FocusCommits,
     /// Re-list workspaces and reviews.
@@ -572,6 +574,7 @@ impl Keymap {
             b(X::Global, keys!("g e"), C::FocusTree, false),
             b(X::Global, keys!("g d"), C::FocusDiff, false),
             b(X::Global, keys!("g t"), C::FocusThreads, false),
+            b(X::Global, keys!("g r"), C::FocusRequests, false),
             b(X::Global, keys!("g m"), C::FocusCommits, false),
             l('a', C::ScopeAll),
             l('c', C::ScopeByCommit),
@@ -650,6 +653,14 @@ impl Keymap {
             b(X::Diff, keys!("z t"), C::ViewTop, false),
             b(X::Diff, keys!("z b"), C::ViewBottom, false),
             b(X::Diff, keys!("enter"), C::Open, false),
+            // Review requests
+            b(X::Requests, keys!("j"), C::MoveDown, true),
+            b(X::Requests, keys!("k"), C::MoveUp, true),
+            b(X::Requests, keys!("down"), C::MoveDown, false),
+            b(X::Requests, keys!("up"), C::MoveUp, false),
+            b(X::Requests, keys!("g g"), C::GoTop, false),
+            b(X::Requests, keys!("G"), C::GoBottom, false),
+            b(X::Requests, keys!("enter"), C::Open, true),
             // Thread
             b(X::Thread, keys!("j"), C::MoveDown, true),
             b(X::Thread, keys!("k"), C::MoveUp, true),
@@ -1078,6 +1089,7 @@ pub fn label(command: Command) -> &'static str {
         Command::FocusTree => "focus tree",
         Command::FocusDiff => "focus diff",
         Command::FocusThreads => "focus threads",
+        Command::FocusRequests => "review requests",
         Command::FocusCommits => "focus commits",
         Command::VisualMode => "select lines",
         Command::ExpandUp => "expand up",
@@ -1149,6 +1161,7 @@ pub fn modes_of(command: Command) -> &'static [Mode] {
         | Command::ExpandFile
         | Command::FocusTree
         | Command::FocusDiff
+        | Command::FocusRequests
         | Command::FocusThreads
         | Command::FocusCommits
         | Command::ExpandUp

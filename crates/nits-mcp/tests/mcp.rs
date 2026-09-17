@@ -1259,7 +1259,7 @@ async fn subscribe_events_preserves_each_single_scope_and_all_events() {
         assert_eq!(
             requested,
             json!({
-                "review_id": review, "agent": agent, "seq": requested["seq"]
+                "review_id": review, "request_id": requested["seq"], "agent": agent, "seq": requested["seq"]
             })
         );
         events.push(committed(&h, &requested));
@@ -2122,4 +2122,76 @@ async fn informational_summary_and_replies_remain_subscribable_without_open_find
             .count(),
         4
     );
+}
+
+#[tokio::test]
+async fn fresh_mcp_discovers_disconnected_requests_and_hands_off_to_live_events() {
+    let h = start();
+    let writer = human(&h).await;
+    let (workspace, repo) = seed(&h, &writer).await;
+    let mut author = server(&h);
+    init(&mut author).await;
+    let created = call(&mut author, "create_review", json!({ "workspace_id": workspace, "title": "Review requests", "targets": main_feature(&repo) })).await;
+    let review_id: ReviewId = created["review_id"].as_str().unwrap().parse().unwrap();
+    let request = call(&mut author, "request_review", json!({ "review_id": review_id, "agent": "review-agent", "note": "Please review the parser update" })).await;
+    drop(author);
+    // This new MCP session has neither an old cursor nor historical events.
+    let mut recipient = server_with_session(&h, "fresh-recipient");
+    init(&mut recipient).await;
+    let snapshot = call(
+        &mut recipient,
+        "get_review",
+        json!({ "review_id": review_id }),
+    )
+    .await;
+    let requests = snapshot["requests"].as_array().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["id"], request["request_id"]);
+    assert_eq!(request["request_id"], request["seq"]);
+    assert_eq!(requests[0]["review_id"], json!(review_id));
+    assert_eq!(requests[0]["recipient"], "review-agent");
+    assert_eq!(requests[0]["note"], "Please review the parser update");
+    assert_eq!(requests[0]["requester"]["type"], "Agent");
+    assert!(requests[0]["created"].as_i64().is_some());
+    assert!(snapshot["threads"].as_array().unwrap().is_empty());
+    assert!(snapshot["comments"].as_array().unwrap().is_empty());
+    let comments = call(
+        &mut recipient,
+        "list_comments",
+        json!({ "review_id": review_id }),
+    )
+    .await;
+    assert_eq!(comments["requests"], snapshot["requests"]);
+    let Response::Committed { event } = writer
+        .request(Request::Mutate {
+            client_seq: ClientSeq::new(22),
+            mutation: Mutation::RequestReview {
+                review_id,
+                agent: "review-agent".into(),
+                note: "And the follow-up".into(),
+            },
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("committed request")
+    };
+    // Start at the snapshot's own cursor: no guessing a historical position.
+    let later = call(
+        &mut recipient,
+        "subscribe_events",
+        json!({ "awaiting_agent": "review-agent", "since_seq": snapshot["seq"], "timeout_ms": 50 }),
+    )
+    .await;
+    let events = later["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["seq"], json!(event.seq));
+    let reopened = call(
+        &mut recipient,
+        "get_review",
+        json!({ "review_id": review_id }),
+    )
+    .await;
+    assert_eq!(reopened["requests"].as_array().unwrap().len(), 2);
+    assert_eq!(reopened["requests"][0], requests[0]);
 }

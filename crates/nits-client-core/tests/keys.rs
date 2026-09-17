@@ -125,6 +125,7 @@ fn snapshot() -> ReviewSnapshot {
         threads: Vec::new(),
         comments: Vec::new(),
         viewed: Vec::new(),
+        requests: Vec::new(),
         seq: Seq::new(1),
     };
     let meta = nits_client_core::EventMeta {
@@ -2810,4 +2811,55 @@ fn informational_and_review_finding_composers_have_keyboard_commands() {
         core.view().draft.as_ref().unwrap().reply_to,
         Some(core.view().threads[index].id)
     );
+}
+
+#[test]
+fn requests_have_keyboard_navigation_and_open_changes_without_resolving_findings() {
+    let mut core = ready();
+    let findings = core.view().threads.clone();
+    for seq in 100..102 {
+        core.handle(Input::Server(ServerMsg::Event {
+            event: nits_protocol::Event {
+                seq: Seq::new(seq),
+                ts: Timestamp::from_millis(1_700_000_000_000),
+                author: Author::Human {
+                    name: "ada".into(),
+                    machine: "box".into(),
+                },
+                client_id: ClientId::from_parts(9, 9),
+                client_seq: nits_protocol::ClientSeq::new(seq),
+                body: nits_protocol::EventBody::ReviewRequested {
+                    review_id: review_id(),
+                    agent: "review-agent".into(),
+                    note: format!("Request {seq}"),
+                },
+            },
+        }))
+        .unwrap();
+    }
+    press(&mut core, "g r").unwrap();
+    assert_eq!(core.view().focus, Focus::ReviewRequest { index: 0 });
+    assert_eq!(core.view().tab, nits_client_core::Tab::Conversation);
+    press(&mut core, "j").unwrap();
+    assert_eq!(core.view().focus, Focus::ReviewRequest { index: 1 });
+    press(&mut core, "k").unwrap();
+    assert_eq!(core.view().focus, Focus::ReviewRequest { index: 0 });
+    assert!(
+        core.view()
+            .hints
+            .iter()
+            .any(|hint| hint.command == Command::Open)
+    );
+    assert!(
+        !core
+            .view()
+            .hints
+            .iter()
+            .any(|hint| hint.command == Command::ToggleResolved)
+    );
+    press(&mut core, "enter").unwrap();
+    assert_eq!(core.view().tab, nits_client_core::Tab::FilesChanged);
+    assert!(matches!(core.view().focus, Focus::Diff { .. }));
+    assert_eq!(core.view().threads, findings);
+    assert_eq!(core.view().requests.len(), 2);
 }

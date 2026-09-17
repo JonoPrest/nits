@@ -41,6 +41,9 @@ pub enum Focus {
     Thread {
         index: usize,
     },
+    ReviewRequest {
+        index: usize,
+    },
     Composer,
     CommitStepper {
         index: usize,
@@ -62,6 +65,7 @@ impl Focus {
             Focus::Tree { .. } => Context::Tree,
             Focus::Diff { .. } => Context::Diff,
             Focus::Thread { .. } => Context::Thread,
+            Focus::ReviewRequest { .. } => Context::Requests,
             Focus::Composer => Context::Composer,
             Focus::CommitStepper { .. } => Context::CommitStepper,
             Focus::Help => Context::Help,
@@ -138,6 +142,7 @@ fn extent(view: &ViewModel, context: Context) -> usize {
             nits_protocol::RenderContent::Binary => 0,
         }),
         Context::Thread => view.threads.len(),
+        Context::Requests => view.requests.len(),
         Context::CommitStepper => view
             .stepper
             .as_ref()
@@ -151,6 +156,7 @@ fn with_index(focus: Focus, index: usize) -> Focus {
         Focus::ReviewList { .. } => Focus::ReviewList { index },
         Focus::Tree { .. } => Focus::Tree { index },
         Focus::Thread { .. } => Focus::Thread { index },
+        Focus::ReviewRequest { .. } => Focus::ReviewRequest { index },
         Focus::CommitStepper { .. } => Focus::CommitStepper { index },
         Focus::Diff { side, .. } => Focus::Diff {
             row: u32::try_from(index).unwrap_or(u32::MAX),
@@ -164,6 +170,7 @@ fn index_of(focus: Focus) -> Option<usize> {
     match focus {
         Focus::ReviewList { index }
         | Focus::Tree { index }
+        | Focus::ReviewRequest { index }
         | Focus::Thread { index }
         | Focus::CommitStepper { index } => Some(index),
         Focus::Diff { row, .. } => Some(row as usize),
@@ -181,6 +188,7 @@ fn side_of(focus: Focus) -> Side {
         Focus::Diff { side, .. } => side,
         Focus::ReviewList { .. }
         | Focus::Tree { .. }
+        | Focus::ReviewRequest { .. }
         | Focus::Thread { .. }
         | Focus::Composer
         | Focus::CommitStepper { .. }
@@ -257,6 +265,7 @@ pub fn clamp(view: &ViewModel, focus: Focus) -> Focus {
         },
         Focus::ReviewList { .. }
         | Focus::Tree { .. }
+        | Focus::ReviewRequest { .. }
         | Focus::Thread { .. }
         | Focus::CommitStepper { .. } => {
             let n = extent(view, focus.context());
@@ -270,6 +279,7 @@ pub fn clamp(view: &ViewModel, focus: Focus) -> Focus {
                     Focus::ReviewList { .. } => with_index(focus, 0),
                     Focus::Tree { .. } if view.review.is_some() => with_index(focus, 0),
                     Focus::Tree { .. }
+                    | Focus::ReviewRequest { .. }
                     | Focus::Thread { .. }
                     | Focus::CommitStepper { .. }
                     | Focus::Diff { .. }
@@ -310,9 +320,11 @@ fn target_file(view: &ViewModel, focus: Focus) -> Option<FileRef> {
             ThreadPlace::File { file } | ThreadPlace::Lines { file, .. } => Some(file.clone()),
             ThreadPlace::Review => None,
         }),
-        Focus::ReviewList { .. } | Focus::Composer | Focus::CommitStepper { .. } | Focus::Help => {
-            None
-        }
+        Focus::ReviewRequest { .. }
+        | Focus::ReviewList { .. }
+        | Focus::Composer
+        | Focus::CommitStepper { .. }
+        | Focus::Help => None,
     }
 }
 
@@ -444,6 +456,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             },
             Focus::ReviewList { .. }
             | Focus::Tree { .. }
+            | Focus::ReviewRequest { .. }
             | Focus::Thread { .. }
             | Focus::Composer
             | Focus::CommitStepper { .. }
@@ -458,6 +471,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             },
             Focus::ReviewList { .. }
             | Focus::Tree { .. }
+            | Focus::ReviewRequest { .. }
             | Focus::Thread { .. }
             | Focus::Composer
             | Focus::CommitStepper { .. }
@@ -572,6 +586,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 | Command::ExpandFile
                 | Command::FocusTree
                 | Command::FocusDiff
+                | Command::FocusRequests
                 | Command::FocusThreads
                 | Command::FocusCommits
                 | Command::Submit
@@ -771,6 +786,12 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                     focus: Focus::Thread { index },
                 })
             }
+            Focus::ReviewRequest { index } => {
+                view.requests.get(index).ok_or_else(nothing)?;
+                Ok(Action::SetTab {
+                    tab: Tab::FilesChanged,
+                })
+            }
             Focus::Thread { index } => {
                 let t = view.threads.get(index).ok_or_else(nothing)?;
                 // An outdated thread's location is gone from the current
@@ -841,7 +862,9 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                         Err(nothing())
                     }
                 }
-                Focus::Thread { .. } | Focus::CommitStepper { .. } => Ok(Action::SetFocus {
+                Focus::ReviewRequest { .. }
+                | Focus::Thread { .. }
+                | Focus::CommitStepper { .. } => Ok(Action::SetFocus {
                     focus: Focus::Tree { index: 0 },
                 }),
                 Focus::ReviewList { .. } => Err(nothing()),
@@ -858,6 +881,8 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                             row: 0,
                             side: Side::Head,
                         }
+                    } else if !view.requests.is_empty() {
+                        Focus::ReviewRequest { index: 0 }
                     } else if !view.threads.is_empty() {
                         Focus::Thread { index: 0 }
                     } else {
@@ -865,13 +890,19 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                     }
                 }
                 Focus::Diff { .. } => {
-                    if view.threads.is_empty() {
+                    if !view.requests.is_empty() {
+                        Focus::ReviewRequest { index: 0 }
+                    } else if view.threads.is_empty() {
                         Focus::Tree { index: 0 }
                     } else {
                         Focus::Thread { index: 0 }
                     }
                 }
-                Focus::Thread { .. }
+                Focus::ReviewRequest { .. } if !view.threads.is_empty() => {
+                    Focus::Thread { index: 0 }
+                }
+                Focus::ReviewRequest { .. }
+                | Focus::Thread { .. }
                 | Focus::CommitStepper { .. }
                 | Focus::ReviewList { .. }
                 | Focus::Composer
@@ -971,6 +1002,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                     }
                 }
                 Focus::ReviewList { .. }
+                | Focus::ReviewRequest { .. }
                 | Focus::Thread { .. }
                 | Focus::CommitStepper { .. }
                 | Focus::Help => Anchor::Review,
@@ -1067,6 +1099,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             Focus::Tree { .. } => Ok(Action::CollapseParent),
             Focus::ReviewList { .. }
             | Focus::Diff { .. }
+            | Focus::ReviewRequest { .. }
             | Focus::Thread { .. }
             | Focus::Composer
             | Focus::CommitStepper { .. }
@@ -1100,6 +1133,14 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             )),
             None => Err(NoTarget::NoOpenFile),
         },
+        Command::FocusRequests => {
+            if view.requests.is_empty() {
+                return Err(nothing());
+            }
+            Ok(Action::SetFocus {
+                focus: Focus::ReviewRequest { index: 0 },
+            })
+        }
         Command::FocusThreads => {
             if view.threads.is_empty() {
                 Err(nothing())

@@ -2324,3 +2324,49 @@ describe("Informational conversation", () => {
     expect(Screen.getByPlaceholderText("Summary or status note…"))->toBeTruthy
   })
 })
+
+describe("Review requests", () => {
+  test("shows durable attribution and note without finding controls", () => {
+    let request = Fixtures.parse(
+      Domain.ReviewRequest.schema,
+      "protocol",
+      "ReviewRequest",
+      "default",
+    )
+    let dispatch = fn()
+    let chrome: array<View.Hint.t> = [
+      {keys: "g r", command: FocusRequests, label: "review requests"},
+      {keys: "enter", command: Open, label: "open"},
+    ]
+    let {container, rerender} = render(
+      <ReviewRequests requests=[request] focus={ReviewRequest({index: 0})} chrome dispatch />,
+    )
+    expect(Screen.getByText(Threads.authorName(request.requester)))->toBeTruthy
+    expect(Screen.getByText("to " ++ request.recipient))->toBeTruthy
+    expect(Screen.getByText(request.note))->toBeTruthy
+    expect(
+      Element.querySelector(container, "[title='" ++ Stepper.absolute(request.created) ++ "']"),
+    )
+    ->not_
+    ->toBeNull
+    expect(Element.querySelector(container, "[data-focused]"))->not_->toBeNull
+    expect(Screen.queryAllByText("Resolve finding")->Array.length)->toBe(0)
+    expect(Screen.queryAllByText("Reply")->Array.length)->toBe(0)
+    FireEvent.click(Screen.getByText("Open changes"))
+    expect(dispatch)->toHaveBeenCalledWith(Action.SetFocus({focus: ReviewRequest({index: 0})}))
+    expect(dispatch)->toHaveBeenCalledWith(Action.RunCommand({command: Open}))
+    expect(dispatch)->toHaveBeenCalledTimes(2)
+    FireEvent.click(Screen.getByText("Review requests (1)"))
+    expect(dispatch)->toHaveBeenCalledWith(Action.RunCommand({command: FocusRequests}))
+    rerender(<ReviewRequests requests=[] focus={Tree({index: 0})} chrome dispatch />)
+    expect(Element.querySelector(container, ".review-request"))->toBeNull
+  })
+
+  test("conversation counts requests separately from open findings", () => {
+    let {container} = render(
+      <Tabs tab=Conversation fileCount=0 threadCount=0 requestCount=2 chrome=[] dispatch={fn()} />,
+    )
+    expect(Element.textContent(container))->toContain("0 open")
+    expect(Element.textContent(container))->toContain("2 requests")
+  })
+})

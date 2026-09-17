@@ -87,6 +87,7 @@ fn snapshot() -> ReviewSnapshot {
         threads: Vec::new(),
         comments: Vec::new(),
         viewed: Vec::new(),
+        requests: Vec::new(),
         seq: Seq::new(1),
     }
 }

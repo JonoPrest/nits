@@ -746,12 +746,16 @@ fn emit<T: Serialize>(json: bool, v: &T, text: impl FnOnce() -> String) -> anyho
     Ok(())
 }
 
-fn event_line(e: &Event) -> String {
-    let who = match &e.author {
+fn author_text(author: &Author) -> String {
+    match author {
         Author::Human { name, .. } => name.clone(),
         Author::Agent { name, .. } => format!("{name} (agent)"),
         Author::Daemon { .. } => "daemon".into(),
-    };
+    }
+}
+
+fn event_line(e: &Event) -> String {
+    let who = author_text(&e.author);
     let what = match &e.body {
         EventBody::WorkspaceCreated { workspace, .. } => {
             format!("workspace created {}", workspace.name)
@@ -1246,28 +1250,46 @@ async fn review(
                     snapshot: &snap,
                     files: &files,
                 },
-                || {
-                    let mut out = review_text(&snap.review, &workspaces);
-                    out.push('\n');
-                    for f in &files {
-                        let _ = writeln!(
-                            out,
-                            "  {:?} {}",
-                            nits_protocol::ChangeKindKind::from(&f.kind),
-                            f.path
-                        );
-                    }
-                    let _ = writeln!(
-                        out,
-                        "  {} threads, {} comments",
-                        snap.threads.len(),
-                        snap.comments.len()
-                    );
-                    out
-                },
+                || review_snapshot_text(&snap, &files, &workspaces),
             )
         }
     }
+}
+
+fn review_snapshot_text(
+    snap: &nits_protocol::ReviewSnapshot,
+    files: &[nits_protocol::FileChange],
+    workspaces: &[nits_protocol::Workspace],
+) -> String {
+    let mut out = review_text(&snap.review, workspaces);
+    out.push('\n');
+    for f in files {
+        let _ = writeln!(
+            out,
+            "  {:?} {}",
+            nits_protocol::ChangeKindKind::from(&f.kind),
+            f.path
+        );
+    }
+    let _ = writeln!(
+        out,
+        "  {} threads, {} comments, {} requests",
+        snap.threads.len(),
+        snap.comments.len(),
+        snap.requests.len()
+    );
+    for request in &snap.requests {
+        let _ = writeln!(
+            out,
+            "  request {}: {} → {} at {}\n    {}",
+            request.id,
+            author_text(&request.requester),
+            request.recipient,
+            request.created.millis(),
+            request.note
+        );
+    }
+    out
 }
 
 async fn content(ops: &Ops, cmd: Cmd, json: bool) -> anyhow::Result<()> {

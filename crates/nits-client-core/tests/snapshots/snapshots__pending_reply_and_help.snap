@@ -680,6 +680,7 @@ expression: core.view()
       "context": null
     }
   ],
+  "requests": [],
   "stepper": null,
   "focus": {
     "type": "Help"
@@ -782,6 +783,11 @@ expression: core.view()
       "keys": "g t",
       "command": "FocusThreads",
       "label": "focus threads"
+    },
+    {
+      "keys": "g r",
+      "command": "FocusRequests",
+      "label": "review requests"
     },
     {
       "keys": "g m",
@@ -1096,6 +1102,11 @@ expression: core.view()
       "label": "focus threads"
     },
     {
+      "keys": "g r",
+      "command": "FocusRequests",
+      "label": "review requests"
+    },
+    {
       "keys": "g m",
       "command": "FocusCommits",
       "label": "focus commits"
@@ -1388,6 +1399,13 @@ expression: core.view()
             "keys": "g t",
             "command": "FocusThreads",
             "label": "focus threads",
+            "primary": false,
+            "overridden": false
+          },
+          {
+            "keys": "g r",
+            "command": "FocusRequests",
+            "label": "review requests",
             "primary": false,
             "overridden": false
           },
@@ -1696,6 +1714,7 @@ expression: core.view()
         }
       ],
       "viewed": [],
+      "requests": [],
       "seq": 1
     },
     "pending": [

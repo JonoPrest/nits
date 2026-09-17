@@ -304,8 +304,19 @@ pub(super) fn apply(t: &mut Write<'_>, event: &Event) -> Result<(), StoreError> 
                 path.as_str(),
             ))?;
         }
-        // Recorded in the log for history/subscriptions; no view changes.
-        EventBody::ReviewRequested { .. } | EventBody::SuggestionApplied { .. } => {}
+        // Invitations are durable snapshot state as well as subscription events.
+        EventBody::ReviewRequested { .. } => {
+            if let Some(request) = nits_protocol::ReviewRequest::from_event(event) {
+                t.requests.insert(
+                    (
+                        request.review_id.to_string().as_str(),
+                        request.id.event_seq().get(),
+                    ),
+                    serde_json::to_vec(&request)?.as_slice(),
+                )?;
+            }
+        }
+        EventBody::SuggestionApplied { .. } => {}
     }
     Ok(())
 }

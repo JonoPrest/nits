@@ -45,5 +45,19 @@
       "summary": "This should be a newtype."
     }
   ],
+  "requests": [
+    {
+      "created": 1700000000000,
+      "id": 40,
+      "note": "Please review the updated parser.",
+      "recipient": "review-agent",
+      "requester": {
+        "machine": "laptop",
+        "name": "ada",
+        "type": "Human"
+      },
+      "review_id": "01HF7YATZ80000000000000004"
+    }
+  ],
   "type": "Conversation"
 }

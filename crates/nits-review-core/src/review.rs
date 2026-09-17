@@ -837,15 +837,9 @@ impl Core {
 
     /// Materialised state for a fresh client.
     pub fn review_snapshot(&self, id: ReviewId) -> Result<ReviewSnapshot, CoreError> {
-        let rec = self.review(id)?;
-        Ok(ReviewSnapshot {
-            review: rec.review,
-            resolved: rec.resolved,
-            threads: self.store.threads(id)?,
-            comments: self.store.comments(id)?,
-            viewed: self.store.viewed(id)?,
-            seq: self.store.last_seq()?.unwrap_or(nits_protocol::Seq::new(0)),
-        })
+        self.store
+            .review_snapshot(id)?
+            .ok_or_else(|| CoreError::not_found(EntityKind::Review, &id))
     }
 }
 

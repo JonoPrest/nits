@@ -65,7 +65,7 @@ let plan = (
 ): (step, option<int>) =>
   switch focus {
   | Composer(_) | Help(_) => (Skip, seen)
-  | ReviewList(_) | Tree(_) | Thread(_) | CommitStepper(_) => (List, seen)
+  | ReviewRequest(_) | ReviewList(_) | Tree(_) | Thread(_) | CommitStepper(_) => (List, seen)
   | Diff(_) =>
     if !present {
       (Skip, seen)

@@ -13,6 +13,7 @@
 //! | `workspaces`     | `workspace_id`                       | `Workspace`    |
 //! | `reviews`        | `review_id`                          | `ReviewRecord` |
 //! | `comments`       | `(review_id, comment_id)`            | `Comment`      |
+//! | `review_requests`| `(review_id, event_seq)`             | `ReviewRequest` |
 //! | `threads`        | `(review_id, thread_id)`             | `Thread`       |
 //! | `viewed`         | `(review_id, repo_id, path)`         | `ViewedMark`   |
 //! | `anchors_by_blob`| `(repo_id, blob_oid, comment_id)`    | `review_id`    |
@@ -256,6 +257,52 @@ impl Store {
             .transpose()
     }
 
+    /// One coherent read of every materialized field and its subscription cursor.
+    /// A concurrent writer is either visible in both the data and seq, or neither.
+    pub fn review_snapshot(
+        &self,
+        id: ReviewId,
+    ) -> Result<Option<nits_protocol::ReviewSnapshot>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let rid = id.to_string();
+        let reviews = txn.open_table(tables::REVIEWS)?;
+        let Some(record) = reviews.get(rid.as_str())? else {
+            return Ok(None);
+        };
+        let record: ReviewRecord = serde_json::from_slice(record.value())?;
+        if matches!(record.lifecycle, ReviewLifecycle::Deleted { .. }) {
+            return Ok(None);
+        }
+        let threads = txn.open_table(tables::THREADS)?;
+        let comments = txn.open_table(tables::COMMENTS)?;
+        let viewed = txn.open_table(tables::VIEWED)?;
+        let requests = txn.open_table(tables::REVIEW_REQUESTS)?;
+        Ok(Some(nits_protocol::ReviewSnapshot {
+            review: record.review,
+            resolved: record.resolved,
+            threads: threads
+                .range((rid.as_str(), "")..(rid.as_str(), "\u{10FFFF}"))?
+                .map(|e| Ok(serde_json::from_slice(e?.1.value())?))
+                .collect::<Result<_, StoreError>>()?,
+            comments: comments
+                .range((rid.as_str(), "")..(rid.as_str(), "\u{10FFFF}"))?
+                .map(|e| Ok(serde_json::from_slice(e?.1.value())?))
+                .collect::<Result<_, StoreError>>()?,
+            viewed: viewed
+                .range((rid.as_str(), "", "")..(rid.as_str(), "\u{10FFFF}", ""))?
+                .map(|e| Ok(serde_json::from_slice(e?.1.value())?))
+                .collect::<Result<_, StoreError>>()?,
+            requests: requests
+                .range((rid.as_str(), 0)..=(rid.as_str(), u64::MAX))?
+                .map(|e| Ok(serde_json::from_slice(e?.1.value())?))
+                .collect::<Result<_, StoreError>>()?,
+            seq: txn
+                .open_table(tables::META)?
+                .get(tables::META_VIEW_SEQ)?
+                .map_or(Seq::new(0), |v| Seq::new(v.value())),
+        }))
+    }
+
     pub fn comments(&self, review: ReviewId) -> Result<Vec<Comment>, StoreError> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(tables::COMMENTS)?;
@@ -350,6 +397,7 @@ impl Store {
             comments: rows(&txn.open_table(tables::COMMENTS)?)?,
             threads: rows(&txn.open_table(tables::THREADS)?)?,
             viewed: rows(&txn.open_table(tables::VIEWED)?)?,
+            requests: rows(&txn.open_table(tables::REVIEW_REQUESTS)?)?,
             anchors: Vec::new(),
         };
         for entry in txn.open_table(tables::ANCHORS_BY_BLOB)?.iter()? {
@@ -374,6 +422,7 @@ pub struct ViewDump {
     pub comments: Vec<Comment>,
     pub threads: Vec<Thread>,
     pub viewed: Vec<ViewedMark>,
+    pub requests: Vec<nits_protocol::ReviewRequest>,
     /// `(repo_id, blob_oid, comment_id, review_id)`
     pub anchors: Vec<(String, String, String, String)>,
 }

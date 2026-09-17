@@ -6,6 +6,7 @@ let make = (
   ~tab: View.Tab.t,
   ~fileCount: int,
   ~threadCount: int,
+  ~requestCount: int=0,
   ~chrome: array<View.Hint.t>,
   ~dispatch: Action.t => unit,
 ) => {
@@ -22,6 +23,9 @@ let make = (
         onClick={_ => dispatch(SetTab({tab: target}))}
       >
         {React.string(label)}
+        {target == Conversation && requestCount > 0
+          ? <UI.Badge text={Int.toString(requestCount) ++ " requests"} />
+          : React.null}
         {switch count {
         | Some(n) => <UI.Badge text={Int.toString(n) ++ (target == Conversation ? " open" : "")} />
         | None => React.null

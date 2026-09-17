@@ -54,7 +54,7 @@ pub enum ToolCall {
     ))]
     ListReviews(ListReviews),
     #[strum_discriminants(strum(
-        message = "A review with its resolved targets, changed files, threads and comments."
+        message = "A review with its resolved targets, changed files, threads, comments and durable review requests. Requests include identity, requester, recipient, note and creation time; no historical replay is required."
     ))]
     GetReview(ByReview),
     #[strum_discriminants(strum(
@@ -80,7 +80,7 @@ pub enum ToolCall {
     ))]
     GetFile(GetFile),
     #[strum_discriminants(strum(
-        message = "Comment threads on a review, including resolution state, comments and attribution."
+        message = "Comment threads on a review, including resolution state, comments and attribution, plus a separate collection of durable review requests."
     ))]
     ListComments(ByReview),
     #[strum_discriminants(strum(
@@ -415,7 +415,7 @@ pub struct ListReviews {
     pub workspace_id: Option<WorkspaceId>,
 }
 
-/// A review with its resolved targets, changed files, threads and comments.
+/// Identifies a review for snapshot, content, or conversation queries.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ByReview {
@@ -746,6 +746,7 @@ pub struct ReviewDetail {
     pub files: Vec<FileChange>,
     pub threads: Vec<Thread>,
     pub comments: Vec<Comment>,
+    pub requests: Vec<nits_protocol::ReviewRequest>,
     /// Log position this state reflects.
     pub seq: Seq,
 }
@@ -783,6 +784,7 @@ pub struct Resolved {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Requested {
+    pub request_id: nits_protocol::ReviewRequestId,
     pub review_id: ReviewId,
     pub agent: String,
     /// Committed mutation sequence; pass as `subscribe_events.since_seq` for later events.
@@ -829,6 +831,7 @@ pub struct Comments {
     pub context: ContextIdentity,
     pub threads: Vec<Thread>,
     pub comments: Vec<Comment>,
+    pub requests: Vec<nits_protocol::ReviewRequest>,
     pub seq: Seq,
 }
 
@@ -983,7 +986,7 @@ mod tests {
                     Some(&["comment_id", "thread_id", "seq"])
                 }
                 ToolName::Resolve => Some(&["review_id", "thread_id", "resolution", "seq"]),
-                ToolName::RequestReview => Some(&["review_id", "agent", "seq"]),
+                ToolName::RequestReview => Some(&["request_id", "review_id", "agent", "seq"]),
                 ToolName::ListContexts
                 | ToolName::UseContext
                 | ToolName::ListWorkspaces

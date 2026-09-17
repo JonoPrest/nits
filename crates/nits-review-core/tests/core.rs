@@ -1407,3 +1407,38 @@ fn informational_summary_is_conversation_not_an_open_finding() {
         ReviewStatus::Open
     );
 }
+
+#[test]
+fn review_requests_are_durable_state_separate_from_findings() {
+    let w = world();
+    w.core
+        .create_review(&human(), review_id(1), ws(), "review".into(), targets())
+        .unwrap();
+    w.core
+        .request_review(
+            &human(),
+            review_id(1),
+            "review-agent".into(),
+            "Review the parser".into(),
+        )
+        .unwrap();
+    let snapshot = w.core.review_snapshot(review_id(1)).unwrap();
+    assert_eq!(snapshot.requests.len(), 1);
+    let request = &snapshot.requests[0];
+    assert_eq!(request.review_id, review_id(1));
+    assert_eq!(request.requester, human().author);
+    assert_eq!(request.recipient, "review-agent");
+    assert_eq!(request.note, "Review the parser");
+    assert_eq!(request.created, human().now);
+    assert_eq!(request.id.event_seq(), snapshot.seq);
+    assert!(snapshot.threads.is_empty());
+    assert!(snapshot.comments.is_empty());
+    drop(w.core);
+    let core = Core::open(&w.data).unwrap();
+    assert_eq!(core.review_snapshot(review_id(1)).unwrap(), snapshot);
+    core.delete_review(&human(), review_id(1)).unwrap();
+    assert!(matches!(
+        core.review_snapshot(review_id(1)),
+        Err(CoreError::NotFound { .. })
+    ));
+}

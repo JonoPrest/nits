@@ -13,6 +13,8 @@ pub(super) const COMMENTS: TableDefinition<'_, (&str, &str), &[u8]> =
     TableDefinition::new("comments");
 pub(super) const THREADS: TableDefinition<'_, (&str, &str), &[u8]> =
     TableDefinition::new("threads");
+pub(super) const REVIEW_REQUESTS: TableDefinition<'_, (&str, u64), &[u8]> =
+    TableDefinition::new("review_requests");
 pub(super) const VIEWED: TableDefinition<'_, (&str, &str, &str), &[u8]> =
     TableDefinition::new("viewed");
 pub(super) const ANCHORS_BY_BLOB: TableDefinition<'_, (&str, &str, &str), &str> =
@@ -32,6 +34,7 @@ pub(super) fn ensure(txn: &WriteTransaction) -> Result<SchemaVersion, StoreError
     txn.open_table(COMMENTS)?;
     txn.open_table(THREADS)?;
     txn.open_table(VIEWED)?;
+    txn.open_table(REVIEW_REQUESTS)?;
     txn.open_table(ANCHORS_BY_BLOB)?;
     let existing = meta.get(META_SCHEMA)?.map(|v| v.value());
     let v = if let Some(v) = existing {
@@ -53,6 +56,7 @@ pub(super) struct Write<'txn> {
     pub reviews: Table<'txn, &'static str, &'static [u8]>,
     pub comments: Table<'txn, (&'static str, &'static str), &'static [u8]>,
     pub threads: Table<'txn, (&'static str, &'static str), &'static [u8]>,
+    pub requests: Table<'txn, (&'static str, u64), &'static [u8]>,
     pub viewed: Table<'txn, (&'static str, &'static str, &'static str), &'static [u8]>,
     pub anchors_by_blob: Table<'txn, (&'static str, &'static str, &'static str), &'static str>,
 }
@@ -73,6 +77,7 @@ impl<'txn> Write<'txn> {
             comments: txn.open_table(COMMENTS)?,
             threads: txn.open_table(THREADS)?,
             viewed: txn.open_table(VIEWED)?,
+            requests: txn.open_table(REVIEW_REQUESTS)?,
             anchors_by_blob: txn.open_table(ANCHORS_BY_BLOB)?,
         })
     }
@@ -118,6 +123,7 @@ impl<'txn> Write<'txn> {
         self.comments.retain(|_, _| false)?;
         self.threads.retain(|_, _| false)?;
         self.viewed.retain(|_, _| false)?;
+        self.requests.retain(|_, _| false)?;
         self.anchors_by_blob.retain(|_, _| false)?;
         Ok(())
     }

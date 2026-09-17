@@ -389,6 +389,7 @@ module Focus = {
     | @as("Tree") Tree({index: int})
     | @as("Diff") Diff({row: int, side: Domain.Side.t})
     | @as("Thread") Thread({index: int})
+    | @as("ReviewRequest") ReviewRequest({index: int})
     | @as("Composer") Composer({})
     | @as("CommitStepper") CommitStepper({index: int})
     | @as("Help") Help({})
@@ -397,7 +398,7 @@ module Focus = {
 
 module Context = {
   @schema
-  type t = Global | ReviewList | Tree | Diff | Thread | Composer | CommitStepper | Help
+  type t = Global | ReviewList | Tree | Diff | Thread | Requests | Composer | CommitStepper | Help
 }
 
 module Command = {
@@ -443,6 +444,7 @@ module Command = {
     | FocusTree
     | FocusDiff
     | FocusThreads
+    | FocusRequests
     | FocusCommits
     | Connect
     | Disconnect
@@ -527,6 +529,7 @@ module ViewModel = {
     diffs: array<DiffView.t>,
     threads: array<ThreadView.t>,
     conversation: array<ThreadView.t>,
+    requests: array<Domain.ReviewRequest.t>,
     stepper: @s.null option<CommitStepper.t>,
     focus: Focus.t,
     tab: Tab.t,
@@ -579,6 +582,7 @@ module ViewModel = {
     diffs: [],
     threads: [],
     conversation: [],
+    requests: [],
     stepper: None,
     focus: ReviewList({index: 0}),
     tab: FilesChanged,
@@ -639,7 +643,11 @@ module ViewPatch = {
         visual: @s.null option<VisualView.t>,
       })
     | @as("Threads") Threads({threads: array<ThreadView.t>})
-    | @as("Conversation") Conversation({conversation: array<ThreadView.t>})
+    | @as("Conversation")
+    Conversation({
+        conversation: array<ThreadView.t>,
+        requests: array<Domain.ReviewRequest.t>,
+      })
     | @as("CommitStepper") CommitStepper({stepper: @s.null option<CommitStepper.t>})
     | @as("RefSelector")
     RefSelector({
@@ -692,7 +700,7 @@ module ViewPatch = {
     | Tree({tree}) => {...model, tree}
     | Diff({diff, diffs, prefs, visual}) => {...model, diff, diffs, prefs, visual}
     | Threads({threads}) => {...model, threads}
-    | Conversation({conversation}) => {...model, conversation}
+    | Conversation({conversation, requests}) => {...model, conversation, requests}
     | CommitStepper({stepper}) => {...model, stepper}
     | RefSelector({refSelector}) => {...model, refSelector}
     | Progress({progress}) => {...model, progress}

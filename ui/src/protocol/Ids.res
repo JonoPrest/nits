@@ -5,6 +5,7 @@
 @schema type workspaceId = string
 @schema type repoId = string
 @schema type reviewId = string
+@schema type reviewRequestId = float
 @schema type commentId = string
 @schema type threadId = string
 @schema type clientId = string

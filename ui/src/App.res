@@ -292,7 +292,14 @@ module Shell = {
     // scroller with a fresh scroll position.
     let focusedRow = switch model.focus {
     | Diff({row}) => Some(row)
-    | ReviewList(_) | Tree(_) | Thread(_) | CommitStepper(_) | Composer(_) | Help(_) => None
+    | ReviewRequest(_)
+    | ReviewList(_)
+    | Tree(_)
+    | Thread(_)
+    | CommitStepper(_)
+    | Composer(_)
+    | Help(_) =>
+      None
     }
     let rowPresent = switch (focusedRow, model.diff) {
     | (Some(row), Some(d)) => d.rows->Array.some((r: View.DiffRow.t) => r.index == row)
@@ -407,6 +414,7 @@ module Shell = {
             tab=model.tab
             fileCount=model.progress.total
             threadCount={Threads.openFindings(model.threads)}
+            requestCount={Array.length(model.requests)}
             chrome=model.chrome
             dispatch
           />
@@ -463,6 +471,9 @@ module Shell = {
                   onClick={() => dispatch(RunCommand({command: ReviewFinding}))}
                 />
               </UI.Box>
+              <ReviewRequests
+                requests=model.requests focus=model.focus chrome=model.chrome dispatch
+              />
               <Threads
                 title="Conversation"
                 threads=model.threads
@@ -528,6 +539,7 @@ module Shell = {
         | Tree(_) => "TREE"
         | Diff(_) => "DIFF"
         | Thread(_) => "THREAD"
+        | ReviewRequest(_) => "REQUESTS"
         | ReviewList(_) => "REVIEWS"
         | CommitStepper(_) => "COMMITS"
         | Composer(_) | Help(_) => ""

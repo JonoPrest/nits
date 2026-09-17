@@ -241,7 +241,9 @@ fn apply(core: &Core, ctx: &nits_review_core::Ctx, m: Mutation) -> Result<(), Co
             review_id,
             agent,
             note,
-        } => core.request_review(ctx, review_id, agent, note)?,
+        } => {
+            core.request_review(ctx, review_id, agent, note)?;
+        }
         Mutation::ApplySuggestion {
             review_id,
             comment_id,
