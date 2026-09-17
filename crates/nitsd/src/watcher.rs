@@ -1,6 +1,6 @@
 //! File watcher (plan 2.3). One `notify` watcher per attached repo; a burst
 //! of writes is debounced into one pass that snapshots the working tree,
-//! broadcasts a `TreeDelta` if the tree changed, and re-resolves every live
+//! broadcasts a `TreeDelta` if the tree changed, and re-resolves every open
 //! review with a working-tree target on that repo (which emits
 //! `ReviewTargetsResolved` only when something actually moved).
 //!
@@ -197,7 +197,7 @@ async fn process(daemon: &Arc<Daemon>, repo_id: RepoId, last_tree: &mut Option<T
             ClientSeq::new(0),
         );
         if let Err(e) = daemon
-            .write(move |c| c.resolve_targets(&ctx, review_id))
+            .write(move |c| c.refresh_working_tree_review(&ctx, review_id, repo_id))
             .await
         {
             tracing::warn!(review = %review_id, error = %e, "resolve after file change failed");

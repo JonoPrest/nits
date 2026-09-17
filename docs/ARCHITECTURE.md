@@ -98,7 +98,7 @@ Storage engine: **redb** (pure Rust, single file, ACID).
 
 - `gix` for object access (trees, blobs, commits, refs). Shell out to `git` for things gix does poorly (rename detection, worktree status) until it doesn't.
 - Diffing via `imara-diff`; the daemon produces both raw hunks and a **render model** (see §4.6). `RenderOpts.ignore_whitespace` diffs a whitespace-normalised view of each line while rows carry the original text; a file whose diff is whitespace-only renders as a single collapsed "whitespace changes only" row.
-- Working tree is a first-class "ref": `RefSpec::WorkingTree`. A `notify` watcher on each repo invalidates and emits `ReviewTargetsResolved` (debounced) for reviews targeting the working tree. The daemon always emits; **holding** the refresh is a client concern (§5.4).
+- Working tree is a first-class "ref": `RefSpec::WorkingTree`. A `notify` watcher on each repo invalidates and emits `ReviewTargetsResolved` (debounced) for open reviews targeting the working tree. Archived reviews keep their last resolved targets, comments and anchors without automatic updates; reopening refreshes their targets and re-anchors comments immediately. Explicit refresh remains available while archived. For open reviews, **holding** the refresh is a client concern (§5.4).
 - All content is addressed by OID. Diffs are cached by `(base_oid, head_oid, path, opts)`.
 
 ### 4.4 Data model

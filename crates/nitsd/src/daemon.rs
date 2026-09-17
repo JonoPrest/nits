@@ -221,7 +221,7 @@ impl Daemon {
 
     /// Does a working-tree delta for `delta.repo_id` concern `scope`?
     /// `All` and the repo's workspace always; a review only if it targets
-    /// that repo's working tree.
+    /// that repo's working tree and is open.
     #[must_use]
     pub fn delta_matches(&self, scope: &SubscribeScope, delta: &TreeDelta) -> bool {
         match scope {
