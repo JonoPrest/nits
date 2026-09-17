@@ -6,8 +6,8 @@
 
 use nits_protocol::{
     BlobOid, ChangeKind, Comment, CommentId, Event, FileChange, NonEmpty, RefSpec, RenderContent,
-    RepoId, RepoPath, ResolvedTarget, Review, ReviewId, ReviewStatus, Seq, Side, Thread, ThreadId,
-    Workspace, WorkspaceId,
+    RepoId, RepoPath, ResolvedTarget, Review, ReviewId, ReviewStatus, Seq, Side, SubscribeScope,
+    Thread, ThreadId, Workspace, WorkspaceId,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -342,21 +342,66 @@ pub struct RequestReview {
 /// Long-poll for events. Returns events matching the scope after
 /// `since_seq`, waiting up to `timeout_ms` for at least one. Pass the
 /// returned `last_seq` back as `since_seq` to continue.
+/// `review_id`, `workspace_id`, and `awaiting_agent` are mutually exclusive:
+/// provide at most one non-null scope filter, or omit all for every event.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(try_from = "SubscribeEventsWire")]
+pub struct SubscribeEvents {
+    pub scope: SubscribeScope,
+    pub since_seq: Option<Seq>,
+    pub timeout_ms: u64,
+    pub max: usize,
+}
+
+/// Flat MCP arguments, converted to a single scope at the serde boundary.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct SubscribeEvents {
-    pub review_id: Option<ReviewId>,
-    pub workspace_id: Option<WorkspaceId>,
-    /// Only `ReviewRequested` events addressed to this agent name.
-    pub awaiting_agent: Option<String>,
+struct SubscribeEventsWire {
+    /// Only events for this review. Mutually exclusive with `workspace_id`
+    /// and `awaiting_agent`.
+    review_id: Option<ReviewId>,
+    /// Only events for this workspace. Mutually exclusive with `review_id`
+    /// and `awaiting_agent`.
+    workspace_id: Option<WorkspaceId>,
+    /// Only `ReviewRequested` events addressed to this agent name. Mutually
+    /// exclusive with `review_id` and `workspace_id`.
+    awaiting_agent: Option<String>,
     /// Replay after this log position; omit for live only.
-    pub since_seq: Option<Seq>,
+    since_seq: Option<Seq>,
     /// Default 30000.
     #[serde(default = "default_timeout")]
-    pub timeout_ms: u64,
+    timeout_ms: u64,
     /// Default 100.
     #[serde(default = "default_max")]
-    pub max: usize,
+    max: usize,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "review_id, workspace_id, and awaiting_agent are mutually exclusive; provide at most one non-null scope filter, or omit all for every event"
+)]
+struct ConflictingSubscribeScopes;
+
+impl TryFrom<SubscribeEventsWire> for SubscribeEvents {
+    type Error = ConflictingSubscribeScopes;
+
+    fn try_from(wire: SubscribeEventsWire) -> Result<Self, Self::Error> {
+        let scope = match (wire.review_id, wire.workspace_id, wire.awaiting_agent) {
+            (None, None, None) => SubscribeScope::All,
+            (Some(review_id), None, None) => SubscribeScope::Review { review_id },
+            (None, Some(workspace_id), None) => SubscribeScope::Workspace { workspace_id },
+            (None, None, Some(agent)) => SubscribeScope::AwaitingAgent { agent },
+            (Some(_), Some(_), _) | (Some(_), None, Some(_)) | (None, Some(_), Some(_)) => {
+                return Err(ConflictingSubscribeScopes);
+            }
+        };
+        Ok(Self {
+            scope,
+            since_seq: wire.since_seq,
+            timeout_ms: wire.timeout_ms,
+            max: wire.max,
+        })
+    }
 }
 
 fn default_timeout() -> u64 {
@@ -498,5 +543,112 @@ mod tests {
         assert_eq!(call.name(), ToolName::ListWorkspaces);
         assert!(ToolCall::parse(ToolName::ListWorkspaces, serde_json::json!({ "x": 1 })).is_err());
         assert!(ToolCall::parse(ToolName::GetReview, serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn subscribe_scopes_are_parsed_once_from_flat_arguments() {
+        let review_id = ReviewId::from_parts(1, 1);
+        let workspace_id = WorkspaceId::from_parts(1, 1);
+        for (arguments, expected) in [
+            (serde_json::json!({}), SubscribeScope::All),
+            (
+                serde_json::json!({ "review_id": null, "workspace_id": null, "awaiting_agent": null }),
+                SubscribeScope::All,
+            ),
+            (
+                serde_json::json!({ "review_id": review_id }),
+                SubscribeScope::Review { review_id },
+            ),
+            (
+                serde_json::json!({ "workspace_id": workspace_id }),
+                SubscribeScope::Workspace { workspace_id },
+            ),
+            (
+                serde_json::json!({ "awaiting_agent": "reviewer-a" }),
+                SubscribeScope::AwaitingAgent {
+                    agent: "reviewer-a".into(),
+                },
+            ),
+            (
+                serde_json::json!({ "review_id": null, "workspace_id": workspace_id, "awaiting_agent": null }),
+                SubscribeScope::Workspace { workspace_id },
+            ),
+        ] {
+            let ToolCall::SubscribeEvents(parsed) =
+                ToolCall::parse(ToolName::SubscribeEvents, arguments).unwrap()
+            else {
+                panic!("expected subscribe_events");
+            };
+            assert_eq!(parsed.scope, expected);
+            assert_eq!(parsed.since_seq, None);
+            assert_eq!(parsed.timeout_ms, 30_000);
+            assert_eq!(parsed.max, 100);
+        }
+
+        let parsed: SubscribeEvents = serde_json::from_value(serde_json::json!({
+            "review_id": review_id, "since_seq": 7, "timeout_ms": 5, "max": 3
+        }))
+        .unwrap();
+        assert_eq!(parsed.scope, SubscribeScope::Review { review_id });
+        assert_eq!(parsed.since_seq, Some(Seq::new(7)));
+        assert_eq!(parsed.timeout_ms, 5);
+        assert_eq!(parsed.max, 3);
+    }
+
+    #[test]
+    fn subscribe_rejects_every_combination_of_conflicting_scopes() {
+        let review_id = ReviewId::from_parts(1, 1);
+        let workspace_id = WorkspaceId::from_parts(1, 1);
+        for arguments in [
+            serde_json::json!({ "review_id": review_id, "workspace_id": workspace_id }),
+            serde_json::json!({ "review_id": review_id, "awaiting_agent": "reviewer-a" }),
+            serde_json::json!({ "workspace_id": workspace_id, "awaiting_agent": "reviewer-a" }),
+            serde_json::json!({ "review_id": review_id, "workspace_id": workspace_id, "awaiting_agent": "reviewer-a" }),
+        ] {
+            let error = ToolCall::parse(ToolName::SubscribeEvents, arguments)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error
+                    .contains("review_id, workspace_id, and awaiting_agent are mutually exclusive"),
+                "{error}"
+            );
+            assert!(
+                error.contains("provide at most one non-null scope filter"),
+                "{error}"
+            );
+        }
+        for arguments in [
+            serde_json::json!({ "scope": { "type": "All" } }),
+            serde_json::json!({ "review_id": "invalid" }),
+            serde_json::json!({ "workspace_id": "invalid" }),
+            serde_json::json!({ "awaiting_agent": 42 }),
+        ] {
+            assert!(ToolCall::parse(ToolName::SubscribeEvents, arguments).is_err());
+        }
+    }
+
+    #[test]
+    fn subscribe_schema_documents_exclusive_flat_scopes() {
+        let tool = ToolName::SubscribeEvents.tool();
+        assert!(tool.description.contains("mutually exclusive"));
+        assert!(tool.description.contains("omit all for every event"));
+        let properties = tool.input_schema.get("properties").unwrap();
+        for field in ["review_id", "workspace_id", "awaiting_agent"] {
+            assert!(
+                properties[field]["description"]
+                    .as_str()
+                    .unwrap()
+                    .contains("exclusive")
+            );
+        }
+        assert!(
+            properties.get("scope").is_none(),
+            "keep the existing flat wire shape"
+        );
+        assert_eq!(
+            tool.input_schema.get("additionalProperties"),
+            Some(&Value::Bool(false))
+        );
     }
 }

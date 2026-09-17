@@ -6,7 +6,9 @@ use std::sync::Arc;
 use nits_mcp::jsonrpc::{Incoming, Outgoing};
 use nits_mcp::server::AgentIdentity;
 use nits_mcp::{Endpoint, Server};
-use nits_protocol::{Author, BuildInfo, ClientId, ClientSeq, Human, Mutation, Request, Response};
+use nits_protocol::{
+    Author, BuildInfo, ClientId, ClientSeq, Human, Mutation, RepoId, Request, Response, WorkspaceId,
+};
 use nits_review_core::DataDir;
 use nits_test_support::{RepoBuilder, TestRepo, files};
 use nitsd::Daemon;
@@ -177,31 +179,44 @@ static SOCKET_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 
 /// Workspace + repo via the human client; returns `(workspace_id, repo_id)`.
 async fn seed(h: &Harness, c: &Client) -> (String, String) {
-    let ws = nits_protocol::WorkspaceId::from_parts(1, 1);
-    let rid = nits_protocol::RepoId::from_parts(1, 1);
-    for (n, m) in [
+    let ws = WorkspaceId::from_parts(1, 1);
+    let rid = RepoId::from_parts(1, 1);
+    seed_workspace(c, &h.repo, ws, rid, ClientSeq::new(1)).await;
+    (ws.to_string(), rid.to_string())
+}
+
+async fn seed_workspace(
+    c: &Client,
+    repo: &TestRepo,
+    workspace_id: WorkspaceId,
+    repo_id: RepoId,
+    mut client_seq: ClientSeq,
+) {
+    for mutation in [
         Mutation::CreateWorkspace {
-            workspace_id: ws,
+            workspace_id,
             name: "w".into(),
         },
         Mutation::AttachRepo {
-            workspace_id: ws,
-            repo_id: rid,
-            path: h.repo.path().to_str().unwrap().into(),
+            workspace_id,
+            repo_id,
+            path: repo.path().to_str().unwrap().into(),
             display_name: "r".into(),
         },
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        c.request(Request::Mutate {
-            client_seq: ClientSeq::new(n as u64 + 1),
-            mutation: m,
-        })
-        .await
-        .unwrap();
+    ] {
+        let response = c
+            .request(Request::Mutate {
+                client_seq,
+                mutation,
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(response, Response::Committed { .. }),
+            "{response:?}"
+        );
+        client_seq = client_seq.next();
     }
-    (ws.to_string(), rid.to_string())
 }
 
 fn main_feature(rid: &str) -> Value {
@@ -452,6 +467,126 @@ async fn agent_comments_carry_provenance_and_thread_ops_work() {
         .await
         .unwrap();
     assert_eq!(out.error.unwrap().code, -32602);
+}
+
+#[tokio::test]
+async fn subscribe_events_rejects_conflicting_scopes() {
+    let h = start();
+    let c = human(&h).await;
+    let (ws, rid) = seed(&h, &c).await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    let created = call(
+        &mut s,
+        "create_review",
+        json!({ "workspace_id": ws, "title": "r", "targets": main_feature(&rid) }),
+    )
+    .await;
+    let review_id = &created["review"]["id"];
+    for arguments in [
+        json!({ "review_id": review_id, "workspace_id": ws, "timeout_ms": 1 }),
+        json!({ "review_id": review_id, "awaiting_agent": "reviewer-a", "timeout_ms": 1 }),
+        json!({ "workspace_id": ws, "awaiting_agent": "reviewer-a", "timeout_ms": 1 }),
+        json!({ "review_id": review_id, "workspace_id": ws, "awaiting_agent": "reviewer-a", "timeout_ms": 1 }),
+    ] {
+        let error = call_err(&mut s, "subscribe_events", arguments).await;
+        assert!(
+            error.contains("review_id, workspace_id, and awaiting_agent are mutually exclusive"),
+            "{error}"
+        );
+        assert!(
+            error.contains("provide at most one non-null scope filter"),
+            "{error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn subscribe_events_preserves_each_single_scope_and_all_events() {
+    let h = start();
+    let c = human(&h).await;
+    let (ws, rid) = seed(&h, &c).await;
+    let other_repo = small_repo();
+    let other_workspace = WorkspaceId::from_parts(1, 2);
+    let other_repo_id = RepoId::from_parts(1, 2);
+    seed_workspace(
+        &c,
+        &other_repo,
+        other_workspace,
+        other_repo_id,
+        ClientSeq::new(3),
+    )
+    .await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    let mut reviews = Vec::new();
+    for (workspace, repo, title) in [
+        (ws.clone(), rid.clone(), "first"),
+        (ws.clone(), rid, "second"),
+        (
+            other_workspace.to_string(),
+            other_repo_id.to_string(),
+            "other workspace review",
+        ),
+    ] {
+        let created = call(
+            &mut s,
+            "create_review",
+            json!({ "workspace_id": workspace, "title": title, "targets": main_feature(&repo) }),
+        )
+        .await;
+        reviews.push(created["review"]["id"].clone());
+    }
+    let since = h.daemon.core().last_seq().unwrap().unwrap();
+    let mut events = Vec::new();
+    for (review, agent) in [
+        (&reviews[0], "reviewer-a"),
+        (&reviews[1], "reviewer-a"),
+        (&reviews[2], "reviewer-a"),
+        (&reviews[0], "reviewer-b"),
+    ] {
+        let requested = call(
+            &mut s,
+            "request_review",
+            json!({ "review_id": review, "agent": agent, "note": "please review" }),
+        )
+        .await;
+        events.push(requested["event"].clone());
+    }
+    let updated = call(
+        &mut s,
+        "update_review",
+        json!({ "review_id": reviews[0], "title": "renamed", "status": "Open" }),
+    )
+    .await;
+    events.push(updated["event"].clone());
+
+    for (mut arguments, expected) in [
+        (json!({}), events.clone()),
+        (
+            json!({ "review_id": reviews[0] }),
+            vec![events[0].clone(), events[3].clone(), events[4].clone()],
+        ),
+        (
+            json!({ "workspace_id": ws }),
+            vec![
+                events[0].clone(),
+                events[1].clone(),
+                events[3].clone(),
+                events[4].clone(),
+            ],
+        ),
+        (
+            json!({ "awaiting_agent": "reviewer-a" }),
+            vec![events[0].clone(), events[1].clone(), events[2].clone()],
+        ),
+    ] {
+        arguments["since_seq"] = json!(since);
+        arguments["timeout_ms"] = json!(1000);
+        let polled = call(&mut s, "subscribe_events", arguments.clone()).await;
+        assert_eq!(polled["events"], json!(expected), "scope: {arguments}");
+        assert_eq!(polled["last_seq"], expected.last().unwrap()["seq"]);
+    }
 }
 
 #[tokio::test]
