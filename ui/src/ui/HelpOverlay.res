@@ -3,21 +3,7 @@
 
 open View
 
-// jsdom has no `scrollBy`; its `scrollTop` fallback also makes the behavior
-// deterministic for component tests.
-let scrollPanel: (Dom.element, int) => unit = %raw(`(el, top) => {
-  if (el.scrollBy) el.scrollBy({top, behavior: "instant"})
-  else el.scrollTop += top
-}`)
 let resetPanel: Dom.element => unit = %raw(`el => { el.scrollTop = 0 }`)
-
-module Keys = {
-  type ev
-  @get external key: ev => string = "key"
-  @send external preventDefault: ev => unit = "preventDefault"
-  @val @scope("window") external listen: (string, ev => unit) => unit = "addEventListener"
-  @val @scope("window") external unlisten: (string, ev => unit) => unit = "removeEventListener"
-}
 
 let compact = (text: string) => text->String.toLowerCase->String.replaceRegExp(/\s+/g, "")
 
@@ -98,101 +84,134 @@ let conflictMatches = (conflict: Conflict.t, query: string) =>
   fuzzyScore(conflict.keys, query)->Option.isSome ||
   conflict.commands->Array.some(command => fuzzyScore((command :> string), query)->Option.isSome)
 
-let scrollStep = key =>
-  switch key {
-  | "j" | "ArrowDown" => Some(48)
-  | "k" | "ArrowUp" => Some(-48)
-  | "PageDown" => Some(400)
-  | "PageUp" => Some(-400)
-  | _ => None
-  }
-
 @react.component
 let make = (~help: HelpView.t, ~dispatch: Action.t => unit) => {
   let (query, setQuery) = React.useState(() => "")
   let groups = filteredGroups(help.groups, query)
   let conflicts = help.conflicts->Array.filter(conflict => conflictMatches(conflict, query))
-  // j/k, arrows, and paging scroll while the query input retains focus.
-  let panelRef = React.useRef(Nullable.null)
-  let navigate = key =>
-    switch (scrollStep(key), panelRef.current->Nullable.toOption) {
-    | (Some(top), Some(element)) => element->scrollPanel(top)
-    | _ => ()
-    }
-  React.useEffect0(() => {
-    let handler = ev => {
-      switch scrollStep(Keys.key(ev)) {
-      | Some(_) => {
-          Keys.preventDefault(ev)
-          navigate(Keys.key(ev))
-        }
-      | None => ()
+  let entries = groups->Array.flatMap(g => g.entries->Array.map(e => (g.context, e)))
+  let (selection, setSelection) = React.useState(() => 0)
+  let count = Array.length(entries)
+  let close = () => dispatch(ToggleHelp({}))
+  let submit = () =>
+    switch entries[Math.Int.min(selection, count - 1)] {
+    | Some((_, entry)) => {
+        close()
+        dispatch(RunCommand({command: entry.command}))
       }
+    | None => ()
     }
-    Keys.listen("keydown", handler)
-    Some(() => Keys.unlisten("keydown", handler))
-  })
+  let panelRef = React.useRef(Nullable.null)
+  let (
+    selected,
+    inputRef,
+    resultsRef,
+    toInput,
+    onResultsFocus,
+    onChange,
+    onInputKey,
+    onResultsKey,
+  ) = SearchNavigation.useNavigation(
+    ~count,
+    ~selected=selection,
+    ~first=() => setSelection(_ => 0),
+    ~step=delta =>
+      setSelection(current =>
+        Math.Int.min(Math.Int.max(Math.Int.min(current, count - 1) + delta, 0), count - 1)
+      ),
+    ~query,
+    ~change=value => {
+      setQuery(_ => value)
+      setSelection(_ => 0)
+    },
+    ~submit,
+    ~close,
+  )
+  let id = React.useId()
+  let hitId = index => id ++ "-" ++ Int.toString(index)
+  let selectedEntry = selected->Option.flatMap(i => entries[i])
   React.useEffect1(() => {
     panelRef.current->Nullable.toOption->Option.forEach(resetPanel)
     None
   }, [query])
-  <div className="help-overlay" role="dialog" ariaLabel="keyboard help">
+  <div
+    className="help-overlay"
+    role="dialog"
+    ariaLabel="keyboard help"
+    onKeyDown={ev => SearchNavigation.onDialogKey(close, ev)}
+  >
     <div className="help-panel panel" ref={ReactDOM.Ref.domRef(panelRef)}>
-      <header className="panel-header">
-        {React.string("Keyboard")}
-        <UI.Button label="close ⎋" kind=Ghost onClick={() => dispatch(ToggleHelp({}))} />
-      </header>
+      <header className="panel-header"> {React.string("Keyboard")} </header>
       <UI.TextInput
         value=query
         autoFocus=true
         placeholder="filter…"
-        onChange={q => setQuery(_ => q)}
-        onKey={key =>
-          switch key {
-          | "Escape" => dispatch(ToggleHelp({}))
-          | key => navigate(key)
-          }}
-        preventKeys=["j", "k", "ArrowDown", "ArrowUp", "PageDown", "PageUp"]
+        onChange
+        inputRef={ReactDOM.Ref.domRef(inputRef)}
+        onFocus=toInput
+        onKeyEvent=onInputKey
       />
-      {Array.length(groups) == 0 && Array.length(conflicts) == 0
-        ? <UI.Empty text="no shortcuts match" />
-        : React.null}
-      {groups
-      ->Array.map(g =>
-        <section key={(g.context :> string)} className="help-group">
-          <h3> {React.string((g.context :> string))} </h3>
-          <table>
-            <tbody>
-              {g.entries
-              ->Array.map(e =>
-                <tr key={e.keys ++ e.label} className={e.overridden ? "help-overridden" : ""}>
-                  <td>
-                    <UI.Kbd keys=e.keys />
-                  </td>
-                  <td> {React.string(e.label)} </td>
-                  <td> {React.string(e.primary ? "★" : "")} </td>
-                </tr>
+      <UI.SearchResults
+        kind=Help
+        label="keyboard shortcuts"
+        listRef={ReactDOM.Ref.domRef(resultsRef)}
+        onKey=onResultsKey
+        onFocus=onResultsFocus
+        activeId={selected->Option.map(hitId)}
+      >
+        {Array.length(groups) == 0 && Array.length(conflicts) == 0
+          ? <UI.Empty text="no shortcuts match" />
+          : React.null}
+        {groups
+        ->Array.map(g =>
+          <section key={(g.context :> string)} className="help-group">
+            <h3> {React.string((g.context :> string))} </h3>
+            <table>
+              <tbody>
+                {g.entries
+                ->Array.map(e =>
+                  <tr
+                    key={e.keys ++ e.label}
+                    role="option"
+                    id={hitId(entries->Array.findIndex(entry => entry == (g.context, e)))}
+                    ariaSelected={selectedEntry == Some((g.context, e))}
+                    className={(e.overridden ? "help-overridden" : "") ++ (
+                      selectedEntry == Some((g.context, e)) ? " search-hit selected" : ""
+                    )}
+                    onClick={_ => {
+                      close()
+                      dispatch(RunCommand({command: e.command}))
+                    }}
+                  >
+                    <td>
+                      <UI.Kbd keys=e.keys />
+                    </td>
+                    <td> {React.string(e.label)} </td>
+                    <td> {React.string(e.primary ? "★" : "")} </td>
+                  </tr>
+                )
+                ->React.array}
+              </tbody>
+            </table>
+          </section>
+        )
+        ->React.array}
+        {Array.length(conflicts) > 0
+          ? <section className="help-conflicts">
+              <h3> {React.string("Conflicts")} </h3>
+              {conflicts
+              ->Array.map(c =>
+                <div key={(c.context :> string) ++ c.keys}>
+                  <UI.Kbd keys=c.keys />
+                  {React.string(" in " ++ (c.context :> string) ++ ": ")}
+                  {React.string(c.commands->Array.map(cmd => (cmd :> string))->Array.join(", "))}
+                </div>
               )
               ->React.array}
-            </tbody>
-          </table>
-        </section>
-      )
-      ->React.array}
-      {Array.length(conflicts) > 0
-        ? <section className="help-conflicts">
-            <h3> {React.string("Conflicts")} </h3>
-            {conflicts
-            ->Array.map(c =>
-              <div key={(c.context :> string) ++ c.keys}>
-                <UI.Kbd keys=c.keys />
-                {React.string(" in " ++ (c.context :> string) ++ ": ")}
-                {React.string(c.commands->Array.map(cmd => (cmd :> string))->Array.join(", "))}
-              </div>
-            )
-            ->React.array}
-          </section>
-        : React.null}
+            </section>
+          : React.null}
+      </UI.SearchResults>
+      <UI.Button label="close ⎋" kind=Ghost onClick=close />
     </div>
   </div>
 }

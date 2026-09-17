@@ -14,6 +14,11 @@ module ScopeChoice = {
   @@warning("+27")
 }
 
+module SearchKind = {
+  @schema
+  type t = Files | Content
+}
+
 @@warning("-27")
 @schema @tag("type")
 type t =
@@ -100,7 +105,9 @@ type t =
   | @as("RunCommand") RunCommand({command: View.Command.t})
   | @as("EnterVisual") EnterVisual({})
   | @as("LeaveVisual") LeaveVisual({})
-  | @as("SearchStep") SearchStep({delta: int})
+  | @as("SearchFirst") SearchFirst({search: SearchKind.t})
+  | @as("SearchStep") SearchStep({search: SearchKind.t, delta: int})
+  | @as("OpenSearchResult") OpenSearchResult({search: SearchKind.t, query: string})
   | @as("OpenRefSelector")
   OpenRefSelector({
       @as("repo_id") repoId: repoId,

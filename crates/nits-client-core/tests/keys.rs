@@ -407,7 +407,9 @@ fn every_action_is_reachable_from_a_binding() {
         ActionKind::RunCommand,   // the actions palette picks the command
         ActionKind::CommentLines, // mouse drag across lines
         ActionKind::CommentFile,  // the file header's comment button
-        ActionKind::SearchStep,   // search inputs forward Down/Up
+        ActionKind::SearchFirst,  // search input enters the first result
+        ActionKind::SearchStep,   // search result navigation
+        ActionKind::OpenSearchResult, // search Enter activates current core selection
         ActionKind::OpenRefSelector, // header buttons own target selection
         ActionKind::RefSelectorQuery, // selector text is host-owned
         ActionKind::RefSelectorStep, // selector input forwards motion
@@ -1124,18 +1126,30 @@ fn search_step_moves_the_highlighted_hit() {
     let hits = core.view().tree.search.as_ref().unwrap().hits.len();
     assert!(hits >= 2, "expected 2+ hits, got {hits}");
     assert_eq!(core.view().tree.search.as_ref().unwrap().selected, 0);
-    core.handle(Input::User(Action::SearchStep { delta: 1 }))
-        .unwrap();
+    core.handle(Input::User(Action::SearchStep {
+        search: nits_client_core::SearchKind::Files,
+        delta: 1,
+    }))
+    .unwrap();
     assert_eq!(core.view().tree.search.as_ref().unwrap().selected, 1);
-    core.handle(Input::User(Action::SearchStep { delta: 100 }))
-        .unwrap();
+    core.handle(Input::User(Action::SearchStep {
+        search: nits_client_core::SearchKind::Files,
+        delta: 100,
+    }))
+    .unwrap();
     assert_eq!(core.view().tree.search.as_ref().unwrap().selected, hits - 1);
-    core.handle(Input::User(Action::SearchStep { delta: -100 }))
-        .unwrap();
+    core.handle(Input::User(Action::SearchStep {
+        search: nits_client_core::SearchKind::Files,
+        delta: -100,
+    }))
+    .unwrap();
     assert_eq!(core.view().tree.search.as_ref().unwrap().selected, 0);
     // A new query resets the selection.
-    core.handle(Input::User(Action::SearchStep { delta: 1 }))
-        .unwrap();
+    core.handle(Input::User(Action::SearchStep {
+        search: nits_client_core::SearchKind::Files,
+        delta: 1,
+    }))
+    .unwrap();
     core.handle(Input::User(Action::FileSearch {
         query: Some("a".into()),
     }))
@@ -1145,8 +1159,11 @@ fn search_step_moves_the_highlighted_hit() {
     core.handle(Input::User(Action::FileSearch { query: None }))
         .unwrap();
     assert!(
-        core.handle(Input::User(Action::SearchStep { delta: 1 }))
-            .is_err()
+        core.handle(Input::User(Action::SearchStep {
+            search: nits_client_core::SearchKind::Files,
+            delta: 1
+        }))
+        .is_err()
     );
 }
 
@@ -1256,7 +1273,10 @@ fn search_step_moves_the_content_search_selection() {
     .unwrap();
     assert_eq!(core.view().content_search.as_ref().unwrap().selected, 0);
     let effects = core
-        .handle(Input::User(Action::SearchStep { delta: 1 }))
+        .handle(Input::User(Action::SearchStep {
+            search: nits_client_core::SearchKind::Content,
+            delta: 1,
+        }))
         .unwrap();
     assert_eq!(core.view().content_search.as_ref().unwrap().selected, 1);
     assert_eq!(rendered(&effects), vec![ViewSection::Search]);
@@ -2492,4 +2512,257 @@ fn comment_navigation_stops_once_per_thread() {
     );
     // And the next one skips the rest of that thread's rows.
     assert!(press(&mut core, "] c").is_err() || !marked.contains(&(row + 1)));
+}
+
+/// The one content query sent by an action, with its exact ordered effects.
+fn search_request(core: &mut ClientCore, query: &str) -> nits_protocol::RequestId {
+    let effects = core
+        .handle(Input::User(Action::ContentSearch {
+            query: Some(query.into()),
+            all_files: false,
+        }))
+        .unwrap();
+    let Effect::Send(ClientMsg::Request {
+        id,
+        request:
+            Request::Search {
+                review_id: requested_review,
+                query: requested_query,
+                all_files,
+                scope,
+            },
+    }) = &effects[0]
+    else {
+        panic!("expected Search request, got {effects:?}");
+    };
+    let id = *id;
+    assert_eq!(*requested_review, review_id());
+    assert_eq!(requested_query, query);
+    assert!(!all_files);
+    assert_eq!(
+        effects,
+        vec![
+            Effect::Send(ClientMsg::Request {
+                id,
+                request: Request::Search {
+                    review_id: review_id(),
+                    query: query.into(),
+                    all_files: false,
+                    scope: *scope
+                }
+            }),
+            Effect::Render(nits_client_core::ViewDelta {
+                sections: vec![ViewSection::Search]
+            }),
+        ]
+    );
+    id
+}
+
+fn search_answer(
+    core: &mut ClientCore,
+    id: nits_protocol::RequestId,
+    lines: &[u32],
+) -> Vec<Effect> {
+    core.handle(Input::Server(ServerMsg::Response {
+        id,
+        response: nits_protocol::Response::Search {
+            hits: lines
+                .iter()
+                .map(|line| nits_protocol::ContentHit {
+                    repo_id: repo_id(),
+                    path: path("src/a.rs"),
+                    line: nits_protocol::LineNo::new(*line).unwrap(),
+                    text: format!("line {line}"),
+                })
+                .collect(),
+            truncated: false,
+        },
+    }))
+    .unwrap()
+}
+
+#[test]
+fn content_results_accept_only_the_latest_request_even_after_close_and_reopen() {
+    let mut core = ready();
+    let old = search_request(&mut core, "old");
+    let current = search_request(&mut core, "current");
+    assert_eq!(search_answer(&mut core, old, &[1, 2]), vec![]);
+    assert!(core.view().content_search.as_ref().unwrap().pending);
+    assert_eq!(
+        search_answer(&mut core, current, &[3]),
+        vec![Effect::Render(nits_client_core::ViewDelta {
+            sections: vec![ViewSection::Search]
+        })]
+    );
+    assert_eq!(
+        core.view().content_search.as_ref().unwrap().hits[0]
+            .line
+            .get(),
+        3
+    );
+
+    let old = search_request(&mut core, "same");
+    assert_eq!(
+        core.handle(Input::User(Action::ContentSearch {
+            query: None,
+            all_files: false
+        }))
+        .unwrap(),
+        vec![Effect::Render(nits_client_core::ViewDelta {
+            sections: vec![ViewSection::Search]
+        })]
+    );
+    let current = search_request(&mut core, "same");
+    assert_eq!(
+        search_answer(&mut core, current, &[2]),
+        vec![Effect::Render(nits_client_core::ViewDelta {
+            sections: vec![ViewSection::Search]
+        })]
+    );
+    assert_eq!(search_answer(&mut core, old, &[1]), vec![]);
+    assert_eq!(
+        core.view().content_search.as_ref().unwrap().hits[0]
+            .line
+            .get(),
+        2
+    );
+}
+
+#[test]
+fn search_activation_uses_current_selection_and_rejects_stale_or_pending_queries() {
+    use nits_client_core::SearchKind;
+    let mut core = ready();
+    let mut expected = ready();
+    for client in [&mut core, &mut expected] {
+        client
+            .handle(Input::User(Action::FileSearch {
+                query: Some("rs".into()),
+            }))
+            .unwrap();
+        client
+            .handle(Input::User(Action::SearchStep {
+                search: SearchKind::Files,
+                delta: 1,
+            }))
+            .unwrap();
+    }
+    assert_eq!(
+        core.handle(Input::User(Action::OpenSearchResult {
+            search: SearchKind::Files,
+            query: "old".into()
+        }))
+        .unwrap(),
+        vec![]
+    );
+    let file = expected.view().tree.search.as_ref().unwrap().hits[1]
+        .file
+        .clone();
+    let expected_effects = expected
+        .handle(Input::User(Action::Viewport {
+            file: file.clone(),
+            first_row: 0,
+            last_row: 59,
+        }))
+        .unwrap();
+    assert_eq!(
+        core.handle(Input::User(Action::OpenSearchResult {
+            search: SearchKind::Files,
+            query: "rs".into()
+        }))
+        .unwrap(),
+        expected_effects
+    );
+    assert_eq!(core.view(), expected.view());
+
+    let request = search_request(&mut core, "query");
+    assert_eq!(
+        core.handle(Input::User(Action::OpenSearchResult {
+            search: SearchKind::Content,
+            query: "query".into()
+        }))
+        .unwrap(),
+        vec![]
+    );
+    assert_eq!(
+        search_answer(&mut core, request, &[]),
+        vec![Effect::Render(nits_client_core::ViewDelta {
+            sections: vec![ViewSection::Search]
+        })]
+    );
+    assert_eq!(
+        core.handle(Input::User(Action::OpenSearchResult {
+            search: SearchKind::Content,
+            query: "query".into()
+        }))
+        .unwrap(),
+        vec![]
+    );
+}
+
+#[test]
+fn content_selection_is_independent_of_an_underlying_file_search() {
+    use nits_client_core::SearchKind;
+    let mut core = ready();
+    core.handle(Input::User(Action::FileSearch {
+        query: Some("rs".into()),
+    }))
+    .unwrap();
+    let request = search_request(&mut core, "query");
+    search_answer(&mut core, request, &[1, 2]);
+    assert_eq!(
+        core.handle(Input::User(Action::SearchStep {
+            search: SearchKind::Content,
+            delta: 1
+        }))
+        .unwrap(),
+        vec![Effect::Render(nits_client_core::ViewDelta {
+            sections: vec![ViewSection::Search]
+        })]
+    );
+    assert_eq!(core.view().content_search.as_ref().unwrap().selected, 1);
+    assert_eq!(core.view().tree.search.as_ref().unwrap().selected, 0);
+}
+
+#[test]
+fn entering_search_results_resets_the_core_selection_without_a_view_round_trip() {
+    use nits_client_core::{SearchKind, ViewDelta};
+    for search in [SearchKind::Files, SearchKind::Content] {
+        let mut core = ready();
+        let section = match search {
+            SearchKind::Files => {
+                core.handle(Input::User(Action::FileSearch {
+                    query: Some("rs".into()),
+                }))
+                .unwrap();
+                ViewSection::Tree
+            }
+            SearchKind::Content => {
+                let id = search_request(&mut core, "query");
+                search_answer(&mut core, id, &[1, 2]);
+                ViewSection::Search
+            }
+        };
+        // The host published selection zero, then handles navigation while
+        // withholding subsequent views from its UI. Re-entering results must
+        // reset to zero regardless of what that published view still contains.
+        let published = core.view().clone();
+        core.handle(Input::User(Action::SearchFirst { search }))
+            .unwrap();
+        assert_eq!(
+            core.handle(Input::User(Action::SearchStep { search, delta: 1 }))
+                .unwrap(),
+            vec![Effect::Render(ViewDelta {
+                sections: vec![section]
+            })]
+        );
+        assert_eq!(
+            core.handle(Input::User(Action::SearchFirst { search }))
+                .unwrap(),
+            vec![Effect::Render(ViewDelta {
+                sections: vec![section]
+            })]
+        );
+        assert_eq!(core.view(), &published);
+    }
 }

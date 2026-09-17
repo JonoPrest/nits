@@ -131,7 +131,7 @@ working tree (the daemon's tree snapshots already take an arbitrary
 
 ## Search
 
-One palette, three modes, `tab` cycles; each mode has a bare-key opener:
+Search surfaces share explicit input and result focus zones; each mode has a bare-key opener:
 
 - **Files** (`t`, GitHub's file-finder key) — fuzzy file-name find
   (exists today).
@@ -278,13 +278,18 @@ Everything explicitly asked for, so no shell or rewrite loses them.
   the more-context re-render until band splicing). Rule to uphold:
   EVERY mouse affordance has a chord — audit found comment-on-file from
   diff focus as the one gap.
-- ✓ Search inputs step results: with any search bar focused (`t` file
-  find, `F` content, `:` actions), Down/Up move a highlighted selection
-  through the results while typing continues, Enter opens the selected
-  result (not blindly the first). File-find and content selection are
-  core state (`Action::SearchStep`); the actions list filters UI-side so
-  its selection lives there. A chord that opens a text input (`t`/`F`/
-  `:`) is preventDefault-ed so it never types itself into the input.
+- ✓ Search inputs (`?` help, `t` files, `F` content, `:` actions) own all
+  printable typing, including `j`/`k`. Down or Tab enters the first
+  result. Results use arrows and `j`/`k`; Up from the first result or
+  Shift+Tab returns to the input. Other printable keys return to the
+  input and edit its query. Forward Tab follows the accessible controls
+  (scope, mode, close); mode buttons show their keymap-derived shortcut.
+  Enter activates the current selected result; content queries must
+  finish before activation and superseded replies cannot replace them.
+  File/content selections live in the core, while locally filtered
+  help/actions own theirs in the UI. All four share `SearchNavigation`'s
+  explicit input/results focus model and clear result focus on an empty
+  list. A chord that opens a text input is prevented from typing itself.
 
 ### Panels & focus
 - ✓ Goto group: `g e` tree · `g d` diff · `g t` threads · `g m`

@@ -233,9 +233,14 @@ module TextInput = {
     ~autoFocus=false,
     ~onKey: string => unit=_ => (),
     ~preventKeys: array<string>=[],
+    ~inputRef=?,
+    ~onFocus: unit => unit=() => (),
+    ~onKeyEvent: ReactEvent.Keyboard.t => unit=_ => (),
   ) =>
     <input
       className="text-input"
+      ref=?inputRef
+      onFocus={_ => onFocus()}
       autoFocus
       placeholder
       value
@@ -246,6 +251,7 @@ module TextInput = {
           ReactEvent.Keyboard.preventDefault(ev)
         }
         onKey(key)
+        onKeyEvent(ev)
         ReactEvent.Keyboard.stopPropagation(ev)
       }}
     />
@@ -296,4 +302,30 @@ module Markdown = {
     >
       <Render components={a: Link.make}> source </Render>
     </div>
+}
+
+/// A palette's single result-list tab stop; selection is announced through
+/// aria-activedescendant while the list owns focus.
+module SearchResults = {
+  type kind = Files | Palette | Help
+  @react.component
+  let make = (~kind, ~label, ~listRef, ~onKey, ~onFocus, ~activeId: option<string>, ~children) => {
+    let className = switch kind {
+    | Files => "search-hits"
+    | Palette => "palette-results"
+    | Help => "help-results"
+    }
+    <div
+      className
+      role="listbox"
+      ariaLabel=label
+      ariaActivedescendant=?activeId
+      tabIndex={activeId == None ? -1 : 0}
+      ref=listRef
+      onKeyDown=onKey
+      onFocus={_ => onFocus()}
+    >
+      children
+    </div>
+  }
 }
