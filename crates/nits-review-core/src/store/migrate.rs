@@ -58,7 +58,12 @@ fn migrate_1_to_2(txn: &WriteTransaction) -> Result<(), String> {
         for entry in tables.events.iter()? {
             let (seq, bytes) = entry?;
             let mut value: serde_json::Value = serde_json::from_slice(bytes.value())?;
-            value["schema"] = serde_json::to_value(SchemaVersion::new(2))?;
+            let schema = value.get_mut("schema").ok_or_else(|| StoreError::Corrupt {
+                seq: nits_protocol::Seq::new(seq.value()),
+                reason: "stored event envelope is missing its schema".into(),
+            })?;
+            let _: SchemaVersion = serde_json::from_value(schema.clone())?;
+            *schema = serde_json::to_value(SchemaVersion::new(2))?;
             events.push((seq.value(), serde_json::to_vec(&value)?));
         }
         for (seq, bytes) in events {
@@ -93,7 +98,11 @@ fn migrate_3_to_4(txn: &WriteTransaction) -> Result<(), String> {
             *context = serde_json::to_value(nits_protocol::CommentContext::Diff { change })
                 .map_err(|e| e.to_string())?;
         }
-        value["schema"] = serde_json::to_value(SchemaVersion::new(4)).map_err(|e| e.to_string())?;
+        let schema = value
+            .get_mut("schema")
+            .ok_or_else(|| "stored event envelope is missing its schema".to_owned())?;
+        let _: SchemaVersion = serde_json::from_value(schema.clone()).map_err(|e| e.to_string())?;
+        *schema = serde_json::to_value(SchemaVersion::new(4)).map_err(|e| e.to_string())?;
         events.push((
             seq.value(),
             serde_json::to_vec(&value).map_err(|e| e.to_string())?,

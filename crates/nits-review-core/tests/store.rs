@@ -958,3 +958,37 @@ fn legacy_diff_context_migrates_without_reinterpreting_null_contexts() {
         assert!(snapshot.comments[1].context.is_none());
     }
 }
+
+#[test]
+fn malformed_legacy_envelopes_return_migration_errors_without_panicking() {
+    use redb::TableDefinition;
+    for old_schema in [1, 3] {
+        for invalid in [
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!({"schema": "invalid"}),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.redb");
+            {
+                let store = Store::open(&path).unwrap();
+                store
+                    .append(new_event(EventBody::WorkspaceCreated {
+                        workspace: workspace(),
+                    }))
+                    .unwrap();
+            }
+            {
+                let db = redb::Database::open(&path).unwrap();
+                let txn = db.begin_write().unwrap();
+                txn.open_table(TableDefinition::<u64, &[u8]>::new("events"))
+                    .unwrap()
+                    .insert(1, serde_json::to_vec(&invalid).unwrap().as_slice())
+                    .unwrap();
+                txn.commit().unwrap();
+            }
+            stamp_schema(&path, old_schema);
+            assert!(matches!(Store::open(&path), Err(StoreError::Migration(_))));
+        }
+    }
+}
