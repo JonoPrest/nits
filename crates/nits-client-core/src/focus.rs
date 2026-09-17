@@ -621,7 +621,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 | Command::ViewBottom => false,
             };
             // A folded open file contributes no in-file stops.
-            let found = if collapsed_of(view, render) {
+            let found = if open_file_collapsed(core) {
                 None
             } else if forward {
                 rows.iter().find(|r| r.index > row && wanted(r))
@@ -752,13 +752,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             Focus::Diff { row, side } => {
                 let diff = view.diff.as_ref().ok_or(NoTarget::NoOpenFile)?;
                 // On a folded file, enter unfolds (C folds it back).
-                if collapsed_of(
-                    view,
-                    view.review
-                        .as_ref()
-                        .and_then(|o| o.open_file.as_ref().map(|f| &f.render))
-                        .ok_or(NoTarget::NoOpenFile)?,
-                ) {
+                if open_file_collapsed(core) {
                     return Ok(Action::ToggleFileCollapse {
                         file: diff.file.clone(),
                     });

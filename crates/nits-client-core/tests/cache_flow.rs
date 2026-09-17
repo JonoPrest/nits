@@ -2595,6 +2595,78 @@ fn original_motions_ignore_current_folds_and_viewed_state() {
 }
 
 #[test]
+fn original_enter_opens_threads_and_gaps_without_unfolding_current_file() {
+    for current_state in [
+        Action::ToggleFileCollapse {
+            file: file_ref("a.rs"),
+        },
+        Action::MarkViewed {
+            file: file_ref("a.rs"),
+        },
+    ] {
+        let (mut core, change) = historical_diff("a.rs");
+        core.handle(Input::User(current_state)).unwrap();
+        core.handle(Input::User(Action::RunCommand {
+            command: nits_client_core::Command::NextComment,
+        }))
+        .unwrap();
+        assert_eq!(
+            core.view().focus,
+            Focus::Diff {
+                row: 1,
+                side: Side::Head
+            }
+        );
+        // Enter reaches the original row's inline thread, even though today's
+        // file with the same path is folded or marked viewed.
+        core.handle(Input::Key(KeyChord::named(NamedKey::Enter)))
+            .unwrap();
+        assert_eq!(core.view().focus, Focus::Thread { index: 0 });
+        core.handle(Input::User(Action::SetFocus {
+            focus: Focus::Diff {
+                row: 10,
+                side: Side::Head,
+            },
+        }))
+        .unwrap();
+        let effects = core
+            .handle(Input::Key(KeyChord::named(NamedKey::Enter)))
+            .unwrap();
+        let requested = requests(&effects);
+        assert_eq!(requested.len(), 1);
+        assert_eq!(
+            requested[0].1,
+            Request::ChangeRender {
+                repo_id: repo_id(),
+                path: path("a.rs"),
+                change,
+                opts: RenderOpts {
+                    expanded: nits_protocol::Expansions::default().opened(
+                        nits_protocol::Gap::new(1),
+                        nits_protocol::ExpandDir::Both,
+                        nits_client_core::EXPAND_STEP,
+                    ),
+                    ..RenderOpts::default()
+                },
+                first_chunk: ChunkIndex::FIRST,
+            }
+        );
+        assert!(
+            core.view()
+                .diffs
+                .iter()
+                .find(|diff| diff.file.path == path("a.rs"))
+                .unwrap()
+                .collapsed
+        );
+        assert_eq!(
+            core.view().review.as_ref().unwrap().original.as_ref(),
+            Some(&open_render(&core))
+        );
+    }
+}
+
+#[test]
 fn original_expansions_keep_historical_blobs_current_keys_and_logical_cursor() {
     for p in ["a.rs", "removed.rs"] {
         let (mut core, change) = historical_diff(p);
