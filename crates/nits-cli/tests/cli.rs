@@ -353,6 +353,93 @@ fn directory_review_uses_and_reports_the_daemons_detected_base() {
 }
 
 #[test]
+fn headless_json_describes_created_and_reused_directory_reviews() {
+    for flags in [&["--headless"][..], &["--ui", "headless"][..]] {
+        let h = start();
+        let mut previous = None;
+        for outcome in ["Created", "Reused"] {
+            let result = h
+                .nits()
+                .current_dir(h.repo.path())
+                .args(["--json", "."])
+                .args(flags)
+                .assert()
+                .success()
+                .stderr(predicate::str::contains("review: "));
+            // Parse all of stdout: status text or a bare ID would fail here.
+            let actual: serde_json::Value =
+                serde_json::from_slice(&result.get_output().stdout).unwrap();
+            let review_id: nits_protocol::ReviewId =
+                serde_json::from_value(actual["review_id"].clone()).unwrap();
+            let workspaces: Vec<nits_protocol::Workspace> =
+                serde_json::from_str(&h.out(&["--json", "workspace", "list"])).unwrap();
+            assert_eq!(workspaces.len(), 1);
+            let workspace = &workspaces[0];
+            assert_eq!(workspace.repos.len(), 1);
+            let base_tree = h.repo.git(&["rev-parse", "main^{tree}"]).unwrap();
+            let base_commit = h.repo.git(&["rev-parse", "main"]).unwrap();
+            let head_tree = h.repo.git(&["rev-parse", "feature^{tree}"]).unwrap();
+            assert_eq!(
+                actual,
+                serde_json::json!({
+                    "review_id": review_id,
+                    "workspace_id": workspace.id,
+                    "repo_id": workspace.repos[0].id,
+                    "outcome": outcome,
+                    "base": {
+                        "tree": base_tree.trim(),
+                        "source": {"type": "Commit", "oid": base_commit.trim()},
+                    },
+                    "head": {
+                        "tree": head_tree.trim(),
+                        "source": {"type": "WorkingTree", "dirty": [], "branch": "feature"},
+                    },
+                })
+            );
+            if let Some(id) = previous {
+                assert_eq!(review_id, id, "reuse must return the same review");
+            }
+            previous = Some(review_id);
+            let reviews: Vec<nits_protocol::Review> = serde_json::from_str(&h.out(&[
+                "--json",
+                "review",
+                "list",
+                "--workspace",
+                &workspace.id.to_string(),
+            ]))
+            .unwrap();
+            assert_eq!(reviews.len(), 1);
+            assert_eq!(reviews[0].id, review_id);
+        }
+    }
+}
+
+#[test]
+fn headless_text_keeps_bare_ids_for_created_and_reused_reviews() {
+    for flags in [&["--headless"][..], &["--ui", "headless"][..]] {
+        let h = start();
+        let mut previous = None;
+        for _ in 0..2 {
+            let result = h
+                .nits()
+                .current_dir(h.repo.path())
+                .arg(".")
+                .args(flags)
+                .assert()
+                .success()
+                .stderr(predicate::str::contains("review: "));
+            let stdout = std::str::from_utf8(&result.get_output().stdout).unwrap();
+            let id: nits_protocol::ReviewId = stdout.trim().parse().unwrap();
+            assert_eq!(stdout, format!("{id}\n"));
+            if let Some(previous) = previous {
+                assert_eq!(id, previous);
+            }
+            previous = Some(id);
+        }
+    }
+}
+
+#[test]
 fn errors_are_reported_not_panicked() {
     let h = start();
     h.nits()

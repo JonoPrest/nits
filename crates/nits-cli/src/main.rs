@@ -558,6 +558,31 @@ struct Shown<'a> {
     files: &'a [nits_protocol::FileChange],
 }
 
+/// Whether opening a directory allocated a review or found an open one.
+#[derive(Debug, Serialize)]
+enum DirectoryReviewOutcome {
+    Created,
+    Reused,
+}
+
+/// The review selected for the requested directory and its owning entities.
+#[derive(Debug, Serialize)]
+struct DirectoryReview {
+    review_id: ReviewId,
+    workspace_id: WorkspaceId,
+    repo_id: RepoId,
+    outcome: DirectoryReviewOutcome,
+}
+
+/// Headless JSON output includes the daemon's recorded resolution for this repo.
+#[derive(Debug, Serialize)]
+struct HeadlessReview<'a> {
+    #[serde(flatten)]
+    review: &'a DirectoryReview,
+    base: &'a nits_protocol::ResolvedRef,
+    head: &'a nits_protocol::ResolvedRef,
+}
+
 /// Print `v` as JSON when `--json`, else `text`.
 fn emit<T: Serialize>(json: bool, v: &T, text: impl FnOnce() -> String) -> anyhow::Result<()> {
     if json {
@@ -755,7 +780,7 @@ async fn main() -> anyhow::Result<()> {
 /// foreground on a free port and print the URL (deep-linked when a
 /// review was resolved). Without a path: the workspace menu.
 async fn open_ui(cli: &Cli, ctx: &Context, mut ops: Ops) -> anyhow::Result<()> {
-    let review_id = if let Some(path) = &cli.path {
+    let directory = if let Some(path) = &cli.path {
         Some(directory_review(&mut ops, ctx, path).await?)
     } else {
         anyhow::ensure!(
@@ -764,11 +789,11 @@ async fn open_ui(cli: &Cli, ctx: &Context, mut ops: Ops) -> anyhow::Result<()> {
         );
         None
     };
+    let review_id = directory.as_ref().map(|review| review.review_id);
     let ui = if cli.headless { Ui::Headless } else { cli.ui };
-    match (ui, review_id) {
-        (Ui::Headless, Some(id)) => {
-            println!("{id}");
-            return Ok(());
+    match (ui, directory) {
+        (Ui::Headless, Some(review)) => {
+            return print_headless_review(&ops, &review, cli.json).await;
         }
         (Ui::Headless, None) => unreachable!("checked above"),
         (Ui::Desktop, _) => {
@@ -806,6 +831,40 @@ async fn open_ui(cli: &Cli, ctx: &Context, mut ops: Ops) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn print_headless_review(
+    ops: &Ops,
+    review: &DirectoryReview,
+    json: bool,
+) -> anyhow::Result<()> {
+    if !json {
+        println!("{}", review.review_id);
+        return Ok(());
+    }
+    let snapshot = ops.snapshot(review.review_id).await?;
+    let target = snapshot
+        .resolved
+        .as_ref()
+        .and_then(|targets| {
+            targets.iter().find(|target| {
+                target.repo_id == review.repo_id
+                    && matches!(
+                        target.head.source,
+                        nits_protocol::ResolvedSource::WorkingTree { .. }
+                    )
+            })
+        })
+        .context("the daemon has no resolved working-tree target for this directory")?;
+    emit(
+        json,
+        &HeadlessReview {
+            review,
+            base: &target.base,
+            head: &target.head,
+        },
+        || review.review_id.to_string(),
+    )
+}
+
 /// The review for `path`'s repo: locate (attaching workspace+repo on
 /// first use), then find or create the working-tree review. On a remote
 /// context nothing local is consulted: the path goes to the daemon
@@ -815,7 +874,7 @@ async fn directory_review(
     ops: &mut Ops,
     ctx: &Context,
     path: &Path,
-) -> anyhow::Result<nits_protocol::ReviewId> {
+) -> anyhow::Result<DirectoryReview> {
     let local = matches!(ctx, Context::Local { .. });
     let root = if local {
         repo_root(path)
@@ -874,7 +933,7 @@ async fn working_tree_review(
     ops: &mut Ops,
     located: &nitsd::ops::Located,
     dir_name: &str,
-) -> anyhow::Result<ReviewId> {
+) -> anyhow::Result<DirectoryReview> {
     let reviews = ops.reviews(located.workspace.id).await?;
     let existing = reviews.iter().find(|r| {
         r.status == nits_protocol::ReviewStatus::Open
@@ -882,14 +941,14 @@ async fn working_tree_review(
                 .iter()
                 .any(|t| t.repo_id == located.repo.id && t.head == RefSpec::WorkingTree)
     });
-    let review_id = if let Some(r) = existing {
+    let (review_id, outcome) = if let Some(r) = existing {
         let base = r
             .targets
             .iter()
             .find(|target| target.repo_id == located.repo.id && target.head == RefSpec::WorkingTree)
             .map_or_else(|| "unknown".into(), |target| ref_label(&target.base));
         eprintln!("review: {} \"{}\" (base: {base})", r.id, r.title);
-        r.id
+        (r.id, DirectoryReviewOutcome::Reused)
     } else {
         let base = ops.default_base(located.repo.id).await?;
         let base_label = ref_label(&base);
@@ -906,9 +965,14 @@ async fn working_tree_review(
             )
             .await?;
         eprintln!("review: {id} \"{dir_name}\" (created, base: {base_label})");
-        id
+        (id, DirectoryReviewOutcome::Created)
     };
-    Ok(review_id)
+    Ok(DirectoryReview {
+        review_id,
+        workspace_id: located.workspace.id,
+        repo_id: located.repo.id,
+        outcome,
+    })
 }
 
 /// Walk up to the nearest `.git` (a dir in a main checkout, a file in a
