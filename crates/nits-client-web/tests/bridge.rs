@@ -572,3 +572,82 @@ async fn invalid_deferral_input_reports_the_error_without_committing_and_can_be_
     bridge.stop();
     wait_for_sessions(&bridge, 0).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copied_verification_reply_opens_on_another_browser_session_after_resolution() {
+    let h = harness().await;
+    let mut config = nits_client_web::web_config(
+        h.endpoint.clone(),
+        client_info(),
+        author(),
+        IdSeed(84),
+        KvConfig::Memory,
+    );
+    let context = nits_protocol::ReferenceContext::named("review-box").unwrap();
+    config.reference_context = Some(context.clone());
+    let bridge = nits_client_web::serve(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), config)
+        .await
+        .unwrap();
+    let mut a = Browser::connect(bridge.addr()).await;
+    a.dispatch(&Action::OpenReview {
+        review_id: review_a(),
+    })
+    .await;
+    a.until(|model, _| model.open_review == Some(review_a()))
+        .await;
+    a.dispatch(&Action::DraftOpened {
+        anchor: nits_protocol::Anchor::Review,
+    })
+    .await;
+    a.dispatch(&Action::DraftSubmitted {
+        body: "Finding to verify".into(),
+    })
+    .await;
+    a.until(|model, _| model.threads.first().is_some_and(|t| !t.pending))
+        .await;
+    let thread_id = a.model.threads[0].id;
+    a.dispatch(&Action::Reply {
+        thread_id,
+        body: "Verified the fix".into(),
+    })
+    .await;
+    a.until(|model, _| {
+        model
+            .threads
+            .first()
+            .is_some_and(|t| t.comments.len() == 2 && !t.pending)
+    })
+    .await;
+    let comment = &a.model.threads[0].comments[1];
+    let reference = comment.reference.clone().unwrap();
+    let comment_id = comment.id;
+    assert_eq!(reference.context, context);
+    assert_eq!(
+        reference.target,
+        nits_protocol::ReferenceTarget::Comment { comment_id }
+    );
+    a.dispatch(&Action::ResolveThread { thread_id }).await;
+    a.until(|model, _| {
+        model
+            .threads
+            .first()
+            .is_some_and(|t| t.status == nits_client_core::ThreadStatus::Resolved && !t.pending)
+    })
+    .await;
+    let mut b = Browser::connect(bridge.addr()).await;
+    b.dispatch(&Action::OpenReference {
+        reference: reference.to_string(),
+    })
+    .await;
+    b.until(|model, _| model.focused_comment == Some(comment_id))
+        .await;
+    assert_eq!(b.model.open_review, Some(review_a()));
+    assert_eq!(b.model.tab, nits_client_core::Tab::Conversation);
+    assert_eq!(
+        b.model.threads[0].status,
+        nits_client_core::ThreadStatus::Resolved
+    );
+    assert_eq!(b.model.copy_reference, Some(reference));
+    assert_eq!(b.model.last_error, None);
+    bridge.stop();
+}

@@ -16,6 +16,7 @@ pub mod domain;
 pub mod events;
 pub mod ids;
 pub mod invariants;
+pub mod reference;
 pub mod render;
 pub mod rpc;
 #[cfg(feature = "schema")]
@@ -27,6 +28,7 @@ pub use domain::*;
 pub use events::*;
 pub use ids::*;
 pub use invariants::*;
+pub use reference::*;
 pub use render::*;
 pub use rpc::*;
 pub use version::*;

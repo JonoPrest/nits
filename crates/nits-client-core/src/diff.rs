@@ -45,6 +45,7 @@ pub type ThreadStatus = ThreadResolution;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThreadView {
+    pub reference: Option<nits_protocol::ReviewReference>,
     pub id: ThreadId,
     pub root: CommentId,
     pub author: Author,
@@ -72,6 +73,7 @@ pub struct ThreadView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommentView {
+    pub reference: Option<nits_protocol::ReviewReference>,
     pub id: CommentId,
     pub author: Author,
     pub created: Timestamp,
@@ -226,6 +228,7 @@ fn thread_view(snapshot: &ReviewSnapshot, t: &Thread, pending: &PendingIds) -> O
     let (anchor, outdated) = placed_anchor(root)?;
     let in_thread = |id: &CommentId| *id == t.root || t.replies.contains(id);
     Some(ThreadView {
+        reference: None,
         id: t.id,
         root: root.id,
         author: root.author.clone(),
@@ -242,6 +245,7 @@ fn thread_view(snapshot: &ReviewSnapshot, t: &Thread, pending: &PendingIds) -> O
             .filter_map(|id| snapshot.comments.iter().find(|c| c.id == *id))
             .filter(|c| !matches!(c.state, CommentState::Deleted))
             .map(|c| CommentView {
+                reference: None,
                 id: c.id,
                 author: c.author.clone(),
                 created: c.created,

@@ -29,6 +29,9 @@ use nits_protocol::version::*;
 pub enum FixtureError {
     #[error("invalid fixture text: {0}")]
     Invalid(String),
+
+    #[error("invalid reference fixture: {0}")]
+    Reference(#[from] nits_protocol::ReferenceError),
     #[error("invalid fixture value: {0}")]
     Invariant(#[from] InvariantError),
     #[error("line number 0 in fixture")]

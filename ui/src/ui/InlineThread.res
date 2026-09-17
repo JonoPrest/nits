@@ -12,6 +12,7 @@ let make = (
   ~index: int,
   ~composer: React.element,
   ~dispatch: Action.t => unit,
+  ~chrome: array<Hint.t>=[],
 ) => {
   let (focusRef, onKeyDown) = ThreadFocus.use(~focused)
   let flags =
@@ -37,6 +38,9 @@ let make = (
       ->Array.map(c =>
         <div key=c.id className={"inline-comment" ++ (c.pending ? " pending" : "")}>
           <div className="thread-meta">
+            <span onClick={ev => ReactEvent.Mouse.stopPropagation(ev)}>
+              <UI.CopyReference reference=c.reference chrome dispatch />
+            </span>
             <span className="thread-author"> {React.string(Threads.authorName(c.author))} </span>
             <span title={Stepper.absolute(c.created)}>
               {React.string(Stepper.relative(c.created))}
@@ -56,6 +60,7 @@ let make = (
       | c if c != React.null => c
       | _ =>
         <div className="inline-thread-actions" onClick={ev => ReactEvent.Mouse.stopPropagation(ev)}>
+          <UI.CopyReference reference=thread.reference chrome dispatch />
           <UI.Button
             label="Reply (r)"
             kind=Primary

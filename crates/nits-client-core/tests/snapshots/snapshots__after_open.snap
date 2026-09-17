@@ -584,6 +584,7 @@ expression: core.view()
   ],
   "threads": [
     {
+      "reference": null,
       "id": "00000001YH0000000000000001",
       "root": "00000001YH0000000000000001",
       "author": {
@@ -612,6 +613,7 @@ expression: core.view()
       "suggestion": false,
       "comments": [
         {
+          "reference": null,
           "id": "00000001YH0000000000000001",
           "author": {
             "type": "Human",
@@ -626,6 +628,7 @@ expression: core.view()
       "context": null
     },
     {
+      "reference": null,
       "id": "00000001YJ0000000000000002",
       "root": "00000001YJ0000000000000002",
       "author": {
@@ -647,6 +650,7 @@ expression: core.view()
       "suggestion": false,
       "comments": [
         {
+          "reference": null,
           "id": "00000001YJ0000000000000002",
           "author": {
             "type": "Human",
@@ -663,6 +667,7 @@ expression: core.view()
   ],
   "conversation": [
     {
+      "reference": null,
       "id": "00000001YJ0000000000000002",
       "root": "00000001YJ0000000000000002",
       "author": {
@@ -684,6 +689,7 @@ expression: core.view()
       "suggestion": false,
       "comments": [
         {
+          "reference": null,
           "id": "00000001YJ0000000000000002",
           "author": {
             "type": "Human",
@@ -1038,6 +1044,21 @@ expression: core.view()
       "keys": "z b",
       "command": "ViewBottom",
       "label": "row to bottom"
+    },
+    {
+      "keys": "y",
+      "command": "CopyReference",
+      "label": "copy reference"
+    },
+    {
+      "keys": "]",
+      "command": "NextReply",
+      "label": "next reply"
+    },
+    {
+      "keys": "[",
+      "command": "PrevReply",
+      "label": "previous reply"
     },
     {
       "keys": "r",
@@ -1400,6 +1421,8 @@ expression: core.view()
   "last_key": null,
   "help": null,
   "copy_target": "src/lib.rs",
+  "copy_reference": null,
+  "focused_comment": null,
   "connection": {
     "type": "Subscribed"
   },

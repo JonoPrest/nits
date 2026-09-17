@@ -541,3 +541,20 @@ Suspected bottlenecks with a ready solution, deliberately **not** built until a 
 - Rust↔Rust wire encoding beyond JSON.
 - Browser/wasm client, TUI client.
 - Export to GitHub PR review / `.review/` directory.
+
+### Portable reference routing
+
+`nits-protocol::ReviewReference` parses and formats `nits://` references carrying
+one context locator, review ID and Review/Thread/Comment target. Context locators
+name a saved client context, local daemon socket or daemon WebSocket endpoint;
+they never identify an ephemeral HTTP bridge. The CLI resolves the locator through
+the existing context model (explicit overrides win), validates the target using
+`Ops::snapshot`, and serves a browser route. The host supplies its own context
+identity to `ClientCore`; browser input cannot switch the connected daemon.
+
+The client core correlates reference navigation with the latest review request,
+ignores superseded snapshots and streamed pieces, and replays events that arrived
+ahead of a reference snapshot before selecting the exact reply. Copy targets and
+comment selection are core view state; browser shells perform clipboard and DOM
+scroll effects. Reference/view additions use protocol 0.7; persisted events and
+store schema are unchanged.

@@ -230,3 +230,10 @@ Goal: usable desktop app.
   resolved findings and informational conversation.
 - Schema 4 → 5 preserves historical event bodies and rebuilds materialized views;
   protocol 0.9 carries the new disposition and composer purpose.
+
+### Issue #64 — shareable thread/comment references
+
+Typed context-aware references, CLI `reference` / `open`, copy controls in inline
+and Conversation cards, configurable thread `y` and reply `[` / `]`, exact-reply
+landing, and stale-snapshot/event-race coverage. Browser opening is supported;
+desktop OS protocol registration remains future host work.

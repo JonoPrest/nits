@@ -133,6 +133,8 @@ module Item = {
     ~onReply: unit => unit,
     ~dispatch: Action.t => unit,
     ~composer: React.element,
+    ~dispatch: Action.t => unit,
+    ~focusedComment: option<string>,
   ) => {
     let (focusRef, onKeyDown) = ThreadFocus.use(~focused)
     let flags =
@@ -165,7 +167,17 @@ module Item = {
           ? <ul className="thread-comments">
               {thread.comments
               ->Array.map(c =>
-                <li key=c.id className={"thread-comment" ++ (c.pending ? " pending" : "")}>
+                <li
+                  id={"comment-" ++ c.id}
+                  key=c.id
+                  className={"thread-comment" ++
+                  (c.pending ? " pending" : "") ++ (
+                    focusedComment == Some(c.id) ? " reference-target" : ""
+                  )}
+                >
+                  <span onClick={ev => ReactEvent.Mouse.stopPropagation(ev)}>
+                    <UI.CopyReference reference=c.reference chrome dispatch />
+                  </span>
                   <div className="thread-meta">
                     <span className="thread-author"> {React.string(authorName(c.author))} </span>
                     <span title={Stepper.absolute(c.created)}>
@@ -185,6 +197,7 @@ module Item = {
           : <div className="thread-summary"> {React.string(thread.summary)} </div>}
         <Disposition status=thread.status />
         <div onClick={ev => ReactEvent.Mouse.stopPropagation(ev)}>
+          <UI.CopyReference reference=thread.reference chrome dispatch />
           {composer != React.null
             ? composer
             : <UI.Button label="Reply" title=?{Chrome.tip(chrome, Reply)} onClick=onReply />}
@@ -214,6 +227,7 @@ let make = (
   ~chrome: array<Hint.t>=[],
   ~draft: option<Draft.t>=?,
   ~pendingRefresh: bool=false,
+  ~focusedComment: option<string>=?,
 ) => {
   let focusedIndex = switch focus {
   | Thread({index}) => Some(index)
@@ -228,6 +242,8 @@ let make = (
             <Item
               key=t.id
               thread=t
+              dispatch
+              focusedComment
               focused={focusedIndex == Some(indexOffset + i)}
               onSelect={() => {
                 dispatch(SetFocus({focus: Focus.Thread({index: indexOffset + i})}))

@@ -365,6 +365,10 @@ pub struct ViewModel {
     /// during the key or click rather than after a round trip — the core
     /// still owns *which file* that is.
     pub copy_target: Option<RepoPath>,
+    /// Portable reference selected by the core for the clipboard gesture.
+    pub copy_reference: Option<nits_protocol::ReviewReference>,
+    /// Exact reply to highlight and scroll into view in the expanded thread.
+    pub focused_comment: Option<nits_protocol::CommentId>,
     pub connection: ConnectionView,
     /// Last request error the daemon returned; cleared on (re)subscribe.
     pub last_error: Option<RpcError>,

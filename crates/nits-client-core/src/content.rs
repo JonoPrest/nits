@@ -749,8 +749,16 @@ impl ClientCore {
                 repo_id: first.repo_id,
                 path: first.path.clone(),
             };
+            // A reference can land on its thread before the file stream or
+            // cached file list finishes. Loading the default viewport must
+            // preserve that explicit destination and its keyboard context.
+            let thread_focus =
+                matches!(self.view.focus, crate::Focus::Thread { .. }).then_some(self.view.focus);
             if let Ok(more) = self.viewport(file, 0, crate::focus::PAGE_ROWS - 1) {
                 effects.extend(more);
+            }
+            if let Some(focus) = thread_focus {
+                self.view.focus = focus;
             }
         }
     }

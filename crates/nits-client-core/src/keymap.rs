@@ -130,6 +130,10 @@ pub enum Command {
     /// Copy the focused file's repo-relative path to the clipboard (the
     /// shell performs the copy; the core records the intent).
     CopyPath,
+    /// Copy the focused thread or selected reply's portable reference.
+    CopyReference,
+    NextReply,
+    PrevReply,
     /// Collapse the focused tree node's parent dir (neo-tree `C`); on an
     /// open dir, the dir itself. Focus follows.
     CollapseParent,
@@ -663,6 +667,9 @@ impl Keymap {
             b(X::Requests, keys!("G"), C::GoBottom, false),
             b(X::Requests, keys!("enter"), C::Open, true),
             // Thread
+            b(X::Thread, keys!("y"), C::CopyReference, true),
+            b(X::Thread, keys!("]"), C::NextReply, false),
+            b(X::Thread, keys!("["), C::PrevReply, false),
             b(X::Thread, keys!("j"), C::MoveDown, true),
             b(X::Thread, keys!("k"), C::MoveUp, true),
             b(X::Thread, keys!("down"), C::MoveDown, false),
@@ -1085,6 +1092,9 @@ pub fn label(command: Command) -> &'static str {
         Command::ContentSearch => "find in files",
         Command::ActionPalette => "actions",
         Command::CopyPath => "copy path",
+        Command::CopyReference => "copy reference",
+        Command::NextReply => "next reply",
+        Command::PrevReply => "previous reply",
         Command::CollapseParent => "collapse parent",
         Command::CollapseAll => "collapse all",
         Command::ToggleFileCollapse => "fold file",
@@ -1159,6 +1169,9 @@ pub fn modes_of(command: Command) -> &'static [Mode] {
         | Command::ContentSearch
         | Command::ActionPalette
         | Command::CopyPath
+        | Command::CopyReference
+        | Command::NextReply
+        | Command::PrevReply
         | Command::CollapseParent
         | Command::CollapseAll
         | Command::ToggleFileCollapse

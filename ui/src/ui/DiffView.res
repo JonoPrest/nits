@@ -95,7 +95,7 @@ let make = (
   }, [scroll])
   // A viewed file collapses (§4.4); the reader can expand it for this visit.
   let (expanded, setExpanded) = React.useState(() => false)
-  let collapsed = diff.viewed == Viewed && !expanded
+  let collapsed = diff.viewed == Viewed && !expanded && !diff.original
   let key = DiffSeen.fileKey(diff)
   let prevKey = React.useRef("")
   let seen = React.useRef(Dict.make())

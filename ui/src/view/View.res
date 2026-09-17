@@ -341,6 +341,7 @@ module ThreadPlace = {
 module CommentView = {
   @schema
   type t = {
+    reference: @s.null option<string>,
     id: commentId,
     author: Domain.Author.t,
     created: timestamp,
@@ -354,6 +355,7 @@ module ThreadStatus = Domain.ThreadResolution
 module ThreadView = {
   @schema
   type t = {
+    reference: @s.null option<string>,
     id: threadId,
     root: commentId,
     author: Domain.Author.t,
@@ -450,6 +452,9 @@ module Command = {
     | ToggleSidebar
     | Submit
     | CopyPath
+    | CopyReference
+    | NextReply
+    | PrevReply
     | CollapseParent
     | CollapseAll
     | ToggleFileCollapse
@@ -564,6 +569,8 @@ module ViewModel = {
     /// What `y` would copy from where the focus is; the shell copies it
     /// during the gesture that asks for it.
     @as("copy_target") copyTarget: @s.null option<string>,
+    @as("copy_reference") copyReference: @s.null option<string>,
+    @as("focused_comment") focusedComment: @s.null option<string>,
     connection: ConnectionView.t,
     @as("last_error") lastError: @s.null option<Rpc.RpcError.t>,
     workspaces: array<Domain.Workspace.t>,
@@ -610,6 +617,8 @@ module ViewModel = {
     lastKey: None,
     help: None,
     copyTarget: None,
+    copyReference: None,
+    focusedComment: None,
     connection: Disconnected({}),
     lastError: None,
     workspaces: [],
@@ -673,6 +682,8 @@ module ViewPatch = {
         tab: Tab.t,
         scroll: @s.null option<ScrollIntent.t>,
         @as("copy_target") copyTarget: @s.null option<string>,
+        @as("copy_reference") copyReference: @s.null option<string>,
+        @as("focused_comment") focusedComment: @s.null option<string>,
       })
     | @as("Hints")
     Hints({
@@ -717,7 +728,15 @@ module ViewPatch = {
     | CommitStepper({stepper}) => {...model, stepper}
     | RefSelector({refSelector}) => {...model, refSelector}
     | Progress({progress}) => {...model, progress}
-    | Focus({focus, tab, scroll, copyTarget}) => {...model, focus, tab, scroll, copyTarget}
+    | Focus({focus, tab, scroll, copyTarget, copyReference, focusedComment}) => {
+        ...model,
+        focus,
+        tab,
+        scroll,
+        copyTarget,
+        copyReference,
+        focusedComment,
+      }
     | Hints({hints, pending, pendingLabel, mode, leader, chrome, bindings, lastKey}) => {
         ...model,
         hints,

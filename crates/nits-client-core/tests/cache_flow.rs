@@ -2340,7 +2340,9 @@ fn jump_to_original_diff_renders_the_recorded_change_read_only() {
     let mut comment = comment_at(
         1,
         lines_anchor("a.rs", nits_protocol::Side::Head, 4, 2, 2),
-        nits_protocol::CommentState::Live,
+        nits_protocol::CommentState::Outdated {
+            last_good_anchor: lines_anchor("a.rs", nits_protocol::Side::Head, 4, 2, 2),
+        },
     );
     comment.context = Some(nits_protocol::CommentContext::Diff {
         change: old_change.clone(),
@@ -2357,6 +2359,41 @@ fn jump_to_original_diff_renders_the_recorded_change_read_only() {
             change: old_change.clone()
         }),
         "the thread view carries the recorded context"
+    );
+    // Opening a portable link lands on this outdated finding in Conversation.
+    let context = nits_protocol::ReferenceContext::named("review-box").unwrap();
+    core.handle(Input::User(Action::SetReferenceContext {
+        context: context.clone(),
+    }))
+    .unwrap();
+    let reference = nits_protocol::ReviewReference {
+        context,
+        review_id: review_id(),
+        target: nits_protocol::ReferenceTarget::Thread { thread_id },
+    };
+    let snapshot = core.view().review.as_ref().unwrap().snapshot.clone();
+    let effects = core
+        .handle(Input::User(Action::OpenReference {
+            reference: reference.to_string(),
+        }))
+        .unwrap();
+    let request = requests(&effects)[0].0;
+    item(&mut core, request, StreamItem::ReviewSnapshot { snapshot });
+    for (name, chunks) in [("a.rs", 10), ("b.rs", 1)] {
+        item(
+            &mut core,
+            request,
+            StreamItem::Header {
+                header: header(name, 100, chunks),
+            },
+        );
+    }
+    core.handle(Input::Server(ServerMsg::StreamEnd { id: request }))
+        .unwrap();
+    assert_eq!(core.view().tab, nits_client_core::Tab::Conversation);
+    assert_eq!(
+        core.view().focused_comment,
+        Some(core.view().threads[0].root)
     );
     // Jump: the daemon is asked to render the recorded change directly.
     let effects = core
@@ -2380,6 +2417,11 @@ fn jump_to_original_diff_renders_the_recorded_change_read_only() {
         core.view().focus,
         nits_client_core::Focus::Diff { row: 0, .. }
     ));
+    assert_eq!(
+        core.view().tab,
+        nits_client_core::Tab::FilesChanged,
+        "original diff must leave Conversation so the host can show it"
+    );
     // The stream answers with the original render's header and rows.
     let original_header = FileRenderHeader {
         target: RenderTarget::Diff {

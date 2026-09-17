@@ -83,6 +83,8 @@ pub enum ViewPatch {
         /// gesture that asks for it.
         #[serde(default)]
         copy_target: Option<nits_protocol::RepoPath>,
+        copy_reference: Option<nits_protocol::ReviewReference>,
+        focused_comment: Option<nits_protocol::CommentId>,
     },
     Hints {
         hints: Vec<Hint>,
@@ -182,6 +184,8 @@ impl ViewModel {
                 tab: self.tab,
                 scroll: self.scroll,
                 copy_target: self.copy_target.clone(),
+                copy_reference: self.copy_reference.clone(),
+                focused_comment: self.focused_comment,
             },
             ViewSection::Hints => ViewPatch::Hints {
                 hints: self.hints.clone(),
@@ -273,11 +277,15 @@ impl ViewModel {
                 tab,
                 scroll,
                 copy_target,
+                copy_reference,
+                focused_comment,
             } => {
                 self.focus = focus;
                 self.tab = tab;
                 self.scroll = scroll;
                 self.copy_target = copy_target;
+                self.copy_reference = copy_reference;
+                self.focused_comment = focused_comment;
             }
             ViewPatch::Hints {
                 hints,

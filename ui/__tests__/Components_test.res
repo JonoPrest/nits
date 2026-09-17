@@ -2546,3 +2546,177 @@ test("deferral rejection is visible and keeps both inputs available for correcti
   expect(Element.querySelector(container, "[role='alert']"))->toBeNull
   expect(Element.value(reason))->toBe("External follow-up")
 })
+
+describe("Portable thread and reply references", () => {
+  let thread = () => Fixtures.parse(View.ThreadView.schema, "client", "ThreadView", "default")
+  let chrome: array<View.Hint.t> = [{keys: "g y", command: CopyReference, label: "copy reference"}]
+
+  test("both surfaces copy the exact comment and thread with configured tooltips", () => {
+    let thread = thread()
+    let dispatch = fn()
+    let {container, rerender} = render(
+      <InlineThread thread focused=true index=0 composer=React.null dispatch chrome />,
+    )
+    let buttons = Screen.queryAllByText("Copy reference")
+    expect(Array.length(buttons))->toBe(2)
+    FireEvent.click(buttons->Array.getUnsafe(0))
+    expect(dispatch)->toHaveBeenLastCalledWith(
+      Action.CopyReference({
+        reference: (thread.comments->Array.getUnsafe(0)).reference->Option.getExn,
+      }),
+    )
+    expect(
+      Element.getAttribute(buttons->Array.getUnsafe(0), "title")->Nullable.toOption->Option.getExn,
+    )->toContain("g y")
+    FireEvent.click(buttons->Array.getUnsafe(1))
+    expect(dispatch)->toHaveBeenLastCalledWith(
+      Action.CopyReference({reference: thread.reference->Option.getExn}),
+    )
+    let commentId = (thread.comments->Array.getUnsafe(0)).id
+    rerender(
+      <Threads
+        title="Conversation"
+        threads=[{...thread, status: Resolved}]
+        focus={Thread({index: 0})}
+        indexOffset=0
+        dispatch
+        chrome
+        focusedComment=commentId
+      />,
+    )
+    let comments = Element.querySelectorAll(container, ".thread-comments .thread-comment")
+    expect(Array.length(comments))->toBe(1)
+    expect(Element.getAttribute(comments->Array.getUnsafe(0), "id"))->toEqual(
+      Nullable.make("comment-" ++ commentId),
+    )
+    expect(Element.className(comments->Array.getUnsafe(0)))->toContain("reference-target")
+    FireEvent.click(Screen.queryAllByText("Copy reference")->Array.getUnsafe(0))
+    expect(dispatch)->toHaveBeenLastCalledWith(
+      Action.CopyReference({
+        reference: (thread.comments->Array.getUnsafe(0)).reference->Option.getExn,
+      }),
+    )
+  })
+
+  testAsync("the shell copies a configured reference chord during the gesture", async () => {
+    installClipboard("ok")
+    let reference = thread().reference->Option.getExn
+    let base = Fixtures.parse(View.ViewModel.schema, "client", "ViewModel", "default")
+    let model = {
+      ...base,
+      copyReference: Some(reference),
+      focusedComment: None,
+      lastKey: None,
+      bindings: [{keys: "y", command: CopyReference, label: "copy reference"}],
+      tab: Conversation,
+      focus: Thread({index: 0}),
+    }
+    let core: Core.t = {
+      dispatch: _ => (),
+      key: _ => (),
+      subscribe: f => {
+        f(model)
+        () => ()
+      },
+      attach: () => (),
+    }
+    let _ = render(<App.Shell core />)
+    pressKey("y")
+    await flush()
+    expect(copiedPaths())->toEqual([reference])
+  })
+})
+
+%%raw(`
+function referenceQuery(query) {
+  window.history.replaceState(null, "", query || "/")
+}
+`)
+@val external referenceQuery: string => unit = "referenceQuery"
+@val external encodeURIComponent: string => string = "encodeURIComponent"
+
+describe("Reference routes", () => {
+  afterEach(() => referenceQuery("/"))
+  test("opens the portable route once subscribed, ahead of a legacy review parameter", () => {
+    let reference = "nits://context/review-box/review/00000000010000000000000002/comment/00000000030000000000000004"
+    referenceQuery("?review=legacy&reference=" ++ encodeURIComponent(reference))
+    let dispatch = fn()
+    let core: Core.t = {
+      dispatch,
+      key: _ => (),
+      subscribe: listener => {
+        listener({...View.ViewModel.empty, connection: Subscribed({})})
+        () => ()
+      },
+      attach: () => (),
+    }
+    let _ = render(<App.Shell core />)
+    expect(dispatch)->toHaveBeenCalledWith(Action.OpenReference({reference: reference}))
+  })
+  test("preserves review-only links and delegates malformed references to the core", () => {
+    let dispatch = fn()
+    let core: Core.t = {
+      dispatch,
+      key: _ => (),
+      subscribe: listener => {
+        listener({...View.ViewModel.empty, connection: Subscribed({})})
+        () => ()
+      },
+      attach: () => (),
+    }
+    referenceQuery("?review=00000000010000000000000002")
+    let _ = render(<App.Shell core />)
+    expect(dispatch)->toHaveBeenCalledWith(
+      Action.OpenReview({reviewId: "00000000010000000000000002"}),
+    )
+    cleanup()
+    referenceQuery("?reference=" ++ encodeURIComponent("<script>invalid</script>"))
+    let _ = render(<App.Shell core />)
+    expect(dispatch)->toHaveBeenLastCalledWith(
+      Action.OpenReference({reference: "<script>invalid</script>"}),
+    )
+    expect(Element.querySelector(Document.body, "script"))->toBeNull
+  })
+})
+
+test("a linked outdated finding opens a visible original pane instead of the current stack", () => {
+  let base = Fixtures.parse(View.ViewModel.schema, "client", "ViewModel", "default")
+  let diff = Fixtures.parse(View.DiffView.schema, "client", "DiffView", "default")
+  let thread = {...base.threads->Array.getUnsafe(0), outdated: true}
+  let selected = {
+    ...base,
+    tab: View.Tab.Conversation,
+    threads: [thread],
+    focus: View.Focus.Thread({index: 0}),
+    focusedComment: Some(thread.root),
+    draft: None,
+  }
+  let dispatch = fn()
+  let push = ref(_ => ())
+  let core: Core.t = {
+    dispatch,
+    key: _ => (),
+    subscribe: listener => {
+      push := listener
+      listener(selected)
+      () => ()
+    },
+    attach: () => (),
+  }
+  let {container} = render(<App.Shell core />)
+  FireEvent.click(Screen.getByText("Open original diff (enter)"))
+  expect(dispatch)->toHaveBeenCalledWith(Action.OpenOriginalDiff({threadId: thread.id}))
+  act(() =>
+    push.contents({
+      ...selected,
+      tab: FilesChanged,
+      focus: Diff({row: 0, side: Head}),
+      diff: Some({...diff, original: true, viewed: Viewed}),
+    })
+  )
+  expect(Element.querySelector(container, ".original-banner"))->not_->toBeNull
+  expect(Element.querySelector(container, ".diff-scroll"))->not_->toBeNull
+  expect(Element.querySelector(container, ".diff-stack"))->toBeNull
+  expect(Element.querySelector(container, ".diff-collapsed"))->toBeNull
+  expect(Element.querySelector(container, ".diff-scroll.hidden"))->toBeNull
+})

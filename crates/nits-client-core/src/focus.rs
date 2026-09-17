@@ -580,6 +580,9 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 | Command::TabConversation
                 | Command::TabBrowse
                 | Command::CopyPath
+                | Command::CopyReference
+                | Command::NextReply
+                | Command::PrevReply
                 | Command::ToggleSidebar
                 | Command::CollapseParent
                 | Command::CollapseAll
@@ -1106,6 +1109,31 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
         }),
         Command::TabBrowse => Ok(Action::SetTab { tab: Tab::Browse }),
         Command::ToggleSidebar => Ok(Action::ToggleSidebar),
+        Command::CopyReference => {
+            let reference = view.copy_reference.clone().ok_or(nothing())?;
+            Ok(Action::CopyReference { reference })
+        }
+        Command::NextReply | Command::PrevReply => {
+            let Focus::Thread { index } = view.focus else {
+                return Err(nothing());
+            };
+            let thread = view.threads.get(index).ok_or(nothing())?;
+            let current = view
+                .focused_comment
+                .and_then(|id| thread.comments.iter().position(|c| c.id == id))
+                .unwrap_or(0);
+            let next = if command == Command::NextReply {
+                current
+                    .saturating_add(1)
+                    .min(thread.comments.len().saturating_sub(1))
+            } else {
+                current.saturating_sub(1)
+            };
+            let comment = thread.comments.get(next).ok_or(nothing())?;
+            Ok(Action::FocusComment {
+                comment_id: comment.id,
+            })
+        }
         Command::CopyPath => {
             let file = target_file(view, focus).ok_or_else(nothing)?;
             Ok(Action::CopyPath { path: file.path })

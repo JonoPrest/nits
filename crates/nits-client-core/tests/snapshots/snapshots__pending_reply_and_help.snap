@@ -584,6 +584,7 @@ expression: core.view()
   ],
   "threads": [
     {
+      "reference": null,
       "id": "00000001YH0000000000000001",
       "root": "00000001YH0000000000000001",
       "author": {
@@ -612,6 +613,7 @@ expression: core.view()
       "suggestion": false,
       "comments": [
         {
+          "reference": null,
           "id": "00000001YH0000000000000001",
           "author": {
             "type": "Human",
@@ -623,6 +625,7 @@ expression: core.view()
           "pending": false
         },
         {
+          "reference": null,
           "id": "00000004W804WBTS55V6PYZR00",
           "author": {
             "type": "Human",
@@ -637,6 +640,7 @@ expression: core.view()
       "context": null
     },
     {
+      "reference": null,
       "id": "00000001YJ0000000000000002",
       "root": "00000001YJ0000000000000002",
       "author": {
@@ -658,6 +662,7 @@ expression: core.view()
       "suggestion": false,
       "comments": [
         {
+          "reference": null,
           "id": "00000001YJ0000000000000002",
           "author": {
             "type": "Human",
@@ -674,6 +679,7 @@ expression: core.view()
   ],
   "conversation": [
     {
+      "reference": null,
       "id": "00000001YJ0000000000000002",
       "root": "00000001YJ0000000000000002",
       "author": {
@@ -695,6 +701,7 @@ expression: core.view()
       "suggestion": false,
       "comments": [
         {
+          "reference": null,
           "id": "00000001YJ0000000000000002",
           "author": {
             "type": "Human",
@@ -1019,6 +1026,21 @@ expression: core.view()
       "label": "row to bottom"
     },
     {
+      "keys": "y",
+      "command": "CopyReference",
+      "label": "copy reference"
+    },
+    {
+      "keys": "]",
+      "command": "NextReply",
+      "label": "next reply"
+    },
+    {
+      "keys": "[",
+      "command": "PrevReply",
+      "label": "previous reply"
+    },
+    {
       "keys": "r",
       "command": "Reply",
       "label": "reply"
@@ -1235,6 +1257,27 @@ expression: core.view()
       {
         "context": "Thread",
         "entries": [
+          {
+            "keys": "y",
+            "command": "CopyReference",
+            "label": "copy reference",
+            "primary": true,
+            "overridden": false
+          },
+          {
+            "keys": "]",
+            "command": "NextReply",
+            "label": "next reply",
+            "primary": false,
+            "overridden": false
+          },
+          {
+            "keys": "[",
+            "command": "PrevReply",
+            "label": "previous reply",
+            "primary": false,
+            "overridden": false
+          },
           {
             "keys": "j",
             "command": "MoveDown",
@@ -1547,6 +1590,8 @@ expression: core.view()
     "conflicts": []
   },
   "copy_target": null,
+  "copy_reference": null,
+  "focused_comment": null,
   "connection": {
     "type": "Subscribed"
   },
