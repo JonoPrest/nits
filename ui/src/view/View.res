@@ -463,6 +463,9 @@ module Command = {
     | FocusDiff
     | FocusThreads
     | FocusRequests
+    | CheckCurrent
+    | CheckRequested
+    | CheckpointDelta
     | FocusCommits
     | Connect
     | Disconnect
@@ -548,6 +551,8 @@ module ViewModel = {
     threads: array<ThreadView.t>,
     conversation: array<ThreadView.t>,
     requests: array<Domain.ReviewRequest.t>,
+    checkpoints: array<Domain.ReviewerCheckpoint.t>,
+    @as("check_current_ready") checkCurrentReady: bool,
     stepper: @s.null option<CommitStepper.t>,
     focus: Focus.t,
     tab: Tab.t,
@@ -603,6 +608,8 @@ module ViewModel = {
     threads: [],
     conversation: [],
     requests: [],
+    checkpoints: [],
+    checkCurrentReady: false,
     stepper: None,
     focus: ReviewList({index: 0}),
     tab: FilesChanged,
@@ -669,6 +676,8 @@ module ViewPatch = {
     Conversation({
         conversation: array<ThreadView.t>,
         requests: array<Domain.ReviewRequest.t>,
+        checkpoints: array<Domain.ReviewerCheckpoint.t>,
+        @as("check_current_ready") checkCurrentReady: bool,
       })
     | @as("CommitStepper") CommitStepper({stepper: @s.null option<CommitStepper.t>})
     | @as("RefSelector")
@@ -724,7 +733,13 @@ module ViewPatch = {
     | Tree({tree}) => {...model, tree}
     | Diff({diff, diffs, prefs, visual}) => {...model, diff, diffs, prefs, visual}
     | Threads({threads}) => {...model, threads}
-    | Conversation({conversation, requests}) => {...model, conversation, requests}
+    | Conversation({conversation, requests, checkpoints, checkCurrentReady}) => {
+        ...model,
+        conversation,
+        requests,
+        checkpoints,
+        checkCurrentReady,
+      }
     | CommitStepper({stepper}) => {...model, stepper}
     | RefSelector({refSelector}) => {...model, refSelector}
     | Progress({progress}) => {...model, progress}

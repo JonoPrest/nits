@@ -143,6 +143,44 @@ impl fmt::Display for ReviewRequestId {
     }
 }
 
+/// Stable identity of a review checkpoint, assigned by its committed log event.
+/// The store's global event sequence is unique and survives rebuilds and upgrades.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(transparent)]
+pub struct ReviewCheckpointId(Seq);
+
+impl ReviewCheckpointId {
+    #[must_use]
+    pub const fn from_event_seq(seq: Seq) -> Self {
+        Self(seq)
+    }
+
+    #[must_use]
+    pub const fn event_seq(self) -> Seq {
+        self.0
+    }
+}
+
+impl fmt::Display for ReviewCheckpointId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl core::str::FromStr for ReviewRequestId {
+    type Err = core::num::ParseIntError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse().map(|seq| Self::from_event_seq(Seq::new(seq)))
+    }
+}
+impl core::str::FromStr for ReviewCheckpointId {
+    type Err = core::num::ParseIntError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse().map(|seq| Self::from_event_seq(Seq::new(seq)))
+    }
+}
+
 /// Raw 20-byte git object id (SHA-1). Wrapped by the typed OIDs below.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Oid([u8; 20]);

@@ -92,6 +92,14 @@ module EventBody = {
         @as("review_id") reviewId: reviewId,
         agent: string,
         note: string,
+        targets: RequestedTargets.t,
+      })
+    | @as("ReviewChecked")
+    ReviewChecked({
+        @as("review_id") reviewId: reviewId,
+        reviewer: ReviewerIdentity.t,
+        targets: array<ResolvedTarget.t>,
+        @as("in_reply_to") inReplyTo: @s.null option<ReviewRound.t>,
       })
     | @as("SuggestionApplied")
     SuggestionApplied({

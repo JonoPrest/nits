@@ -484,6 +484,7 @@ impl Server {
         })
     }
 
+    #[allow(clippy::too_many_lines)] // Keep the exhaustive query-to-Core mapping together.
     async fn call_query(&self, call: QueryCall) -> Result<Value, ToolError> {
         let ops = self.ops()?;
         match call {
@@ -507,12 +508,32 @@ impl Server {
                 ok(tools::ReviewDetail {
                     context: self.context_identity(),
                     review: snap.review,
-                    resolved: snap.resolved,
+                    resolved: snap.resolved.clone(),
                     files,
                     threads: snap.threads,
                     comments: snap.comments,
+                    latest_checkpoints: nits_protocol::latest_checkpoints(
+                        &snap.checkpoints,
+                        snap.resolved.as_ref(),
+                    ),
+                    checkpoints: snap.checkpoints,
                     requests: snap.requests,
                     seq: snap.seq,
+                })
+            }
+            QueryCall::GetCheckpointDelta(p) => {
+                let (files, targets) = ops
+                    .files_scoped(
+                        p.review_id,
+                        nits_protocol::DiffScope::SinceCheckpoint {
+                            checkpoint_id: p.checkpoint_id,
+                        },
+                    )
+                    .await?;
+                ok(tools::CheckpointDelta {
+                    context: self.context_identity(),
+                    targets,
+                    files,
                 })
             }
             QueryCall::GetDiff(p) => {
@@ -524,7 +545,7 @@ impl Server {
                     ..RenderOpts::default()
                 };
                 let (file, header, chunks) = ops
-                    .diff(p.review_id, p.repo_id, &p.path, render_opts)
+                    .diff_scoped(p.review_id, p.repo_id, &p.path, render_opts, p.scope)
                     .await?;
                 let text = text::render(&header, &chunks);
                 ok(tools::DiffText {
@@ -544,6 +565,11 @@ impl Server {
                     context: self.context_identity(),
                     threads: snap.threads,
                     comments: snap.comments,
+                    latest_checkpoints: nits_protocol::latest_checkpoints(
+                        &snap.checkpoints,
+                        snap.resolved.as_ref(),
+                    ),
+                    checkpoints: snap.checkpoints,
                     requests: snap.requests,
                     seq: snap.seq,
                 })
@@ -704,6 +730,21 @@ impl Server {
                     resolution,
                     seq: event.seq,
                 })
+            }
+            MutatingCall::RecordCheckpoint(p) => {
+                let event = self
+                    .ops_mut()?
+                    .mutate(Mutation::RecordCheckpoint {
+                        review_id: p.review_id,
+                        targets: p.targets,
+                        in_reply_to: p.in_reply_to,
+                    })
+                    .await?;
+                let checkpoint =
+                    nits_protocol::ReviewCheckpoint::from_event(&event).ok_or_else(|| {
+                        ToolError::Invalid("daemon returned an unexpected checkpoint event".into())
+                    })?;
+                ok(checkpoint)
             }
             MutatingCall::RequestReview(p) => {
                 let event = self

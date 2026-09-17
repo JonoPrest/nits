@@ -1895,3 +1895,170 @@ fn references_open_replies_and_resolved_findings_on_the_selected_daemon() {
         .failure()
         .stderr(predicate::str::contains("invalid nits reference"));
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // One CLI session follows explicit targets across two rounds.
+fn request_check_and_delta_are_available_from_cli_with_explicit_revision_selection() {
+    let h = start();
+    let ws = h.out(&["workspace", "add", "rounds"]);
+    let repo = h.out(&["workspace", "attach", &ws, h.repo.path().to_str().unwrap()]);
+    let review = h.out(&[
+        "review",
+        "create",
+        "--workspace",
+        &ws,
+        "--base",
+        "main",
+        "--head",
+        "feature",
+    ]);
+    let requested: serde_json::Value = serde_json::from_str(&h.out(&[
+        "--json",
+        "review",
+        "request",
+        &review,
+        "review-agent",
+        "--note",
+        "Please check this revision",
+    ]))
+    .unwrap();
+    let request_id = requested["seq"].to_string();
+    h.nits()
+        .args(["review", "check", &review])
+        .assert()
+        .failure();
+    h.nits()
+        .args([
+            "review",
+            "check",
+            &review,
+            "--request",
+            &request_id,
+            "--current",
+        ])
+        .assert()
+        .failure();
+    let checked: serde_json::Value = serde_json::from_str(&h.out(&[
+        "--json",
+        "review",
+        "check",
+        &review,
+        "--request",
+        &request_id,
+    ]))
+    .unwrap();
+    assert_eq!(
+        checked["body"]["targets"],
+        requested["body"]["targets"]["targets"]
+    );
+    assert_eq!(
+        checked["body"]["in_reply_to"]["request_id"],
+        requested["seq"]
+    );
+    let checkpoint_id = checked["seq"].to_string();
+    assert_eq!(
+        h.out(&[
+            "--json",
+            "files",
+            &review,
+            "--since-checkpoint",
+            &checkpoint_id
+        ]),
+        "[]"
+    );
+    h.nits()
+        .args(["review", "show", &review])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("checkpoint").and(predicate::str::contains("Current")));
+    h.nits()
+        .args(["review", "set-head", &review, "main", "--repo", &repo])
+        .assert()
+        .success();
+    h.nits()
+        .args(["review", "show", &review])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Changed"));
+    h.nits()
+        .args(["diff", &review, "a.rs", "--request", &request_id])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("-fn a() {}").and(predicate::str::contains("+fn a() { 1; }")),
+        );
+    h.nits()
+        .args([
+            "diff",
+            &review,
+            "a.rs",
+            "--since-checkpoint",
+            &checkpoint_id,
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("-fn a() { 1; }").and(predicate::str::contains("+fn a() {}")),
+        );
+    let current: serde_json::Value = serde_json::from_str(&h.out(&[
+        "--json",
+        "review",
+        "check",
+        &review,
+        "--current",
+        "--answer-request",
+        &request_id,
+    ]))
+    .unwrap();
+    assert_eq!(
+        current["body"]["in_reply_to"]["request_id"],
+        requested["seq"]
+    );
+}
+
+#[test]
+fn branch_request_capture_and_current_checkpoint_delta_use_the_same_new_head() {
+    let h = start();
+    let ws = h.out(&["workspace", "add", "rounds"]);
+    h.out(&["workspace", "attach", &ws, h.repo.path().to_str().unwrap()]);
+    let review = h.out(&[
+        "review",
+        "create",
+        "--workspace",
+        &ws,
+        "--base",
+        "main",
+        "--head",
+        "feature",
+    ]);
+    h.repo.write_file("a.rs", b"fn a() { 2; }\n").unwrap();
+    h.repo.git(&["commit", "-qam", "H2"]).unwrap();
+    let h2 = h.repo.git(&["rev-parse", "feature"]).unwrap();
+    let request: serde_json::Value =
+        serde_json::from_str(&h.out(&["--json", "review", "request", &review, "review-agent"]))
+            .unwrap();
+    let checked: serde_json::Value = serde_json::from_str(&h.out(&[
+        "--json",
+        "review",
+        "check",
+        &review,
+        "--request",
+        &request["seq"].to_string(),
+    ]))
+    .unwrap();
+    let state: serde_json::Value =
+        serde_json::from_str(&h.out(&["--json", "review", "show", &review])).unwrap();
+    assert_eq!(state["resolved"][0]["head"]["source"]["oid"], h2.trim());
+    assert_eq!(state["resolved"], request["body"]["targets"]["targets"]);
+    assert_eq!(state["latest_checkpoints"][0]["freshness"], "Current");
+    assert_eq!(
+        h.out(&[
+            "--json",
+            "files",
+            &review,
+            "--since-checkpoint",
+            &checked["seq"].to_string()
+        ]),
+        "[]"
+    );
+}

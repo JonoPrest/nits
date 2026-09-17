@@ -60,6 +60,7 @@ module Button = {
     ~ariaControls=?,
     ~expanded: option<bool>=?,
     ~hasPopup=?,
+    ~disabled=false,
   ) => {
     let className = switch kind {
     | Primary => "btn btn-primary"
@@ -74,6 +75,7 @@ module Button = {
     <button
       type_="button"
       tabIndex=?{navigation == Chord ? Some(-1) : None}
+      disabled
       className
       ?title
       ?ariaLabel
@@ -83,7 +85,7 @@ module Button = {
       onClick={_ => onClick()}
       onKeyDown={ev => {
         let key = ReactEvent.Keyboard.key(ev)
-        if key == "Enter" || key == " " {
+        if !disabled && (key == "Enter" || key == " ") {
           ReactEvent.Keyboard.preventDefault(ev)
           ReactEvent.Keyboard.stopPropagation(ev)
           onClick()

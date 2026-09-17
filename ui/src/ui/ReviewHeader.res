@@ -116,7 +116,7 @@ let make = (
       let many = Array.length(review.targets) > 1
       let allish = switch scope {
       | All(_) | Committed(_) => true
-      | Commit(_) | Worktree(_) => false
+      | Commit(_) | Worktree(_) | Requested(_) | SinceCheckpoint(_) => false
       }
       let conn = switch connection {
       | Disconnected(_) => "disconnected"
@@ -127,6 +127,22 @@ let make = (
       <header className="review-header" ariaLabel="review targets">
         <div className="review-header-main">
           <span className="review-header-title"> {React.string(review.title)} </span>
+          {switch scope {
+          | Requested({requestId}) =>
+            <UI.Badge text={"Requested revision · request " ++ Float.toString(requestId)} />
+          | SinceCheckpoint({checkpointId}) =>
+            <UI.Badge text={"Changes since checkpoint " ++ Float.toString(checkpointId)} />
+          | All(_) | Committed(_) | Commit(_) | Worktree(_) => React.null
+          }}
+          {switch scope {
+          | Requested(_) | SinceCheckpoint(_) =>
+            <UI.Button
+              label="Back to all changes"
+              title=?{Chrome.tip(chrome, ScopeAll)}
+              onClick={() => dispatch(RunCommand({command: ScopeAll}))}
+            />
+          | All(_) | Committed(_) | Commit(_) | Worktree(_) => React.null
+          }}
           {review.targets
           ->Array.map(t =>
             <span key=t.repoId className="review-header-target">
@@ -161,6 +177,10 @@ let make = (
               />
             : React.null}
         </div>
+        {switch scope {
+        | Requested(_) | SinceCheckpoint(_) => <ReviewCheckpoints.Targets targets=resolvedTargets />
+        | All(_) | Committed(_) | Commit(_) | Worktree(_) => React.null
+        }}
         <div className="review-header-toggles">
           <div className="diff-settings" ref={ReactDOM.Ref.domRef(settingsRef)}>
             <UI.Button

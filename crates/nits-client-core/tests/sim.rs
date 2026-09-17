@@ -42,6 +42,7 @@ fn snapshot() -> ReviewSnapshot {
         viewed: Vec::new(),
         requests: Vec::new(),
         seq: Seq::new(1),
+        checkpoints: Vec::new(),
     }
 }
 
@@ -640,7 +641,20 @@ fn browse_comment_arrives_remotely_inline_and_converges() {
         RenderChunk, RenderContent, RenderOpts, RenderTarget, RepoPath, Row, Side, TreeEntry,
         TreeEntryKind, TreeOid, TreeSnapshot,
     };
-    let snapshot = snapshot();
+    let mut snapshot = snapshot();
+    let revision = nits_protocol::ResolvedRef {
+        tree: TreeOid::from_bytes([1; 20]),
+        source: nits_protocol::ResolvedSource::WorkingTree {
+            dirty: Vec::new(),
+            branch: None,
+        },
+    };
+    let h1 = NonEmpty::singleton(nits_protocol::ResolvedTarget {
+        repo_id: snapshot.review.targets.first().repo_id,
+        base: revision.clone(),
+        head: revision,
+    });
+    snapshot.resolved = Some(h1.clone());
     let repo_id = snapshot.review.targets.iter().next().unwrap().repo_id;
     let path = RepoPath::new("unchanged.rs").unwrap();
     let oid = BlobOid::from_bytes([11; 20]);
@@ -816,10 +830,55 @@ fn browse_comment_arrives_remotely_inline_and_converges() {
             thread_id
         );
     }
+    // Revision checks coexist with the unfixed Browse thread and its durable invitation.
+    for peer in [A, B] {
+        sim.act(
+            peer,
+            Action::SetFocus {
+                focus: nits_client_core::Focus::ReviewRequest { index: 0 },
+            },
+        )
+        .unwrap();
+        sim.act(peer, Action::CheckRequested).unwrap();
+    }
+    assert!(sim.deliver_up(B));
+    assert!(sim.deliver_up(A));
+    let mut h2 = h1.clone();
+    h2.iter_mut().next().unwrap().head.tree = TreeOid::from_bytes([2; 20]);
+    sim.advance_targets(h2);
+    sim.disconnect(B);
+    sim.settle();
+    sim.reconnect(B).unwrap();
+    sim.settle();
+    sim.converged().unwrap();
+    for peer in [A, B] {
+        let view = sim.client(peer).view();
+        assert_eq!(view.checkpoints.len(), 2);
+        assert!(
+            view.checkpoints
+                .iter()
+                .all(|check| check.freshness == nits_protocol::CheckpointFreshness::Changed)
+        );
+        assert!(matches!(
+            view.threads[0].status,
+            ThreadResolution::Deferred { .. }
+        ));
+        assert_eq!(
+            view.threads[0].context,
+            Some(CommentContext::Browse {
+                reference: reference.clone()
+            })
+        );
+        assert!(view.review.as_ref().unwrap().snapshot.viewed.is_empty());
+    }
     let mut fresh = Sim::new(sim.daemon_snapshot().clone(), vec![human("later reviewer")]);
     fresh.connect_and_open(A).unwrap();
     assert_eq!(fresh.client(A).view().threads, sim.client(A).view().threads);
     assert_eq!(fresh.client(A).view().requests, requests);
+    assert_eq!(
+        fresh.client(A).view().checkpoints,
+        sim.client(A).view().checkpoints
+    );
     sim.act(B, Action::UnresolveThread { thread_id }).unwrap();
     sim.settle();
     sim.converged().unwrap();
@@ -892,4 +951,74 @@ fn competing_deferrals_preserve_winning_metadata_and_reopen_converges() {
         sim.daemon_snapshot().threads[0].resolution,
         ThreadResolution::Resolved { .. }
     ));
+}
+
+#[test]
+fn two_reviewers_keep_requested_h1_when_current_h2_arrives_before_checks() {
+    use nits_protocol::{
+        CheckpointFreshness, Oid, ResolvedRef, ResolvedSource, ResolvedTarget, TreeOid,
+    };
+    let mut initial = snapshot();
+    let reference = |n| ResolvedRef {
+        tree: TreeOid::new(Oid::from_bytes([n; 20])),
+        source: ResolvedSource::WorkingTree {
+            dirty: Vec::new(),
+            branch: Some("feature".into()),
+        },
+    };
+    let h1 = NonEmpty::singleton(ResolvedTarget {
+        repo_id: initial.review.targets.first().repo_id,
+        base: reference(1),
+        head: reference(2),
+    });
+    initial.resolved = Some(h1.clone());
+    let mut sim = Sim::new(initial, vec![human("ada"), human("bob")]);
+    sim.connect_and_open(A).unwrap();
+    sim.connect_and_open(B).unwrap();
+    sim.request_review(human("ada"), "bob".into(), "Check H1".into());
+    sim.settle();
+    let mut h2 = h1.clone();
+    h2.iter_mut().next().unwrap().head = reference(3);
+    sim.advance_targets(h2);
+    sim.settle();
+    for peer in [A, B] {
+        sim.act(
+            peer,
+            Action::SetFocus {
+                focus: nits_client_core::Focus::ReviewRequest { index: 0 },
+            },
+        )
+        .unwrap();
+        sim.act(peer, Action::CheckRequested).unwrap();
+    }
+    assert!(sim.deliver_up(B));
+    assert!(sim.deliver_up(A));
+    sim.disconnect(B);
+    sim.settle();
+    sim.reconnect(B).unwrap();
+    sim.settle();
+    sim.converged().unwrap();
+    for peer in [A, B] {
+        let view = sim.client(peer).view();
+        assert_eq!(view.checkpoints.len(), 2);
+        assert!(
+            view.checkpoints
+                .iter()
+                .all(|c| c.freshness == CheckpointFreshness::Changed && c.checkpoint.targets == h1)
+        );
+        assert!(view.review.as_ref().unwrap().snapshot.viewed.is_empty());
+        assert!(view.threads.is_empty());
+    }
+    sim.act(A, Action::CheckCurrent).unwrap();
+    sim.settle();
+    sim.converged().unwrap();
+    assert_eq!(
+        sim.client(B)
+            .view()
+            .checkpoints
+            .iter()
+            .filter(|c| c.freshness == CheckpointFreshness::Current)
+            .count(),
+        1
+    );
 }

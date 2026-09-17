@@ -54,9 +54,13 @@ pub enum ToolCall {
     ))]
     ListReviews(ListReviews),
     #[strum_discriminants(strum(
-        message = "A review with its resolved targets, changed files, threads, comments and durable review requests. Requests include identity, requester, recipient, note and creation time; no historical replay is required."
+        message = "A review with resolved targets, files, threads, comments, captured requests, checkpoint history and latest_checkpoints per stable reviewer identity with Current/Changed/Unknown freshness. Requests retain immutable target identities; legacy requested targets are explicitly Unknown. No historical replay is required."
     ))]
     GetReview(ByReview),
+    #[strum_discriminants(strum(
+        message = "List immutable checked-head to current-head delta targets and files across all review repos. Original review base and conversation stay unchanged. Use get_diff scope SinceCheckpoint to inspect each file."
+    ))]
+    GetCheckpointDelta(GetCheckpointDelta),
     #[strum_discriminants(strum(
         message = "Ensure an open review for a checkout, attaching it on first use. Path is interpreted on the daemon's machine (absolute paths are recommended). Default head is `WorkingTree`; omitted base preserves a matching open review or uses the detected base. Explicit refs must match to reuse a review; use `update_review_target` to change an existing review while keeping threads."
     ))]
@@ -102,9 +106,13 @@ pub enum ToolCall {
     ))]
     Defer(Defer),
     #[strum_discriminants(strum(
-        message = "Ask a named agent to review. Subscribers with scope `AwaitingAgent` for that name are notified. Use the recipient's `get_session_identity` `author.name` unchanged as `agent`."
+        message = "Capture and retain the current resolved repository/base/head identities, then ask a named agent to review. Select a different head explicitly with update_review_target before requesting it; note text never selects revisions. Subscribers with scope `AwaitingAgent` for that name are notified. Use the recipient's `get_session_identity` `author.name` unchanged as `agent`."
     ))]
     RequestReview(RequestReview),
+    #[strum_discriminants(strum(
+        message = "Record exactly which captured revisions were checked, with optional request/checkpoint linkage. Does not approve, resolve findings, or mark human files viewed. Stable reviewer grouping uses agent name across sessions; full provenance is retained."
+    ))]
+    RecordCheckpoint(RecordCheckpoint),
     #[strum_discriminants(strum(
         message = "Long-poll for events. Returns events matching the scope after `since_seq`, waiting up to `timeout_ms` for at least one. Pass the returned `last_seq` back as `since_seq` to continue. Mutation results also return a `seq`: use it as `since_seq` for later events, or use an earlier cursor to include the mutation's full event. `review_id`, `workspace_id`, and `awaiting_agent` are mutually exclusive: provide at most one non-null scope filter, or omit all for every event. Cursors are scoped to the returned context.name. After use_context, since_context is required with since_seq; mismatched contexts are rejected."
     ))]
@@ -125,6 +133,7 @@ pub enum QueryCall {
     ListWorkspaces,
     ListReviews(ListReviews),
     GetReview(ByReview),
+    GetCheckpointDelta(GetCheckpointDelta),
     GetDiff(GetDiff),
     GetFile(GetFile),
     ListComments(ByReview),
@@ -144,6 +153,7 @@ pub enum MutatingCall {
     Resolve(Resolve),
     Defer(Defer),
     RequestReview(RequestReview),
+    RecordCheckpoint(RecordCheckpoint),
 }
 
 /// Session-local operations, separate from daemon queries and event writes.
@@ -193,6 +203,7 @@ impl ToolCall {
             ToolCall::ListWorkspaces(NoArgs {}) => Call::Query(QueryCall::ListWorkspaces),
             ToolCall::ListReviews(p) => Call::Query(QueryCall::ListReviews(p)),
             ToolCall::GetReview(p) => Call::Query(QueryCall::GetReview(p)),
+            ToolCall::GetCheckpointDelta(p) => Call::Query(QueryCall::GetCheckpointDelta(p)),
             ToolCall::GetDiff(p) => Call::Query(QueryCall::GetDiff(p)),
             ToolCall::GetFile(p) => Call::Query(QueryCall::GetFile(p)),
             ToolCall::ListComments(p) => Call::Query(QueryCall::ListComments(p)),
@@ -209,6 +220,7 @@ impl ToolCall {
             ToolCall::Defer(p) => Call::Mutating(MutatingCall::Defer(p)),
             ToolCall::Resolve(p) => Call::Mutating(MutatingCall::Resolve(p)),
             ToolCall::RequestReview(p) => Call::Mutating(MutatingCall::RequestReview(p)),
+            ToolCall::RecordCheckpoint(p) => Call::Mutating(MutatingCall::RecordCheckpoint(p)),
             ToolCall::GetSessionIdentity(GetSessionIdentity {}) => {
                 Call::Session(SessionCall::GetIdentity)
             }
@@ -243,6 +255,14 @@ impl ToolName {
             ToolName::ListWorkspaces => (schema_for!(NoArgs), schema_for!(Workspaces)),
             ToolName::ListReviews => (schema_for!(ListReviews), schema_for!(Reviews)),
             ToolName::GetReview => (schema_for!(ByReview), schema_for!(ReviewDetail)),
+            ToolName::GetCheckpointDelta => (
+                schema_for!(GetCheckpointDelta),
+                schema_for!(CheckpointDelta),
+            ),
+            ToolName::RecordCheckpoint => (
+                schema_for!(RecordCheckpoint),
+                schema_for!(nits_protocol::ReviewCheckpoint),
+            ),
             ToolName::EnsureDirectoryReview => (
                 schema_for!(EnsureDirectoryReview),
                 schema_for!(nits_protocol::DirectoryReview),
@@ -475,6 +495,8 @@ pub struct GetDiff {
     pub ignore_whitespace: bool,
     /// Lines of context around each hunk; default 3.
     pub context_lines: Option<u32>,
+    #[serde(default)]
+    pub scope: nits_protocol::DiffScope,
 }
 
 /// Contents of a file at the review's base or head, with absolute line numbers.
@@ -625,7 +647,10 @@ fn yes() -> bool {
     true
 }
 
-/// Ask a named agent to review. Subscribers with scope `AwaitingAgent` for
+/// Capture and retain the current resolved repository/base/head identities, then
+/// ask a named agent to review. Select another head with `update_review_target`
+/// before requesting it; note text never selects revisions.
+/// Subscribers with scope `AwaitingAgent` for
 /// that name are notified. Use the recipient's `get_session_identity` `author.name`
 /// unchanged as `agent`.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -771,6 +796,8 @@ pub struct ReviewDetail {
     pub threads: Vec<Thread>,
     pub comments: Vec<Comment>,
     pub requests: Vec<nits_protocol::ReviewRequest>,
+    pub checkpoints: Vec<nits_protocol::ReviewCheckpoint>,
+    pub latest_checkpoints: Vec<nits_protocol::ReviewerCheckpoint>,
     /// Log position this state reflects.
     pub seq: Seq,
 }
@@ -856,6 +883,8 @@ pub struct Comments {
     pub threads: Vec<Thread>,
     pub comments: Vec<Comment>,
     pub requests: Vec<nits_protocol::ReviewRequest>,
+    pub checkpoints: Vec<nits_protocol::ReviewCheckpoint>,
+    pub latest_checkpoints: Vec<nits_protocol::ReviewerCheckpoint>,
     pub seq: Seq,
 }
 
@@ -881,6 +910,28 @@ pub struct Events {
     pub events: Vec<Event>,
     /// Pass back as `since_seq`.
     pub last_seq: Seq,
+}
+
+/// Record the exact captured targets inspected; `get_review` returns these on requests
+/// and checkpoints. Never substitute today's current target for an earlier request.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordCheckpoint {
+    pub review_id: ReviewId,
+    pub targets: NonEmpty<ResolvedTarget>,
+    pub in_reply_to: Option<nits_protocol::ReviewRound>,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GetCheckpointDelta {
+    pub review_id: ReviewId,
+    pub checkpoint_id: nits_protocol::ReviewCheckpointId,
+}
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CheckpointDelta {
+    pub context: ContextIdentity,
+    pub targets: NonEmpty<ResolvedTarget>,
+    pub files: Vec<FileChange>,
 }
 
 #[cfg(test)]
@@ -1012,7 +1063,9 @@ mod tests {
                 ToolName::Defer => Some(&["review_id", "thread_id", "seq"]),
                 ToolName::Resolve => Some(&["review_id", "thread_id", "resolution", "seq"]),
                 ToolName::RequestReview => Some(&["request_id", "review_id", "agent", "seq"]),
-                ToolName::ListContexts
+                ToolName::GetCheckpointDelta
+                | ToolName::RecordCheckpoint
+                | ToolName::ListContexts
                 | ToolName::UseContext
                 | ToolName::ListWorkspaces
                 | ToolName::ListReviews

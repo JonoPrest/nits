@@ -74,7 +74,7 @@ let make = (
   let selected = switch scope {
   | Commit({repoId, oid}) if repoId == stepper.repoId =>
     stepper.commits->Array.find(commit => commit.oid == oid)
-  | All(_) | Committed(_) | Commit(_) | Worktree(_) => None
+  | All(_) | Committed(_) | Commit(_) | Worktree(_) | Requested(_) | SinceCheckpoint(_) => None
   }
   <UI.Panel title="Commits">
     <ol role="list">
@@ -88,6 +88,7 @@ let make = (
         | (AllChanges, Commit(_) | Worktree(_))
         | (CommitRow(_), All(_) | Committed(_) | Worktree(_))
         | (WorkingTree, All(_) | Committed(_) | Commit(_)) => false
+        | (AllChanges | CommitRow(_) | WorkingTree, Requested(_) | SinceCheckpoint(_)) => false
         }
         let choice = switch row {
         | AllChanges => Action.ScopeChoice.All({})

@@ -667,6 +667,207 @@ fn working_tree_snapshot_reflects_unstaged_edits_untracked_and_deletes() {
 }
 
 #[test]
+fn working_tree_snapshot_rechecks_racy_index_entries_without_changing_real_index() {
+    let t = RepoBuilder::new()
+        .commit("one", files!["value.py" => "value = 1\n"])
+        .build()
+        .unwrap();
+    // A fixed mtime recreates a same-timestamp edit without waiting for a clock
+    // boundary. Ignore ctime because the fixture cannot restore filesystem ctime.
+    t.git(&["config", "core.trustctime", "false"]).unwrap();
+    let timestamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let file = t.write_file("value.py", b"value = 2\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(timestamp)
+        .unwrap();
+    t.git(&["add", "value.py"]).unwrap();
+    let index = t.path().join(".git/index");
+    std::fs::File::options()
+        .write(true)
+        .open(&index)
+        .unwrap()
+        .set_modified(timestamp)
+        .unwrap();
+    let original_index = std::fs::read(&index).unwrap();
+    let original_mtime = std::fs::metadata(&index).unwrap().modified().unwrap();
+
+    // The cached size and mtime still match, but Git must hash the file because
+    // its mtime is at least as recent as the original index's mtime.
+    t.write_file("value.py", b"value = 4\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(timestamp)
+        .unwrap();
+    let repo = Repo::open(t.path()).unwrap();
+    let current = repo.resolve(&RefSpec::WorkingTree).unwrap();
+    let snapshot = repo.tree_snapshot(RepoId::nil(), current.tree).unwrap();
+    let TreeEntryKind::File { oid, .. } = snapshot.entries[0].kind else {
+        panic!("expected value.py file");
+    };
+    assert_eq!(repo.blob(oid).unwrap(), b"value = 4\n");
+    let ResolvedSource::WorkingTree { dirty, .. } = current.source else {
+        panic!("expected working tree");
+    };
+    assert_eq!(
+        dirty
+            .iter()
+            .map(nits_protocol::RepoPath::as_str)
+            .collect::<Vec<_>>(),
+        vec!["value.py"]
+    );
+    assert_eq!(
+        repo.resolve(&RefSpec::WorkingTree).unwrap().tree,
+        current.tree
+    );
+    assert_eq!(std::fs::read(&index).unwrap(), original_index);
+    assert_eq!(
+        std::fs::metadata(&index).unwrap().modified().unwrap(),
+        original_mtime
+    );
+    assert_eq!(t.git(&["show", ":value.py"]).unwrap(), "value = 2");
+}
+
+#[test]
+fn working_tree_snapshot_without_index_supports_empty_and_untracked_unborn_repo() {
+    let t = RepoBuilder::new().build().unwrap();
+    let repo = Repo::open(t.path()).unwrap();
+    let index = t.path().join(".git/index");
+    assert!(!index.exists());
+
+    let empty = repo.resolve(&RefSpec::WorkingTree).unwrap();
+    assert!(
+        repo.tree_snapshot(RepoId::nil(), empty.tree)
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    assert_eq!(
+        empty.source,
+        ResolvedSource::WorkingTree {
+            dirty: vec![],
+            branch: Some("main".into())
+        }
+    );
+
+    t.write_file(".gitignore", b"ignored.txt\n").unwrap();
+    t.write_file("new.txt", b"untracked\n").unwrap();
+    t.write_file("ignored.txt", b"excluded\n").unwrap();
+    let current = repo.resolve(&RefSpec::WorkingTree).unwrap();
+    let snapshot = repo.tree_snapshot(RepoId::nil(), current.tree).unwrap();
+    let paths: Vec<_> = snapshot
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+    assert_eq!(paths, vec![".gitignore", "new.txt"]);
+    let TreeEntryKind::File { oid, .. } = snapshot.entries[1].kind else {
+        panic!("expected new.txt file");
+    };
+    assert_eq!(repo.blob(oid).unwrap(), b"untracked\n");
+    let ResolvedSource::WorkingTree { dirty, .. } = current.source else {
+        panic!("expected working tree");
+    };
+    assert_eq!(
+        dirty
+            .iter()
+            .map(nits_protocol::RepoPath::as_str)
+            .collect::<Vec<_>>(),
+        paths
+    );
+    assert_eq!(
+        repo.resolve(&RefSpec::WorkingTree).unwrap().tree,
+        current.tree
+    );
+    assert!(!index.exists());
+    assert_no_snapshot_indexes(&t);
+}
+
+#[test]
+fn working_tree_snapshot_without_index_reflects_committed_repo_edits() {
+    let t = RepoBuilder::new()
+        .commit("one", files!["a.txt" => "old\n", "deleted.txt" => "gone\n", ".gitignore" => "ignored.txt\n"])
+        .write(files!["a.txt" => "current\n", "new.txt" => "untracked\n", "ignored.txt" => "excluded\n"])
+        .remove(&["deleted.txt"])
+        .build()
+        .unwrap();
+    let index = t.path().join(".git/index");
+    std::fs::remove_file(&index).unwrap();
+    let repo = Repo::open(t.path()).unwrap();
+    let current = repo.resolve(&RefSpec::WorkingTree).unwrap();
+    let snapshot = repo.tree_snapshot(RepoId::nil(), current.tree).unwrap();
+    let paths: Vec<_> = snapshot
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+    assert_eq!(paths, vec![".gitignore", "a.txt", "new.txt"]);
+    let TreeEntryKind::File { oid, .. } = snapshot.entries[1].kind else {
+        panic!("expected a.txt file");
+    };
+    assert_eq!(repo.blob(oid).unwrap(), b"current\n");
+    let ResolvedSource::WorkingTree { dirty, .. } = current.source else {
+        panic!("expected working tree");
+    };
+    assert_eq!(
+        dirty
+            .iter()
+            .map(nits_protocol::RepoPath::as_str)
+            .collect::<Vec<_>>(),
+        vec!["a.txt", "deleted.txt", "new.txt"]
+    );
+    assert_eq!(
+        repo.resolve(&RefSpec::WorkingTree).unwrap().tree,
+        current.tree
+    );
+    assert!(!index.exists());
+    assert_no_snapshot_indexes(&t);
+}
+
+#[test]
+fn working_tree_snapshot_without_index_cleans_up_after_git_failure() {
+    let t = RepoBuilder::new()
+        .write(files![".gitattributes" => "a.txt filter=snapshot-test\n", "a.txt" => "content\n"])
+        .build()
+        .unwrap();
+    t.git(&[
+        "config",
+        "filter.snapshot-test.clean",
+        "git nits-no-such-clean-filter",
+    ])
+    .unwrap();
+    t.git(&["config", "filter.snapshot-test.required", "true"])
+        .unwrap();
+    let repo = Repo::open(t.path()).unwrap();
+    let error = repo.resolve(&RefSpec::WorkingTree).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("clean filter 'snapshot-test' failed"),
+        "{error}"
+    );
+    assert!(!t.path().join(".git/index").exists());
+    assert_no_snapshot_indexes(&t);
+}
+
+fn assert_no_snapshot_indexes(t: &TestRepo) {
+    let artifacts: Vec<_> = std::fs::read_dir(t.path().join(".git"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().starts_with("nits-index-"))
+        .collect();
+    assert!(
+        artifacts.is_empty(),
+        "snapshot index artifacts remain: {artifacts:?}"
+    );
+    assert!(!t.path().join(".git/index.lock").exists());
+}
+
+#[test]
 fn tree_delta_between_snapshots() {
     let t = RepoBuilder::new()
         .commit("one", files!["a.txt" => "a\n", "b.txt" => "b\n"])

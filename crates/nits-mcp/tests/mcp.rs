@@ -335,6 +335,7 @@ async fn tools_list_is_json_rpc_conformant() {
             "list_workspaces",
             "list_reviews",
             "get_review",
+            "get_checkpoint_delta",
             "ensure_directory_review",
             "update_review_target",
             "create_review",
@@ -348,6 +349,7 @@ async fn tools_list_is_json_rpc_conformant() {
             "resolve",
             "defer",
             "request_review",
+            "record_checkpoint",
             "subscribe_events",
             "get_session_identity",
             "set_session_identity",
@@ -1825,6 +1827,23 @@ async fn context_switch_is_atomic_preserves_identity_and_isolates_events() {
     assert_eq!(event_b["author"], identity["author"]);
     assert_eq!(event_b["client_seq"], 1);
     assert_ne!(event_b["client_id"], committed(&a, &on_a)["client_id"]);
+    let checked = call(
+        &mut s,
+        "record_checkpoint",
+        json!({
+            "review_id": review_id, "targets": review["resolved"]
+        }),
+    )
+    .await;
+    let delta = call(
+        &mut s,
+        "get_checkpoint_delta",
+        json!({
+            "review_id": review_id, "checkpoint_id": checked["id"]
+        }),
+    )
+    .await;
+    assert_eq!(delta["context"], context_b);
     let polled = call(
         &mut s,
         "subscribe_events",
@@ -2275,4 +2294,52 @@ async fn deferred_followup_is_discoverable_to_fresh_clients_and_can_be_reopened(
         .unwrap();
     assert_eq!(reopened["resolution"]["type"], "Open");
     assert_eq!(reopened["replies"], json!([reply["comment_id"]]));
+}
+
+#[tokio::test]
+async fn checkpoints_capture_h1_check_after_h2_and_inspect_delta_with_fresh_identity() {
+    let h = start();
+    let c = human(&h).await;
+    let (ws, rid) = seed(&h, &c).await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    let created = call(&mut s, "create_review", json!({"workspace_id": ws, "title": "rounds", "targets": [{"repo_id": rid, "base": {"type": "Branch", "name": "main"}, "head": {"type": "WorkingTree"}}]})).await;
+    let review_id = created["review_id"].clone();
+    let requested = call(
+        &mut s,
+        "request_review",
+        json!({"review_id": review_id, "agent": "review-agent", "note": "H1"}),
+    )
+    .await;
+    let before = call(&mut s, "get_review", json!({"review_id": review_id})).await;
+    let h1 = before["requests"][0]["targets"]["targets"].clone();
+    h.repo.write_file("round.txt", b"H2\n").unwrap();
+    c.request(Request::ResolveTargets {
+        review_id: serde_json::from_value(review_id.clone()).unwrap(),
+    })
+    .await
+    .unwrap();
+    let checked = call(&mut s, "record_checkpoint", json!({"review_id": review_id, "targets": h1, "in_reply_to": {"type": "Request", "request_id": requested["request_id"]}})).await;
+    assert_eq!(checked["targets"], h1);
+    let mut restarted = server_with_session(&h, "restarted-session");
+    init(&mut restarted).await;
+    let after = call(
+        &mut restarted,
+        "get_review",
+        json!({"review_id": review_id}),
+    )
+    .await;
+    assert_eq!(after["latest_checkpoints"][0]["freshness"], "Changed");
+    assert_eq!(after["review"], before["review"]);
+    assert_eq!(after["threads"], before["threads"]);
+    let delta = call(
+        &mut restarted,
+        "get_checkpoint_delta",
+        json!({"review_id": review_id, "checkpoint_id": checked["id"]}),
+    )
+    .await;
+    assert_eq!(delta["files"][0]["path"], "round.txt");
+    assert_eq!(delta["context"], after["context"]);
+    let diff = call(&mut restarted, "get_diff", json!({"review_id": review_id, "path": "round.txt", "scope": {"type": "SinceCheckpoint", "checkpoint_id": checked["id"]}})).await;
+    assert!(diff["text"].as_str().unwrap().contains("H2"));
 }

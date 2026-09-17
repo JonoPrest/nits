@@ -107,6 +107,7 @@ fn snapshot(base: u8, head: u8) -> ReviewSnapshot {
         viewed: Vec::new(),
         requests: Vec::new(),
         seq: Seq::new(1),
+        checkpoints: Vec::new(),
     }
 }
 
@@ -544,6 +545,7 @@ fn streamed_open_fills_and_pins_the_cache_and_renders_once_at_end() {
             ViewSection::Focus,
             ViewSection::Diff,
             ViewSection::Tree,
+            ViewSection::Conversation, // current-check availability
             ViewSection::Hints,
         ]
     );
@@ -812,7 +814,7 @@ fn viewport_before_header_streams_the_file_and_cancels_past_the_radius() {
             id: files_id,
             response: Response::Files {
                 files: vec![change("a.rs")],
-                resolved: Vec::new(),
+                resolved: resolved(1, 3).into_iter().collect(),
             },
         }))
         .unwrap();
@@ -959,7 +961,7 @@ fn disk_tier_load_before_send_and_dedupes_concurrent_misses() {
             id: files_id,
             response: Response::Files {
                 files: vec![change("a.rs")],
-                resolved: Vec::new(),
+                resolved: resolved(1, 2).into_iter().collect(),
             },
         }))
         .unwrap();
@@ -1044,7 +1046,7 @@ fn eviction_respects_both_budgets_and_pins_survive() {
             id: files_id,
             response: Response::Files {
                 files: vec![change("a.rs")],
-                resolved: Vec::new(),
+                resolved: resolved(1, 2).into_iter().collect(),
             },
         }))
         .unwrap();
@@ -1170,7 +1172,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
                 id: files_id.unwrap(),
                 response: Response::Files {
                     files: vec![change("a.rs")],
-                    resolved: Vec::new(),
+                    resolved: resolved(1, 2).into_iter().collect(),
                 },
             }))
             .unwrap();
@@ -1229,7 +1231,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
             id: files_id,
             response: Response::Files {
                 files: vec![change("a.rs")],
-                resolved: Vec::new(),
+                resolved: resolved(1, 2).into_iter().collect(),
             },
         }))
         .unwrap();
@@ -1641,7 +1643,7 @@ fn prefs_are_loaded_once_on_connect_persisted_on_change_and_re_key_renders() {
             id: reqs[0].0,
             response: Response::Files {
                 files: vec![change("a.rs")],
-                resolved: Vec::new(),
+                resolved: resolved(1, 2).into_iter().collect(),
             },
         }))
         .unwrap();
@@ -2084,6 +2086,7 @@ fn commit_stepper_lists_and_steps() {
             ViewSection::Diff,
             ViewSection::Tree,
             ViewSection::Progress,
+            ViewSection::Conversation,
             ViewSection::Hints,
         ]
     );
@@ -3983,6 +3986,7 @@ fn portable_reply_link_preserves_deferred_browse_source_and_inflight_review_requ
                 review_id: review_id(),
                 agent: "review-agent".into(),
                 note: "Check this retained source".into(),
+                targets: nits_protocol::RequestedTargets::Unknown,
             },
         )))
         .unwrap();

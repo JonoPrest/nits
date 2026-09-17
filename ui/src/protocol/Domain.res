@@ -216,6 +216,11 @@ module DiffScope = {
     | @as("Committed") Committed({})
     | @as("Commit") Commit({@as("repo_id") repoId: repoId, oid: commitOid})
     | @as("Worktree") Worktree({@as("repo_id") repoId: repoId})
+    | @as("Requested") Requested({@as("request_id") requestId: reviewRequestId})
+    | @as("SinceCheckpoint")
+    SinceCheckpoint({
+        @as("checkpoint_id") checkpointId: reviewCheckpointId,
+      })
   @@warning("+27")
 }
 
@@ -358,6 +363,43 @@ module TreeDelta = {
   }
 }
 
+module RequestedTargets = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t =
+    | @as("Unknown") UnknownTargets({})
+    | @as("Captured") Captured({targets: array<ResolvedTarget.t>})
+  @@warning("+27")
+}
+module ReviewerIdentity = {
+  @schema @tag("type")
+  type t = Human({name: string, machine: string}) | Agent({name: string})
+}
+module ReviewRound = {
+  @schema @tag("type")
+  type t =
+    | Request({@as("request_id") requestId: reviewRequestId})
+    | Checkpoint({@as("checkpoint_id") checkpointId: reviewCheckpointId})
+}
+module ReviewCheckpoint = {
+  @schema
+  type t = {
+    id: reviewCheckpointId,
+    @as("review_id") reviewId: reviewId,
+    reviewer: ReviewerIdentity.t,
+    author: Author.t,
+    created: timestamp,
+    targets: array<ResolvedTarget.t>,
+    @as("in_reply_to") inReplyTo: @s.null option<ReviewRound.t>,
+  }
+}
+module CheckpointFreshness = {
+  @schema type t = Current | Changed | @as("Unknown") UnknownCurrent
+}
+module ReviewerCheckpoint = {
+  @schema type t = {checkpoint: ReviewCheckpoint.t, freshness: CheckpointFreshness.t}
+}
+
 module ReviewRequest = {
   @schema
   type t = {
@@ -365,6 +407,7 @@ module ReviewRequest = {
     @as("review_id") reviewId: reviewId,
     requester: Author.t,
     recipient: string,
+    targets: RequestedTargets.t,
     note: string,
     created: timestamp,
   }
@@ -379,6 +422,7 @@ module ReviewSnapshot = {
     comments: array<Comment.t>,
     viewed: array<ViewedMark.t>,
     requests: array<ReviewRequest.t>,
+    checkpoints: array<ReviewCheckpoint.t>,
     seq: seq,
   }
 }

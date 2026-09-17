@@ -201,15 +201,24 @@ impl Ops {
     }
 
     pub async fn files(&self, review_id: ReviewId) -> Result<Vec<FileChange>, OpsError> {
+        self.files_scoped(review_id, DiffScope::All)
+            .await
+            .map(|(files, _)| files)
+    }
+
+    pub async fn files_scoped(
+        &self,
+        review_id: ReviewId,
+        scope: DiffScope,
+    ) -> Result<(Vec<FileChange>, NonEmpty<nits_protocol::ResolvedTarget>), OpsError> {
         match self
             .client
-            .request(Request::ListFiles {
-                review_id,
-                scope: DiffScope::All,
-            })
+            .request(Request::ListFiles { review_id, scope })
             .await?
         {
-            Response::Files { files, .. } => Ok(files),
+            Response::Files { files, resolved } => {
+                Ok((files, NonEmpty::new(resolved).map_err(|_| OpsError::Shape)?))
+            }
             _ => Err(OpsError::Shape),
         }
     }
@@ -319,10 +328,33 @@ impl Ops {
         path: &str,
         opts: RenderOpts,
     ) -> Result<(FileChange, FileRenderHeader, Vec<RenderChunk>), OpsError> {
-        let file = self.file(review_id, repo_id, path).await?;
+        self.diff_scoped(review_id, repo_id, path, opts, DiffScope::All)
+            .await
+    }
+
+    pub async fn diff_scoped(
+        &self,
+        review_id: ReviewId,
+        repo_id: Option<RepoId>,
+        path: &str,
+        opts: RenderOpts,
+        scope: DiffScope,
+    ) -> Result<(FileChange, FileRenderHeader, Vec<RenderChunk>), OpsError> {
+        let (files, _) = self.files_scoped(review_id, scope).await?;
+        let mut matching = files.into_iter().filter(|file| {
+            file.path.as_str() == path && repo_id.is_none_or(|id| id == file.repo_id)
+        });
+        let file = matching
+            .next()
+            .ok_or_else(|| OpsError::Invalid(format!("{path} is not changed in this scope")))?;
+        if matching.next().is_some() {
+            return Err(OpsError::Invalid(
+                "path is ambiguous; specify repo_id".into(),
+            ));
+        }
         let (header, chunks) = self
             .render(Request::FileRender {
-                scope: DiffScope::All,
+                scope,
                 review_id,
                 repo_id: file.repo_id,
                 path: file.path.clone(),

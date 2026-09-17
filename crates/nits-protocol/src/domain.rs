@@ -20,6 +20,7 @@ pub struct ReviewRequest {
     pub review_id: ReviewId,
     pub requester: Author,
     pub recipient: String,
+    pub targets: RequestedTargets,
     pub note: String,
     pub created: Timestamp,
 }
@@ -32,6 +33,7 @@ impl ReviewRequest {
             review_id,
             agent,
             note,
+            targets,
         } = &event.body
         {
             Some(Self {
@@ -39,6 +41,7 @@ impl ReviewRequest {
                 review_id: *review_id,
                 requester: event.author.clone(),
                 recipient: agent.clone(),
+                targets: targets.clone(),
                 note: note.clone(),
                 created: event.ts,
             })
@@ -158,8 +161,7 @@ pub struct RefCandidate {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedRef {
-    /// Real tree OID for commits; a synthetic id over hashed working files
-    /// for the working tree.
+    /// Real git tree OID, including immutable working-tree snapshots.
     pub tree: TreeOid,
     pub source: ResolvedSource,
 }
@@ -690,10 +692,21 @@ pub enum DiffScope {
     Committed,
     /// One commit against its first parent, in one repo; the review's
     /// other targets drop out of the file list.
-    Commit { repo_id: RepoId, oid: CommitOid },
+    Commit {
+        repo_id: RepoId,
+        oid: CommitOid,
+    },
     /// The working tree against the checked-out commit — the final
     /// by-commit step — in one repo.
-    Worktree { repo_id: RepoId },
+    Worktree {
+        repo_id: RepoId,
+    },
+    Requested {
+        request_id: crate::ReviewRequestId,
+    },
+    SinceCheckpoint {
+        checkpoint_id: crate::ReviewCheckpointId,
+    },
 }
 
 /// How a file differs between base and head. Carries exactly the blobs that
@@ -819,6 +832,159 @@ pub struct TreeDelta {
     pub added: Vec<TreeEntry>,
     pub removed: Vec<RepoPath>,
     pub changed: Vec<TreeEntry>,
+}
+
+/// Historical requests before revision capture retain explicitly unknown provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumDiscriminants)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "type", deny_unknown_fields)]
+#[strum_discriminants(name(RequestedTargetsKind), derive(EnumIter, Hash))]
+pub enum RequestedTargets {
+    Unknown,
+    Captured { targets: NonEmpty<ResolvedTarget> },
+}
+
+/// Stable reviewer identity across restarts. Full session provenance remains on the checkpoint.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, EnumDiscriminants,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "type", deny_unknown_fields)]
+#[strum_discriminants(name(ReviewerIdentityKind), derive(EnumIter, Hash))]
+pub enum ReviewerIdentity {
+    Human { name: String, machine: String },
+    Agent { name: String },
+}
+impl ReviewerIdentity {
+    #[must_use]
+    pub fn from_author(author: &Author) -> Option<Self> {
+        match author {
+            Author::Human { name, machine } => Some(Self::Human {
+                name: name.clone(),
+                machine: machine.clone(),
+            }),
+            Author::Agent { name, .. } => Some(Self::Agent { name: name.clone() }),
+            Author::Daemon { .. } => None,
+        }
+    }
+}
+
+/// The durable round this check answers; both identities belong to this review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumDiscriminants)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "type", deny_unknown_fields)]
+#[strum_discriminants(name(ReviewRoundKind), derive(EnumIter, Hash))]
+pub enum ReviewRound {
+    Request {
+        request_id: crate::ReviewRequestId,
+    },
+    Checkpoint {
+        checkpoint_id: crate::ReviewCheckpointId,
+    },
+}
+
+/// An attributed record of exactly what was checked. This conveys no approval or resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ReviewCheckpoint {
+    pub id: crate::ReviewCheckpointId,
+    pub review_id: ReviewId,
+    pub reviewer: ReviewerIdentity,
+    pub author: Author,
+    pub created: Timestamp,
+    pub targets: NonEmpty<ResolvedTarget>,
+    pub in_reply_to: Option<ReviewRound>,
+}
+impl ReviewCheckpoint {
+    #[must_use]
+    pub fn from_event(event: &crate::Event) -> Option<Self> {
+        if let crate::EventBody::ReviewChecked {
+            review_id,
+            reviewer,
+            targets,
+            in_reply_to,
+        } = &event.body
+        {
+            Some(Self {
+                id: crate::ReviewCheckpointId::from_event_seq(event.seq),
+                review_id: *review_id,
+                reviewer: reviewer.clone(),
+                author: event.author.clone(),
+                created: event.ts,
+                targets: targets.clone(),
+                in_reply_to: *in_reply_to,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum CheckpointFreshness {
+    Current,
+    Changed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ReviewerCheckpoint {
+    pub checkpoint: ReviewCheckpoint,
+    pub freshness: CheckpointFreshness,
+}
+
+/// Latest committed check per stable reviewer, compared with the current resolved identities.
+#[must_use]
+pub fn latest_checkpoints(
+    checkpoints: &[ReviewCheckpoint],
+    current: Option<&NonEmpty<ResolvedTarget>>,
+) -> Vec<ReviewerCheckpoint> {
+    let mut latest = std::collections::BTreeMap::new();
+    for checkpoint in checkpoints {
+        let entry = latest
+            .entry(checkpoint.reviewer.clone())
+            .or_insert(checkpoint);
+        if checkpoint.id > entry.id {
+            *entry = checkpoint;
+        }
+    }
+    latest
+        .into_values()
+        .map(|checkpoint| ReviewerCheckpoint {
+            checkpoint: checkpoint.clone(),
+            freshness: match current {
+                None => CheckpointFreshness::Unknown,
+                Some(current) if same_targets(&checkpoint.targets, current) => {
+                    CheckpointFreshness::Current
+                }
+                Some(_) => CheckpointFreshness::Changed,
+            },
+        })
+        .collect()
+}
+
+/// Compare repository and revision identities, ignoring incidental working-tree dirty-path metadata.
+#[must_use]
+pub fn same_targets(a: &NonEmpty<ResolvedTarget>, b: &NonEmpty<ResolvedTarget>) -> bool {
+    fn same_ref(a: &ResolvedRef, b: &ResolvedRef) -> bool {
+        a.tree == b.tree
+            && match (&a.source, &b.source) {
+                (ResolvedSource::Commit { oid: a }, ResolvedSource::Commit { oid: b }) => a == b,
+                (ResolvedSource::WorkingTree { .. }, ResolvedSource::WorkingTree { .. }) => true,
+                (ResolvedSource::Commit { .. }, ResolvedSource::WorkingTree { .. })
+                | (ResolvedSource::WorkingTree { .. }, ResolvedSource::Commit { .. }) => false,
+            }
+    }
+    a.len() == b.len()
+        && a.iter().all(|a| {
+            b.iter().any(|b| {
+                a.repo_id == b.repo_id && same_ref(&a.base, &b.base) && same_ref(&a.head, &b.head)
+            })
+        })
 }
 
 #[cfg(test)]

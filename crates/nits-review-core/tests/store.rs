@@ -716,6 +716,7 @@ fn schema_two_requests_survive_upgrade_reopen_and_rebuild() {
                     review_id: review_id(1),
                     agent: "review-agent".into(),
                     note: note.into(),
+                    targets: nits_protocol::RequestedTargets::Unknown,
                 }))
                 .unwrap();
         }
@@ -745,6 +746,7 @@ fn schema_two_requests_survive_upgrade_reopen_and_rebuild() {
                     let mut json: serde_json::Value =
                         serde_json::from_slice(bytes.value()).unwrap();
                     json["schema"] = serde_json::json!(2);
+                    strip_legacy_request_targets(&mut json);
                     (seq.value(), serde_json::to_vec(&json).unwrap())
                 })
                 .collect();
@@ -780,7 +782,7 @@ fn schema_two_requests_survive_upgrade_reopen_and_rebuild() {
 }
 
 #[test]
-fn snapshot_requests_and_cursor_share_one_read_transaction() {
+fn snapshot_requests_checkpoints_and_cursor_share_one_read_transaction() {
     let (_dir, store) = open_temp();
     let store = Arc::new(store);
     store
@@ -796,12 +798,36 @@ fn snapshot_requests_and_cursor_share_one_read_transaction() {
     let writer_barrier = Arc::clone(&barrier);
     let handle = std::thread::spawn(move || {
         writer_barrier.wait();
+        let revision = nits_protocol::ResolvedRef {
+            tree: nits_protocol::TreeOid::from_bytes([1; 20]),
+            source: nits_protocol::ResolvedSource::Commit {
+                oid: nits_protocol::CommitOid::from_bytes([2; 20]),
+            },
+        };
+        let targets = NonEmpty::singleton(nits_protocol::ResolvedTarget {
+            repo_id: repo_id(),
+            base: revision.clone(),
+            head: revision,
+        });
         for n in 0..100 {
-            writer
+            let requested = writer
                 .append(new_event(EventBody::ReviewRequested {
                     review_id: review_id(1),
                     agent: "review-agent".into(),
                     note: format!("Request {n}"),
+                    targets: nits_protocol::RequestedTargets::Captured {
+                        targets: targets.clone(),
+                    },
+                }))
+                .unwrap();
+            writer
+                .append(new_event(EventBody::ReviewChecked {
+                    review_id: review_id(1),
+                    reviewer: nits_protocol::ReviewerIdentity::from_author(&human()).unwrap(),
+                    targets: targets.clone(),
+                    in_reply_to: Some(nits_protocol::ReviewRound::Request {
+                        request_id: nits_protocol::ReviewRequestId::from_event_seq(requested.seq),
+                    }),
                 }))
                 .unwrap();
         }
@@ -809,16 +835,28 @@ fn snapshot_requests_and_cursor_share_one_read_transaction() {
     barrier.wait();
     for _ in 0..150 {
         let snapshot = store.review_snapshot(review_id(1)).unwrap().unwrap();
-        // Only requests follow the first two events. A cursor can never cover
-        // a request missing from its snapshot, even while the writer appends.
+        // Requests and checks follow the first two events. The cursor must
+        // cover exactly the materialized records despite concurrent appends.
         assert_eq!(
-            u64::try_from(snapshot.requests.len()).unwrap(),
+            u64::try_from(snapshot.requests.len() + snapshot.checkpoints.len()).unwrap(),
             snapshot.seq.get() - 2
         );
         for (offset, request) in snapshot.requests.iter().enumerate() {
             assert_eq!(
                 request.id.event_seq().get(),
-                u64::try_from(offset).unwrap() + 3
+                u64::try_from(offset).unwrap() * 2 + 3
+            );
+        }
+        for (offset, checkpoint) in snapshot.checkpoints.iter().enumerate() {
+            assert_eq!(
+                checkpoint.id.event_seq().get(),
+                u64::try_from(offset).unwrap() * 2 + 4
+            );
+            assert_eq!(
+                checkpoint.in_reply_to,
+                Some(nits_protocol::ReviewRound::Request {
+                    request_id: snapshot.requests[offset].id,
+                })
             );
         }
     }
@@ -839,7 +877,7 @@ fn snapshot_requests_and_cursor_share_one_read_transaction() {
 fn legacy_diff_context_migrates_without_reinterpreting_null_contexts() {
     use nits_protocol::ThreadResolution;
     use redb::{ReadableTable, TableDefinition};
-    for old_schema in 1..=3 {
+    for old_schema in 0..=3 {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let (expected, views, snapshot) = {
@@ -886,6 +924,7 @@ fn legacy_diff_context_migrates_without_reinterpreting_null_contexts() {
                     review_id: review_id(1),
                     agent: "review-agent".into(),
                     note: "Please check the retained discussion".into(),
+                    targets: nits_protocol::RequestedTargets::Unknown,
                 }))
                 .unwrap();
             (
@@ -917,6 +956,7 @@ fn legacy_diff_context_migrates_without_reinterpreting_null_contexts() {
                         let mut value: serde_json::Value =
                             serde_json::from_slice(value.value()).unwrap();
                         value["schema"] = old_schema.into();
+                        strip_legacy_request_targets(&mut value);
                         if let Some(context) = value.pointer_mut("/event/body/comment/context")
                             && !context.is_null()
                         {
@@ -962,7 +1002,7 @@ fn legacy_diff_context_migrates_without_reinterpreting_null_contexts() {
 #[test]
 fn malformed_legacy_envelopes_return_migration_errors_without_panicking() {
     use redb::TableDefinition;
-    for old_schema in [1, 3] {
+    for old_schema in [0, 1, 2, 3, 4, 5] {
         for invalid in [
             serde_json::json!([]),
             serde_json::json!({}),
@@ -1028,6 +1068,7 @@ fn schema_four_history_migrates_then_deferrals_survive_rebuild_and_restart() {
                 review_id: review_id(1),
                 agent: "review-agent".into(),
                 note: "Inspect the retained Browse finding".into(),
+                targets: nits_protocol::RequestedTargets::Unknown,
             }))
             .unwrap();
         (
@@ -1051,6 +1092,7 @@ fn schema_four_history_migrates_then_deferrals_survive_rebuild_and_restart() {
                     let mut json: serde_json::Value =
                         serde_json::from_slice(bytes.value()).unwrap();
                     json["schema"] = serde_json::json!(4);
+                    strip_legacy_request_targets(&mut json);
                     (seq.value(), serde_json::to_vec(&json).unwrap())
                 })
                 .collect();
@@ -1136,5 +1178,174 @@ fn schema_four_history_migrates_then_deferrals_survive_rebuild_and_restart() {
         let (_, bytes) = entry.unwrap();
         let json: serde_json::Value = serde_json::from_slice(bytes.value()).unwrap();
         assert_eq!(json["schema"], serde_json::json!(SchemaVersion::CURRENT));
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Actual legacy histories, upgrade and new checkpoints share one lifecycle.
+fn every_old_schema_migrates_raw_requests_with_unknown_targets_without_invention() {
+    use redb::ReadableTable;
+    for (schema, unstamped) in [
+        (0, false),
+        (0, true),
+        (1, false),
+        (2, false),
+        (3, false),
+        (4, false),
+        (5, false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.redb");
+        let expected = {
+            let store = Store::open(&path).unwrap();
+            store
+                .append(new_event(EventBody::WorkspaceCreated {
+                    workspace: workspace(),
+                }))
+                .unwrap();
+            store
+                .append(new_event(EventBody::ReviewCreated { review: review(1) }))
+                .unwrap();
+            // Browse and deferred dispositions only exist in their genuine schemas.
+            if schema >= 4 {
+                let mut finding = comment(1, 1, 1, 1);
+                finding.context = Some(nits_protocol::CommentContext::Browse {
+                    reference: RefSpec::Tag {
+                        name: "retained".into(),
+                    },
+                });
+                store
+                    .append(new_event(EventBody::CommentCreated { comment: finding }))
+                    .unwrap();
+            }
+            if schema >= 5 {
+                store
+                    .append(new_event(EventBody::ThreadDeferred {
+                        review_id: review_id(1),
+                        thread_id: thread_of(comment_id(1)),
+                        reason: "Existing external follow-up".parse().unwrap(),
+                        tracking_url: Some("https://example.com/issues/66".parse().unwrap()),
+                    }))
+                    .unwrap();
+            }
+            store
+                .append(new_event(EventBody::ReviewRequested {
+                    review_id: review_id(1),
+                    agent: "review-agent".into(),
+                    note: "Legacy revision in prose".into(),
+                    targets: nits_protocol::RequestedTargets::Unknown,
+                }))
+                .unwrap();
+            store.review_snapshot(review_id(1)).unwrap().unwrap()
+        };
+        {
+            let db = redb::Database::open(&path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                let mut log = txn
+                    .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
+                    .unwrap();
+                let rows = log
+                    .iter()
+                    .unwrap()
+                    .map(|row| {
+                        let (key, bytes) = row.unwrap();
+                        let mut raw: serde_json::Value =
+                            serde_json::from_slice(bytes.value()).unwrap();
+                        raw["schema"] = serde_json::json!(schema);
+                        if raw["event"]["body"]["type"] == "ReviewRequested" {
+                            raw["event"]["body"]
+                                .as_object_mut()
+                                .unwrap()
+                                .remove("targets");
+                        }
+                        (key.value(), serde_json::to_vec(&raw).unwrap())
+                    })
+                    .collect::<Vec<_>>();
+                for (key, bytes) in rows {
+                    log.insert(key, bytes.as_slice()).unwrap();
+                }
+            }
+            txn.commit().unwrap();
+        }
+        stamp_schema(&path, schema);
+        if unstamped {
+            let db = redb::Database::open(&path).unwrap();
+            let txn = db.begin_write().unwrap();
+            txn.open_table(redb::TableDefinition::<&str, u64>::new("meta"))
+                .unwrap()
+                .remove("schema_version")
+                .unwrap();
+            txn.commit().unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+            expected,
+            "starting schema {schema}"
+        );
+        let before_events = store.events_after(None).unwrap();
+        let target = nits_protocol::ResolvedRef {
+            tree: nits_protocol::TreeOid::from_bytes([1; 20]),
+            source: nits_protocol::ResolvedSource::WorkingTree {
+                dirty: Vec::new(),
+                branch: None,
+            },
+        };
+        store
+            .append(new_event(EventBody::ReviewChecked {
+                review_id: review_id(1),
+                reviewer: nits_protocol::ReviewerIdentity::Human {
+                    name: "ada".into(),
+                    machine: "laptop".into(),
+                },
+                targets: NonEmpty::singleton(nits_protocol::ResolvedTarget {
+                    repo_id: review(1).targets.first().repo_id,
+                    base: target.clone(),
+                    head: target,
+                }),
+                in_reply_to: Some(nits_protocol::ReviewRound::Request {
+                    request_id: expected.requests[0].id,
+                }),
+            }))
+            .unwrap();
+        let checked = store.review_snapshot(review_id(1)).unwrap().unwrap();
+        assert_eq!(checked.requests, expected.requests);
+        assert_eq!(checked.comments, expected.comments);
+        assert_eq!(checked.threads, expected.threads);
+        store.rebuild_views().unwrap();
+        assert_eq!(
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+            checked
+        );
+        drop(store);
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(
+            reopened.review_snapshot(review_id(1)).unwrap().unwrap(),
+            checked
+        );
+        assert_eq!(
+            &reopened.events_after(None).unwrap()[..before_events.len()],
+            before_events
+        );
+        if schema >= 4 {
+            let link = nits_protocol::ReviewReference {
+                context: nits_protocol::ReferenceContext::named("review-box").unwrap(),
+                review_id: review_id(1),
+                target: nits_protocol::ReferenceTarget::Thread {
+                    thread_id: thread_of(comment_id(1)),
+                },
+            };
+            assert_eq!(link.resolve(&checked).unwrap(), Some(comment_id(1)));
+        }
+    }
+}
+
+fn strip_legacy_request_targets(value: &mut serde_json::Value) {
+    if value["event"]["body"]["type"] == "ReviewRequested" {
+        value["event"]["body"]
+            .as_object_mut()
+            .unwrap()
+            .remove("targets");
     }
 }

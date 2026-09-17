@@ -50,14 +50,9 @@ impl ClientCore {
                         effects.extend(self.reference_error("Referenced review has been deleted"));
                         return;
                     }
-                    crate::events::apply_body(
-                        committed,
-                        &crate::events::EventMeta {
-                            author: event.author,
-                            ts: event.ts,
-                        },
-                        &event.body,
-                    );
+                    // Requests and checkpoints derive their durable identities from
+                    // the committed envelope, not the body alone.
+                    crate::events::apply_event(committed, &event);
                     committed.seq = event.seq;
                 }
             }

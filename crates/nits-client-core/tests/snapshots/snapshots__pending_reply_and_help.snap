@@ -717,6 +717,8 @@ expression: core.view()
     }
   ],
   "requests": [],
+  "checkpoints": [],
+  "check_current_ready": false,
   "stepper": null,
   "focus": {
     "type": "Help"
@@ -861,6 +863,16 @@ expression: core.view()
       "label": "informational note"
     },
     {
+      "keys": "space k",
+      "command": "CheckCurrent",
+      "label": "record current revision checked"
+    },
+    {
+      "keys": "space d",
+      "command": "CheckpointDelta",
+      "label": "next checkpoint delta"
+    },
+    {
       "keys": "space f",
       "command": "ReviewFinding",
       "label": "review-wide finding"
@@ -879,6 +891,11 @@ expression: core.view()
       "keys": "ctrl+shift+d",
       "command": "Disconnect",
       "label": "disconnect"
+    },
+    {
+      "keys": "v",
+      "command": "CheckRequested",
+      "label": "record requested revision checked"
     },
     {
       "keys": "j",
@@ -1206,6 +1223,16 @@ expression: core.view()
       "keys": "space i",
       "command": "InformationalNote",
       "label": "informational note"
+    },
+    {
+      "keys": "space k",
+      "command": "CheckCurrent",
+      "label": "record current revision checked"
+    },
+    {
+      "keys": "space d",
+      "command": "CheckpointDelta",
+      "label": "next checkpoint delta"
     },
     {
       "keys": "space f",
@@ -1557,6 +1584,20 @@ expression: core.view()
             "overridden": false
           },
           {
+            "keys": "space k",
+            "command": "CheckCurrent",
+            "label": "record current revision checked",
+            "primary": false,
+            "overridden": false
+          },
+          {
+            "keys": "space d",
+            "command": "CheckpointDelta",
+            "label": "next checkpoint delta",
+            "primary": false,
+            "overridden": false
+          },
+          {
             "keys": "space f",
             "command": "ReviewFinding",
             "label": "review-wide finding",
@@ -1801,6 +1842,7 @@ expression: core.view()
       ],
       "viewed": [],
       "requests": [],
+      "checkpoints": [],
       "seq": 1
     },
     "pending": [

@@ -31,9 +31,29 @@ module Item = {
         <div className="thread-body">
           <UI.Markdown source=request.note />
         </div>
+        {switch request.targets {
+        | UnknownTargets(_) =>
+          <p> {React.string("Requested revision unknown (historical request)")} </p>
+        | Captured({targets}) => <ReviewCheckpoints.Targets targets />
+        }}
         <div onClick={ev => ReactEvent.Mouse.stopPropagation(ev)}>
+          {switch request.targets {
+          | UnknownTargets(_) => React.null
+          | Captured(_) =>
+            <UI.Button
+              label="Record requested revision checked"
+              title=?{Chrome.tip(chrome, CheckRequested)}
+              onClick={() => {
+                select()
+                dispatch(RunCommand({command: CheckRequested}))
+              }}
+            />
+          }}
           <UI.Button
-            label="Open changes"
+            label={switch request.targets {
+            | UnknownTargets(_) => "Open current changes"
+            | Captured(_) => "Open requested changes"
+            }}
             title=?{Chrome.tip(chrome, Open)}
             onClick={() => {
               select()

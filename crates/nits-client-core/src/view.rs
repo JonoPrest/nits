@@ -175,9 +175,11 @@ impl OpenReview {
                 .as_ref()
                 .map(|r| r.iter().cloned().collect())
                 .unwrap_or_default(),
-            DiffScope::Committed | DiffScope::Commit { .. } | DiffScope::Worktree { .. } => {
-                self.scoped_targets.clone()
-            }
+            DiffScope::Committed
+            | DiffScope::Commit { .. }
+            | DiffScope::Worktree { .. }
+            | DiffScope::Requested { .. }
+            | DiffScope::SinceCheckpoint { .. } => self.scoped_targets.clone(),
         }
     }
 }
@@ -341,6 +343,9 @@ pub struct ViewModel {
     pub conversation: Vec<ThreadView>,
     /// Durable review invitations, separate from finding and note threads.
     pub requests: Vec<nits_protocol::ReviewRequest>,
+    pub checkpoints: Vec<nits_protocol::ReviewerCheckpoint>,
+    /// Current target and displayed content have finished their refresh.
+    pub check_current_ready: bool,
     pub stepper: Option<CommitStepper>,
     /// Where keys go (§6.4). Always valid for the current lists.
     pub focus: Focus,

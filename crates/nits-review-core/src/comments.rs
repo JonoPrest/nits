@@ -330,18 +330,26 @@ impl Core {
         agent: String,
         note: String,
     ) -> Result<nits_protocol::ReviewRequestId, CoreError> {
-        self.review(review)?;
         if agent.trim().is_empty() {
             return Err(CoreError::invalid("agent name must not be empty"));
         }
+        let record = self.review(review)?;
+        let targets = self.resolve_review_targets(&record.review)?;
+        self.retain_targets(review, &targets)?;
         let event = self.append(
             ctx,
             EventBody::ReviewRequested {
                 review_id: review,
                 agent,
                 note,
+                targets: nits_protocol::RequestedTargets::Captured {
+                    targets: targets.clone(),
+                },
             },
         )?;
+        // Keep the request first for mutation acknowledgement/cursor ordering,
+        // then publish this same resolution and reanchor through the normal path.
+        self.record_resolved_targets(ctx, &record, &targets)?;
         Ok(nits_protocol::ReviewRequestId::from_event_seq(event.seq))
     }
 

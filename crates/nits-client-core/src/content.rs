@@ -633,7 +633,7 @@ impl ClientCore {
             .unwrap_or_default();
         effects.push(self.request(
             Request::ListFiles { review_id, scope },
-            InFlight::ListFiles { review_id },
+            InFlight::ListFiles { review_id, scope },
         ));
     }
 

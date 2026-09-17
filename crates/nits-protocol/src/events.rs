@@ -123,6 +123,13 @@ pub enum EventBody {
         review_id: ReviewId,
         agent: String,
         note: String,
+        targets: crate::RequestedTargets,
+    },
+    ReviewChecked {
+        review_id: ReviewId,
+        reviewer: crate::ReviewerIdentity,
+        targets: NonEmpty<ResolvedTarget>,
+        in_reply_to: Option<crate::ReviewRound>,
     },
     /// A suggestion comment's patch was written to the working tree.
     SuggestionApplied {
@@ -159,6 +166,7 @@ impl EventBody {
             | EventBody::FileViewed { review_id, .. }
             | EventBody::FileUnviewed { review_id, .. }
             | EventBody::ReviewRequested { review_id, .. }
+            | EventBody::ReviewChecked { review_id, .. }
             | EventBody::SuggestionApplied { review_id, .. } => Some(*review_id),
         }
     }
@@ -186,6 +194,7 @@ impl EventBody {
             | EventBody::FileViewed { .. }
             | EventBody::FileUnviewed { .. }
             | EventBody::ReviewRequested { .. }
+            | EventBody::ReviewChecked { .. }
             | EventBody::SuggestionApplied { .. } => None,
         }
     }

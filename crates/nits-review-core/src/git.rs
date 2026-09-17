@@ -792,6 +792,34 @@ impl Repo {
         parse_raw_diff(&out)
     }
 
+    /// Keep immutable content and commit provenance reachable through git GC.
+    /// Nits owns these namespaced refs; moving a branch never changes them.
+    pub fn retain_revision(
+        &self,
+        review: nits_protocol::ReviewId,
+        revision: &ResolvedRef,
+    ) -> Result<(), GitError> {
+        self.git(
+            &[
+                "update-ref",
+                &format!("refs/nits/reviews/{review}/trees/{}", revision.tree),
+                &revision.tree.to_string(),
+            ],
+            &[],
+        )?;
+        if let ResolvedSource::Commit { oid } = revision.source {
+            self.git(
+                &[
+                    "update-ref",
+                    &format!("refs/nits/reviews/{review}/commits/{oid}"),
+                    &oid.to_string(),
+                ],
+                &[],
+            )?;
+        }
+        Ok(())
+    }
+
     // ---- working tree -----------------------------------------------------
 
     /// Snapshot the working tree into a real tree object via a temporary
@@ -799,14 +827,25 @@ impl Repo {
     /// files are absent.
     pub fn working_tree(&self) -> Result<ResolvedRef, GitError> {
         let git_dir = self.local().git_dir().to_path_buf();
+        // A private directory owns both the index and any Git lock file on
+        // every return path. With no real index, leave the path absent so Git
+        // creates a valid empty index instead of reading a zero-byte file.
         let tmp = tempfile::Builder::new()
             .prefix("nits-index-")
-            .tempfile_in(&git_dir)?;
-        let tmp_path = tmp.path().to_path_buf();
+            .tempdir_in(&git_dir)?;
+        let tmp_path = tmp.path().join("index");
         // Seed from the real index so stat caching makes `add -A` incremental.
         let real_index = git_dir.join("index");
         if real_index.exists() {
-            std::fs::copy(&real_index, &tmp_path)?;
+            // Git uses the index mtime to detect racily clean entries. A fresh
+            // copy timestamp could hide same-size edits from an earlier second.
+            // Read metadata and bytes from one handle so atomic index replacement
+            // cannot pair another generation's timestamp with these entries.
+            let mut source = std::fs::File::open(&real_index)?;
+            let modified = source.metadata()?.modified()?;
+            let mut index = std::fs::File::create(&tmp_path)?;
+            std::io::copy(&mut source, &mut index)?;
+            index.set_modified(modified)?;
         }
         let env: &[(&str, &Path)] = &[("GIT_INDEX_FILE", tmp_path.as_path())];
         self.git(&["add", "-A", "--ignore-errors", "--", "."], env)?;

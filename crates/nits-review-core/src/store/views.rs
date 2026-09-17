@@ -331,6 +331,17 @@ pub(super) fn apply(t: &mut Write<'_>, event: &Event) -> Result<(), StoreError> 
                 )?;
             }
         }
+        EventBody::ReviewChecked { .. } => {
+            if let Some(checkpoint) = nits_protocol::ReviewCheckpoint::from_event(event) {
+                t.checkpoints.insert(
+                    (
+                        checkpoint.review_id.to_string().as_str(),
+                        checkpoint.id.event_seq().get(),
+                    ),
+                    serde_json::to_vec(&checkpoint)?.as_slice(),
+                )?;
+            }
+        }
         EventBody::SuggestionApplied { .. } => {}
     }
     Ok(())

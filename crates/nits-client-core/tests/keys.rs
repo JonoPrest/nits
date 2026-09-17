@@ -127,6 +127,7 @@ fn snapshot() -> ReviewSnapshot {
         viewed: Vec::new(),
         requests: Vec::new(),
         seq: Seq::new(1),
+        checkpoints: Vec::new(),
     };
     let meta = nits_client_core::EventMeta {
         author: c1.author.clone(),
@@ -504,6 +505,55 @@ fn every_action_is_reachable_from_a_binding() {
     // states rather than what happened to run: resolution is the contract.
     let mut states: Vec<ClientCore> = Vec::new();
     let base = ready();
+    let mut with_rounds = ready();
+    let targets = snapshot().resolved.unwrap();
+    let author = Author::Human {
+        name: "ada".into(),
+        machine: "laptop".into(),
+    };
+    for (seq, body) in [
+        (
+            3,
+            nits_protocol::EventBody::ReviewRequested {
+                review_id: review_id(),
+                agent: "review-agent".into(),
+                note: "Check these captured revisions".into(),
+                targets: nits_protocol::RequestedTargets::Captured {
+                    targets: targets.clone(),
+                },
+            },
+        ),
+        (
+            4,
+            nits_protocol::EventBody::ReviewChecked {
+                review_id: review_id(),
+                reviewer: nits_protocol::ReviewerIdentity::from_author(&author).unwrap(),
+                targets,
+                in_reply_to: Some(nits_protocol::ReviewRound::Request {
+                    request_id: nits_protocol::ReviewRequestId::from_event_seq(Seq::new(3)),
+                }),
+            },
+        ),
+    ] {
+        with_rounds
+            .handle(Input::Server(ServerMsg::Event {
+                event: nits_protocol::Event {
+                    seq: Seq::new(seq),
+                    ts: Timestamp::from_millis(0),
+                    author: author.clone(),
+                    client_id: ClientId::from_parts(9, 9),
+                    client_seq: nits_protocol::ClientSeq::new(seq),
+                    body,
+                },
+            }))
+            .unwrap();
+    }
+    with_rounds
+        .handle(Input::User(Action::SetFocus {
+            focus: Focus::ReviewRequest { index: 0 },
+        }))
+        .unwrap();
+    states.push(with_rounds);
     for focus in [
         Focus::ReviewList { index: 0 },
         Focus::Tree { index: 0 },
@@ -2908,6 +2958,7 @@ fn requests_have_keyboard_navigation_and_open_changes_without_resolving_findings
                     review_id: review_id(),
                     agent: "review-agent".into(),
                     note: format!("Request {seq}"),
+                    targets: nits_protocol::RequestedTargets::Unknown,
                 },
             },
         }))

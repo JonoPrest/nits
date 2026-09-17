@@ -89,6 +89,7 @@ fn snapshot() -> ReviewSnapshot {
         viewed: Vec::new(),
         requests: Vec::new(),
         seq: Seq::new(1),
+        checkpoints: Vec::new(),
     }
 }
 

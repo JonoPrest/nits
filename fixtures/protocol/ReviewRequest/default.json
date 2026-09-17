@@ -8,5 +8,8 @@
     "name": "ada",
     "type": "Human"
   },
-  "review_id": "01HF7YATZ80000000000000004"
+  "review_id": "01HF7YATZ80000000000000004",
+  "targets": {
+    "type": "Unknown"
+  }
 }

@@ -146,6 +146,10 @@ enum Cmd {
     Files {
         #[command(flatten)]
         review: ReviewArg,
+        #[arg(long)]
+        since_checkpoint: Option<nits_protocol::ReviewCheckpointId>,
+        #[arg(long, conflicts_with = "since_checkpoint")]
+        request: Option<nits_protocol::ReviewRequestId>,
     },
     /// Diff of one changed file.
     Diff {
@@ -153,6 +157,10 @@ enum Cmd {
         path: String,
         #[arg(long)]
         repo: Option<RepoId>,
+        #[arg(long)]
+        since_checkpoint: Option<nits_protocol::ReviewCheckpointId>,
+        #[arg(long, conflicts_with = "since_checkpoint")]
+        request: Option<nits_protocol::ReviewRequestId>,
         /// Ignore whitespace.
         #[arg(short = 'w', long)]
         ignore_whitespace: bool,
@@ -298,6 +306,37 @@ enum WorkspaceCmd {
 
 #[derive(Debug, Subcommand)]
 enum ReviewCmd {
+    /// Explicitly select a new head before requesting the next review round.
+    SetHead {
+        review: ReviewId,
+        reference: String,
+        #[arg(long)]
+        repo: RepoId,
+    },
+    /// Capture the current resolved revisions and request a review.
+    Request {
+        review: ReviewId,
+        agent: String,
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+    /// Record revisions checked, without approval or finding resolution.
+    #[command(group(clap::ArgGroup::new("checked_revision").required(true).args(["request", "current"])))]
+    Check {
+        review: ReviewId,
+        /// Check exactly this request's captured revisions.
+        #[arg(long)]
+        request: Option<nits_protocol::ReviewRequestId>,
+        /// Explicitly check the current resolved revisions.
+        #[arg(long)]
+        current: bool,
+        /// Link this check to a previous checkpoint being answered.
+        #[arg(long, conflicts_with = "request")]
+        answer_checkpoint: Option<nits_protocol::ReviewCheckpointId>,
+        /// Link an explicit current check to an earlier request.
+        #[arg(long, conflicts_with_all = ["request", "answer_checkpoint"])]
+        answer_request: Option<nits_protocol::ReviewRequestId>,
+    },
     /// Create a review; prints its id.
     Create {
         /// Base ref: branch name, tag:NAME, full commit oid, `HEAD`,
@@ -795,6 +834,7 @@ struct Row<'a> {
 /// `review show` output: the snapshot plus the changed files.
 #[derive(Debug, Serialize)]
 struct Shown<'a> {
+    latest_checkpoints: Vec<nits_protocol::ReviewerCheckpoint>,
     #[serde(flatten)]
     snapshot: &'a nits_protocol::ReviewSnapshot,
     files: &'a [nits_protocol::FileChange],
@@ -878,6 +918,10 @@ fn event_line(e: &Event) -> String {
         EventBody::ReviewRequested { agent, note, .. } => {
             format!("review requested from {agent}: {note}")
         }
+        EventBody::ReviewChecked { targets, .. } => format!(
+            "revision check recorded across {} repositories",
+            targets.len()
+        ),
         EventBody::SuggestionApplied { comment_id, .. } => {
             format!("suggestion applied {comment_id}")
         }
@@ -1316,6 +1360,8 @@ fn review_text(review: &Review, workspaces: &[Workspace]) -> String {
     out
 }
 
+// One arm per review subcommand keeps the CLI mapping visible.
+#[allow(clippy::too_many_lines)]
 async fn review(
     ops: &mut Ops,
     cmd: ReviewCmd,
@@ -1323,6 +1369,85 @@ async fn review(
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
+        ReviewCmd::SetHead {
+            review,
+            reference,
+            repo,
+        } => {
+            let event = ops
+                .mutate(Mutation::UpdateReviewTarget {
+                    review_id: review,
+                    update: nits_protocol::ReviewTargetUpdate {
+                        repo_id: repo,
+                        revision: nits_protocol::TargetRevision::Head {
+                            ref_spec: parse_ref(&reference)?,
+                        },
+                    },
+                })
+                .await?;
+            emit(json, &event, || event_line(&event))
+        }
+        ReviewCmd::Request {
+            review,
+            agent,
+            note,
+        } => {
+            let event = ops
+                .mutate(Mutation::RequestReview {
+                    review_id: review,
+                    agent,
+                    note,
+                })
+                .await?;
+            emit(json, &event, || event_line(&event))
+        }
+        ReviewCmd::Check {
+            review,
+            request,
+            current,
+            answer_checkpoint,
+            answer_request,
+        } => {
+            let snapshot = ops.snapshot(review).await?;
+            let (targets, in_reply_to) = match request {
+                Some(request_id) => {
+                    let request = snapshot
+                        .requests
+                        .iter()
+                        .find(|r| r.id == request_id)
+                        .ok_or_else(|| anyhow::anyhow!("request does not belong to this review"))?;
+                    let nits_protocol::RequestedTargets::Captured { targets } = &request.targets
+                    else {
+                        anyhow::bail!("historical request has unknown targets")
+                    };
+                    (
+                        targets.clone(),
+                        Some(nits_protocol::ReviewRound::Request { request_id }),
+                    )
+                }
+                None if current => (
+                    snapshot
+                        .resolved
+                        .ok_or_else(|| anyhow::anyhow!("review is unresolved"))?,
+                    answer_request
+                        .map(|request_id| nits_protocol::ReviewRound::Request { request_id })
+                        .or_else(|| {
+                            answer_checkpoint.map(|checkpoint_id| {
+                                nits_protocol::ReviewRound::Checkpoint { checkpoint_id }
+                            })
+                        }),
+                ),
+                None => anyhow::bail!("select --request or --current"),
+            };
+            let event = ops
+                .mutate(Mutation::RecordCheckpoint {
+                    review_id: review,
+                    targets,
+                    in_reply_to,
+                })
+                .await?;
+            emit(json, &event, || event_line(&event))
+        }
         ReviewCmd::Create {
             base,
             head,
@@ -1393,6 +1518,10 @@ async fn review(
             emit(
                 json,
                 &Shown {
+                    latest_checkpoints: nits_protocol::latest_checkpoints(
+                        &snap.checkpoints,
+                        snap.resolved.as_ref(),
+                    ),
                     snapshot: &snap,
                     files: &files,
                 },
@@ -1424,24 +1553,58 @@ fn review_snapshot_text(
         snap.comments.len(),
         snap.requests.len()
     );
+    for status in nits_protocol::latest_checkpoints(&snap.checkpoints, snap.resolved.as_ref()) {
+        let _ = writeln!(
+            out,
+            "  checkpoint {}: {:?} — {:?}",
+            status.checkpoint.id, status.checkpoint.reviewer, status.freshness
+        );
+        for target in &status.checkpoint.targets {
+            let _ = writeln!(
+                out,
+                "    {} base {} head {} ({:?})",
+                target.repo_id, target.base.tree, target.head.tree, target.head.source
+            );
+        }
+    }
     for request in &snap.requests {
         let _ = writeln!(
             out,
-            "  request {}: {} → {} at {}\n    {}",
+            "  request {}: {} → {} at {}\n    {}\n    targets: {:?}",
             request.id,
             author_text(&request.requester),
             request.recipient,
             request.created.millis(),
-            request.note
+            request.note,
+            request.targets
         );
     }
     out
 }
 
+/// Clap rejects conflicting selectors; absent selectors mean the whole review.
+fn content_scope(
+    checkpoint: Option<nits_protocol::ReviewCheckpointId>,
+    request: Option<nits_protocol::ReviewRequestId>,
+) -> nits_protocol::DiffScope {
+    if let Some(checkpoint_id) = checkpoint {
+        nits_protocol::DiffScope::SinceCheckpoint { checkpoint_id }
+    } else if let Some(request_id) = request {
+        nits_protocol::DiffScope::Requested { request_id }
+    } else {
+        nits_protocol::DiffScope::All
+    }
+}
+
 async fn content(ops: &Ops, cmd: Cmd, json: bool) -> anyhow::Result<()> {
     match cmd {
-        Cmd::Files { review } => {
-            let files = ops.files(review.0).await?;
+        Cmd::Files {
+            review,
+            since_checkpoint,
+            request,
+        } => {
+            let scope = content_scope(since_checkpoint, request);
+            let (files, _) = ops.files_scoped(review.0, scope).await?;
             emit(json, &files, || {
                 files
                     .iter()
@@ -1462,13 +1625,23 @@ async fn content(ops: &Ops, cmd: Cmd, json: bool) -> anyhow::Result<()> {
             repo,
             ignore_whitespace,
             context_lines,
+            since_checkpoint,
+            request,
         } => {
             let render_opts = RenderOpts {
                 ignore_whitespace,
                 context_lines,
                 ..RenderOpts::default()
             };
-            let (file, header, chunks) = ops.diff(review, repo, &path, render_opts).await?;
+            let (file, header, chunks) = ops
+                .diff_scoped(
+                    review,
+                    repo,
+                    &path,
+                    render_opts,
+                    content_scope(since_checkpoint, request),
+                )
+                .await?;
             emit(json, &(&file, &header, &chunks), || {
                 render_text::render(&header, &chunks)
             })

@@ -2373,7 +2373,7 @@ describe("Review requests", () => {
     expect(Element.querySelector(container, "[data-focused]"))->not_->toBeNull
     expect(Screen.queryAllByText("Resolve finding")->Array.length)->toBe(0)
     expect(Screen.queryAllByText("Reply")->Array.length)->toBe(0)
-    FireEvent.click(Screen.getByText("Open changes"))
+    FireEvent.click(Screen.getByText("Open current changes"))
     expect(dispatch)->toHaveBeenCalledWith(Action.SetFocus({focus: ReviewRequest({index: 0})}))
     expect(dispatch)->toHaveBeenCalledWith(Action.RunCommand({command: Open}))
     expect(dispatch)->toHaveBeenCalledTimes(2)
@@ -2719,4 +2719,70 @@ test("a linked outdated finding opens a visible original pane instead of the cur
   expect(Element.querySelector(container, ".diff-stack"))->toBeNull
   expect(Element.querySelector(container, ".diff-collapsed"))->toBeNull
   expect(Element.querySelector(container, ".diff-scroll.hidden"))->toBeNull
+})
+describe("Revision checkpoints", () => {
+  test("current checking is disabled while content refreshes", () => {
+    let dispatch = fn()
+    render(<ReviewCheckpoints checkpoints=[] chrome=[] checkCurrentReady=false dispatch />)->ignore
+    let button = Screen.getByText("Record current revision checked")
+    expect(Element.getAttribute(button, "disabled")->Nullable.toOption)->toBe(Some(""))
+    expect(Screen.getByText("Current changes are refreshing."))->toBeTruthy
+    FireEvent.click(button)
+    FireEvent.keyDown(button, {"key": "Enter", "ctrlKey": false})
+    expect(dispatch)->toHaveBeenCalledTimes(0)
+  })
+  test(
+    "shows checked provenance, changed status and keymap-backed actions without finding controls",
+    () => {
+      let status = Fixtures.parse(
+        Domain.ReviewerCheckpoint.schema,
+        "protocol",
+        "ReviewerCheckpoint",
+        "default",
+      )
+      let dispatch = fn()
+      let chrome: array<View.Hint.t> = [
+        {keys: "space k", command: CheckCurrent, label: "record current revision checked"},
+        {keys: "space d", command: CheckpointDelta, label: "next checkpoint delta"},
+      ]
+      let {container} = render(<ReviewCheckpoints checkpoints=[status] chrome dispatch />)
+      expect(Screen.getByText("Current target changed since check"))->toBeTruthy
+      expect(Screen.getByText("Answers request 40"))->toBeTruthy
+      expect(Element.textContent(container))->toContain(
+        (status.checkpoint.targets->Array.getUnsafe(0)).head.tree,
+      )
+      expect(Screen.queryAllByText("Resolve finding")->Array.length)->toBe(0)
+      FireEvent.click(Screen.getByText("Inspect next checkpoint delta"))
+      expect(dispatch)->toHaveBeenCalledWith(Action.RunCommand({command: CheckpointDelta}))
+      FireEvent.click(Screen.getByText("Record current revision checked"))
+      expect(dispatch)->toHaveBeenCalledWith(Action.RunCommand({command: CheckCurrent}))
+    },
+  )
+  test("request cards expose exact captured revisions and check the selected request", () => {
+    let request = Fixtures.parse(
+      Domain.ReviewRequest.schema,
+      "protocol",
+      "ReviewRequest",
+      "default",
+    )
+    let captured = Fixtures.parse(
+      Domain.RequestedTargets.schema,
+      "protocol",
+      "RequestedTargets",
+      "Captured",
+    )
+    let dispatch = fn()
+    let chrome: array<View.Hint.t> = [
+      {keys: "v", command: CheckRequested, label: "record requested revision checked"},
+    ]
+    render(
+      <ReviewRequests
+        requests=[{...request, targets: captured}] focus={ReviewRequest({index: 0})} chrome dispatch
+      />,
+    )->ignore
+    FireEvent.click(Screen.getByText("Record requested revision checked"))
+    expect(dispatch)->toHaveBeenCalledWith(Action.SetFocus({focus: ReviewRequest({index: 0})}))
+    expect(dispatch)->toHaveBeenCalledWith(Action.RunCommand({command: CheckRequested}))
+    expect(Screen.getByText("Open requested changes"))->toBeTruthy
+  })
 })

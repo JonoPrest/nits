@@ -514,7 +514,11 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                     DiffScope::Commit { oid, .. } => {
                         stepper.commits.iter().position(|c| c.oid == oid)
                     }
-                    DiffScope::All | DiffScope::Committed | DiffScope::Worktree { .. } => None,
+                    DiffScope::All
+                    | DiffScope::Committed
+                    | DiffScope::Worktree { .. }
+                    | DiffScope::Requested { .. }
+                    | DiffScope::SinceCheckpoint { .. } => None,
                 };
                 let next = match (command == Command::NextHunk, selected) {
                     // Toward the worktree (newer).
@@ -597,6 +601,9 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 | Command::FocusTree
                 | Command::FocusDiff
                 | Command::FocusRequests
+                | Command::CheckCurrent
+                | Command::CheckRequested
+                | Command::CheckpointDelta
                 | Command::FocusThreads
                 | Command::FocusCommits
                 | Command::Submit
@@ -791,10 +798,17 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 })
             }
             Focus::ReviewRequest { index } => {
-                view.requests.get(index).ok_or_else(nothing)?;
-                Ok(Action::SetTab {
-                    tab: Tab::FilesChanged,
-                })
+                let request = view.requests.get(index).ok_or_else(nothing)?;
+                match &request.targets {
+                    nits_protocol::RequestedTargets::Unknown => Ok(Action::SetScope {
+                        scope: ScopeChoice::All,
+                    }),
+                    nits_protocol::RequestedTargets::Captured { .. } => Ok(Action::SetScope {
+                        scope: ScopeChoice::Requested {
+                            request_id: request.id,
+                        },
+                    }),
+                }
             }
             Focus::Thread { index } => {
                 let t = view.threads.get(index).ok_or_else(nothing)?;
@@ -1185,6 +1199,31 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             )),
             None => Err(NoTarget::NoOpenFile),
         },
+        Command::CheckCurrent => {
+            view.review.as_ref().ok_or(NoTarget::NoOpenReview)?;
+            if core.check_current_ready() {
+                Ok(Action::CheckCurrent)
+            } else {
+                Err(nothing())
+            }
+        }
+        Command::CheckRequested => {
+            let Focus::ReviewRequest { index } = view.focus else {
+                return Err(nothing());
+            };
+            let request = view.requests.get(index).ok_or_else(nothing)?;
+            match &request.targets {
+                nits_protocol::RequestedTargets::Unknown => Err(nothing()),
+                nits_protocol::RequestedTargets::Captured { .. } => Ok(Action::CheckRequested),
+            }
+        }
+        Command::CheckpointDelta => {
+            if view.checkpoints.is_empty() {
+                Err(nothing())
+            } else {
+                Ok(Action::CheckpointDelta)
+            }
+        }
         Command::FocusRequests => {
             if view.requests.is_empty() {
                 return Err(nothing());
@@ -1334,9 +1373,11 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             Ok(Action::SetScope {
                 scope: match open.scope {
                     DiffScope::Committed => ScopeChoice::All,
-                    DiffScope::All | DiffScope::Commit { .. } | DiffScope::Worktree { .. } => {
-                        ScopeChoice::Committed
-                    }
+                    DiffScope::All
+                    | DiffScope::Commit { .. }
+                    | DiffScope::Worktree { .. }
+                    | DiffScope::Requested { .. }
+                    | DiffScope::SinceCheckpoint { .. } => ScopeChoice::Committed,
                 },
             })
         }

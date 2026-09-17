@@ -237,3 +237,10 @@ Typed context-aware references, CLI `reference` / `open`, copy controls in inlin
 and Conversation cards, configurable thread `y` and reply `[` / `]`, exact-reply
 landing, and stale-snapshot/event-race coverage. Browser opening is supported;
 desktop OS protocol registration remains future host work.
+
+### Iterative revision rounds (#66)
+
+Implemented captured review requests (including retained working-tree trees),
+attributed checkpoints with stable reviewer identities, fresh-state freshness,
+requested-revision and checkpoint-delta scopes, MCP/CLI inspection and keyboard
+UI controls. Legacy request targets remain explicitly unknown.

@@ -131,8 +131,18 @@ no approval, readiness, or resolution. Legacy Note comments remain findings.
 Durable review requests appear above threads in Conversation with requester,
 recipient, note and creation time. Their count is separate from open findings.
 `g r` focuses Requests, `j`/`k` move between cards, and Enter / Open changes
-returns to the current review diff. Requests imply no approval or completion;
-there is no acknowledged/completed lifecycle or revision checkpoint yet.
+opens the captured requested diff (historical requests with unknown targets open
+the current diff). Requests imply no approval or completion.
+
+Conversation also shows each reviewer’s latest checkpoint, its exact repository,
+base/head commit/tree identities and whether the current target has changed. Agent
+names group checkpoints across session restarts; cards retain full author
+provenance. `v` in Requests records that request’s captured revision as checked;
+`<leader>k` explicitly records the current resolved revision, linking the request
+or checkpoint when its scope is being inspected. `<leader>d` cycles
+through latest-checkpoint deltas, with a scope banner and `g a` to return to all
+changes. Buttons derive tooltips from these commands. These checks never approve,
+resolve findings, or mark human ViewedMark state.
 
 Deferred findings remain visible and explicitly labelled **deferred · unfixed**,
 with their reason, optional external follow-up link, and recording actor/time.

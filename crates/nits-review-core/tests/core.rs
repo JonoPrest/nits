@@ -1649,3 +1649,378 @@ fn deferred_finding_retains_discussion_and_is_reversible_without_affecting_notes
     );
     assert_eq!(w.core.comments(review).unwrap().len(), 3);
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // One scenario follows immutable content through every lifecycle.
+fn requested_h1_checked_after_h2_is_changed_and_delta_survives_gc_restart_rebuild() {
+    use nits_protocol::{CheckpointFreshness, RequestedTargets, ReviewRound};
+    let w = world();
+    let id = review_id(66);
+    let mut targets = targets();
+    targets
+        .iter_mut()
+        .for_each(|t| t.head = RefSpec::WorkingTree);
+    w.a.write_file("round.txt", b"H1\n").unwrap();
+    w.core
+        .create_review(&human(), id, ws(), "rounds".into(), targets)
+        .unwrap();
+    w.core
+        .add_comment(
+            &human(),
+            id,
+            cid(66),
+            CommentKind::Note,
+            Anchor::Review,
+            "Keep this finding".into(),
+            None,
+        )
+        .unwrap();
+    let original = w.core.tree_snapshot(rid(1), &RefSpec::WorkingTree).unwrap();
+    let original_blob = original
+        .entries
+        .iter()
+        .find_map(|entry| match &entry.kind {
+            nits_protocol::TreeEntryKind::File { oid, .. } if entry.path == p("round.txt") => {
+                Some(*oid)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let browse = w
+        .core
+        .add_comment(
+            &human(),
+            id,
+            cid(67),
+            CommentKind::Note,
+            lines_anchor(rid(1), p("round.txt"), Side::Head, original_blob, 1, 1).unwrap(),
+            "Retain the unfixed original".into(),
+            Some(nits_protocol::CommentContext::Browse {
+                reference: RefSpec::WorkingTree,
+            }),
+        )
+        .unwrap();
+    w.core
+        .defer_thread(
+            &human(),
+            id,
+            browse.thread_id,
+            "Agreed external follow-up".parse().unwrap(),
+            None,
+        )
+        .unwrap();
+    let link = nits_protocol::ReviewReference {
+        context: nits_protocol::ReferenceContext::named("review-box").unwrap(),
+        review_id: id,
+        target: nits_protocol::ReferenceTarget::Comment {
+            comment_id: browse.id,
+        },
+    };
+    w.core
+        .mark_viewed(&human(), id, rid(1), p("round.txt"))
+        .unwrap();
+    let request_id = w
+        .core
+        .request_review(
+            &human(),
+            id,
+            "review-agent".into(),
+            "Please inspect H1".into(),
+        )
+        .unwrap();
+    let RequestedTargets::Captured { targets: h1 } = w.core.review_snapshot(id).unwrap().requests
+        [0]
+    .targets
+    .clone() else {
+        panic!("new requests capture identities")
+    };
+    w.a.write_file("round.txt", b"H2\n").unwrap();
+    w.core.resolve_targets(&human(), id).unwrap();
+    let before = w.core.review_snapshot(id).unwrap();
+    let checkpoint_id = w
+        .core
+        .record_checkpoint(
+            &agent(),
+            id,
+            h1.clone(),
+            Some(ReviewRound::Request { request_id }),
+        )
+        .unwrap();
+    let after = w.core.review_snapshot(id).unwrap();
+    assert_eq!(after.review, before.review);
+    assert_eq!(after.resolved, before.resolved);
+    assert_eq!(after.comments, before.comments);
+    assert_eq!(after.threads, before.threads);
+    assert_eq!(after.viewed, before.viewed);
+    assert_eq!(after.checkpoints[0].targets, h1);
+    assert_eq!(
+        nits_protocol::latest_checkpoints(&after.checkpoints, after.resolved.as_ref())[0].freshness,
+        CheckpointFreshness::Changed
+    );
+    // Both working-tree content and the original base remain reachable after GC.
+    w.a.git(&["gc", "--prune=now"]).unwrap();
+    w.b.git(&["gc", "--prune=now"]).unwrap();
+    let scope = DiffScope::SinceCheckpoint { checkpoint_id };
+    let (files, delta) = w.core.files_scoped(id, &scope).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, p("round.txt"));
+    for target in &delta {
+        let checked = h1.iter().find(|t| t.repo_id == target.repo_id).unwrap();
+        assert_eq!(target.base, checked.head);
+    }
+    let (_, rendered) = w
+        .core
+        .file_render(id, rid(1), &p("round.txt"), RenderOpts::default(), &scope)
+        .unwrap();
+    let rendered = format!("{rendered:?}");
+    assert!(rendered.contains("H1"));
+    assert!(rendered.contains("H2"));
+    assert_eq!(
+        w.core
+            .scoped_targets(id, &DiffScope::Requested { request_id })
+            .unwrap(),
+        h1
+    );
+    drop(w.core);
+    let store = nits_review_core::store::Store::open(&w.data.state()).unwrap();
+    let events = store.events_after(None).unwrap();
+    store.rebuild_views().unwrap();
+    assert_eq!(store.events_after(None).unwrap(), events);
+    assert_eq!(store.review_snapshot(id).unwrap().unwrap(), after);
+    drop(store);
+    let core = Core::open(&w.data).unwrap();
+    assert_eq!(core.review_snapshot(id).unwrap(), after);
+    assert_eq!(link.resolve(&after).unwrap(), Some(browse.id));
+    assert_eq!(
+        after
+            .comments
+            .iter()
+            .find(|comment| comment.id == browse.id)
+            .unwrap(),
+        &browse
+    );
+    assert!(matches!(
+        after
+            .threads
+            .iter()
+            .find(|thread| thread.id == browse.thread_id)
+            .unwrap()
+            .resolution,
+        nits_protocol::ThreadResolution::Deferred { .. }
+    ));
+    let (_, original_rows) = core
+        .blob_render(rid(1), &p("round.txt"), original_blob)
+        .unwrap();
+    assert!(format!("{original_rows:?}").contains("H1"));
+    assert_eq!(core.files_scoped(id, &scope).unwrap().0, files);
+    // Restarted agent groups with its previous session; provenance is preserved.
+    let mut restarted = agent();
+    if let Author::Agent {
+        session_id, model, ..
+    } = &mut restarted.author
+    {
+        *session_id = "second-session".into();
+        *model = "new-model".into();
+    }
+    core.record_checkpoint(
+        &restarted,
+        id,
+        after.resolved.clone().unwrap(),
+        Some(ReviewRound::Checkpoint { checkpoint_id }),
+    )
+    .unwrap();
+    let current = core.review_snapshot(id).unwrap();
+    let latest = nits_protocol::latest_checkpoints(&current.checkpoints, current.resolved.as_ref());
+    assert_eq!(latest.len(), 1);
+    assert_eq!(latest[0].freshness, CheckpointFreshness::Current);
+    assert_eq!(current.checkpoints[0].author, agent().author);
+    assert_eq!(latest[0].checkpoint.author, restarted.author);
+}
+
+#[test]
+fn checkpoint_rejects_partial_duplicate_forged_and_cross_review_provenance() {
+    use nits_protocol::{ReviewRequestId, ReviewRound, Seq};
+    let w = world();
+    let id = review_id(67);
+    w.core
+        .create_review(&human(), id, ws(), "rounds".into(), targets())
+        .unwrap();
+    let targets = w.core.review_snapshot(id).unwrap().resolved.unwrap();
+    let partial = NonEmpty::singleton(targets.first().clone());
+    assert!(
+        w.core
+            .record_checkpoint(&agent(), id, partial, None)
+            .is_err()
+    );
+    let duplicate = NonEmpty::new(vec![targets.first().clone(), targets.first().clone()]).unwrap();
+    assert!(
+        w.core
+            .record_checkpoint(&agent(), id, duplicate, None)
+            .is_err()
+    );
+    let mut forged = targets.clone();
+    forged.iter_mut().next().unwrap().head.tree = forged.first().base.tree;
+    assert!(
+        w.core
+            .record_checkpoint(&agent(), id, forged, None)
+            .is_err()
+    );
+    assert!(
+        w.core
+            .record_checkpoint(
+                &agent(),
+                id,
+                targets,
+                Some(ReviewRound::Request {
+                    request_id: ReviewRequestId::from_event_seq(Seq::new(999))
+                })
+            )
+            .is_err()
+    );
+    assert!(w.core.review_snapshot(id).unwrap().checkpoints.is_empty());
+}
+
+#[test]
+fn captured_commit_provenance_survives_force_push_and_garbage_collection() {
+    let w = world();
+    let id = review_id(68);
+    w.core
+        .create_review(&human(), id, ws(), "rounds".into(), targets())
+        .unwrap();
+    let request_id = w
+        .core
+        .request_review(&human(), id, "review-agent".into(), "H1".into())
+        .unwrap();
+    let nits_protocol::RequestedTargets::Captured { targets: checked } =
+        w.core.review_snapshot(id).unwrap().requests[0]
+            .targets
+            .clone()
+    else {
+        panic!("captured")
+    };
+    w.a.git(&["reset", "--hard", "main"]).unwrap();
+    w.a.git(&["reflog", "expire", "--expire=now", "--all"])
+        .unwrap();
+    w.a.git(&["gc", "--prune=now"]).unwrap();
+    w.core.resolve_targets(&human(), id).unwrap();
+    w.core
+        .record_checkpoint(
+            &agent(),
+            id,
+            checked.clone(),
+            Some(nits_protocol::ReviewRound::Request { request_id }),
+        )
+        .unwrap();
+    let snapshot = w.core.review_snapshot(id).unwrap();
+    assert_eq!(snapshot.checkpoints[0].targets, checked);
+    assert_eq!(
+        nits_protocol::latest_checkpoints(&snapshot.checkpoints, snapshot.resolved.as_ref())[0]
+            .freshness,
+        nits_protocol::CheckpointFreshness::Changed
+    );
+}
+
+#[test]
+fn requesting_a_moved_branch_updates_current_targets_and_reanchors() {
+    let w = world();
+    let id = review_id(70);
+    w.core
+        .create_review(&human(), id, ws(), "rounds".into(), targets())
+        .unwrap();
+    let old_blob = head_blob(&w.core, id, rid(1), "src/main.rs");
+    w.core
+        .add_comment(
+            &human(),
+            id,
+            cid(70),
+            CommentKind::Note,
+            lines_anchor(rid(1), p("src/main.rs"), Side::Head, old_blob, 8, 8).unwrap(),
+            "g".into(),
+            None,
+        )
+        .unwrap();
+    let before = w.core.review_snapshot(id).unwrap();
+    let shifted = format!("// shifted\n{}", SRC.replace("let h = 8;", "let h = 80;"));
+    w.a.write_file("src/main.rs", shifted.as_bytes()).unwrap();
+    w.a.git(&["commit", "-qam", "next round"]).unwrap();
+    let request_id = w
+        .core
+        .request_review(&human(), id, "review-agent".into(), "next round".into())
+        .unwrap();
+    let snapshot = w.core.review_snapshot(id).unwrap();
+    let nits_protocol::RequestedTargets::Captured { targets } = &snapshot.requests[0].targets
+    else {
+        panic!("captured")
+    };
+    assert_eq!(snapshot.resolved.as_ref(), Some(targets));
+    assert_ne!(snapshot.resolved, before.resolved);
+    assert_eq!(snapshot.review, before.review);
+    let Anchor::Lines {
+        lines, blob_oid, ..
+    } = &snapshot.comments[0].anchor
+    else {
+        panic!("lines")
+    };
+    assert_eq!(lines.start().get(), 9);
+    assert_ne!(*blob_oid, old_blob);
+    assert_eq!(snapshot.comments[0].state, CommentState::Live);
+    let checked = w
+        .core
+        .record_checkpoint(
+            &agent(),
+            id,
+            targets.clone(),
+            Some(nits_protocol::ReviewRound::Request { request_id }),
+        )
+        .unwrap();
+    let checked_snapshot = w.core.review_snapshot(id).unwrap();
+    assert_eq!(
+        nits_protocol::latest_checkpoints(
+            &checked_snapshot.checkpoints,
+            checked_snapshot.resolved.as_ref()
+        )[0]
+        .freshness,
+        nits_protocol::CheckpointFreshness::Current
+    );
+    assert!(
+        w.core
+            .files_scoped(
+                id,
+                &DiffScope::SinceCheckpoint {
+                    checkpoint_id: checked
+                }
+            )
+            .unwrap()
+            .0
+            .is_empty()
+    );
+}
+
+#[test]
+fn checking_a_displayed_worktree_after_refresh_uses_its_retained_target_event() {
+    let w = world();
+    let id = review_id(69);
+    let mut targets = targets();
+    targets
+        .iter_mut()
+        .for_each(|t| t.head = RefSpec::WorkingTree);
+    w.a.write_file("round.txt", b"H1\n").unwrap();
+    w.core
+        .create_review(&human(), id, ws(), "rounds".into(), targets)
+        .unwrap();
+    let displayed = w.core.review_snapshot(id).unwrap().resolved.unwrap();
+    w.a.write_file("round.txt", b"H2\n").unwrap();
+    w.core.resolve_targets(&human(), id).unwrap();
+    w.a.git(&["gc", "--prune=now"]).unwrap();
+    w.core
+        .record_checkpoint(&human(), id, displayed.clone(), None)
+        .unwrap();
+    let snapshot = w.core.review_snapshot(id).unwrap();
+    assert!(snapshot.requests.is_empty());
+    assert_eq!(snapshot.checkpoints[0].targets, displayed);
+    assert_eq!(
+        nits_protocol::latest_checkpoints(&snapshot.checkpoints, snapshot.resolved.as_ref())[0]
+            .freshness,
+        nits_protocol::CheckpointFreshness::Changed
+    );
+}
