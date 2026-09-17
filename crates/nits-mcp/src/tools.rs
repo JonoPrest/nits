@@ -5,9 +5,9 @@
 //! comment.
 
 use nits_protocol::{
-    BlobOid, ChangeKind, Comment, CommentId, Event, FileChange, NonEmpty, RefSpec, RenderContent,
-    RepoId, RepoPath, ResolvedTarget, Review, ReviewId, ReviewStatus, Seq, Side, SubscribeScope,
-    Thread, ThreadId, Workspace, WorkspaceId,
+    Author, BlobOid, ChangeKind, Comment, CommentId, Event, FileChange, NonEmpty, RefSpec,
+    RenderContent, RepoId, RepoPath, ResolvedTarget, Review, ReviewId, ReviewStatus, Seq, Side,
+    SubscribeScope, Thread, ThreadId, Workspace, WorkspaceId,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,8 @@ pub enum ToolCall {
     Resolve(Resolve),
     RequestReview(RequestReview),
     SubscribeEvents(SubscribeEvents),
+    GetSessionIdentity(GetSessionIdentity),
+    SetSessionIdentity(SetSessionIdentity),
 }
 
 /// A call that only reads.
@@ -67,12 +69,19 @@ pub enum MutatingCall {
     RequestReview(RequestReview),
 }
 
-/// A `ToolCall` sorted by whether it mutates, so the read/write split is a
-/// type rather than a name list.
+/// Session-local operations, separate from daemon queries and event writes.
+#[derive(Debug)]
+pub enum SessionCall {
+    GetIdentity,
+    SetIdentity(SetSessionIdentity),
+}
+
+/// A `ToolCall` sorted by the state it accesses, rather than a name list.
 #[derive(Debug)]
 pub enum Call {
     Query(QueryCall),
     Mutating(MutatingCall),
+    Session(SessionCall),
 }
 
 impl ToolCall {
@@ -108,6 +117,10 @@ impl ToolCall {
             ToolCall::Reply(p) => Call::Mutating(MutatingCall::Reply(p)),
             ToolCall::Resolve(p) => Call::Mutating(MutatingCall::Resolve(p)),
             ToolCall::RequestReview(p) => Call::Mutating(MutatingCall::RequestReview(p)),
+            ToolCall::GetSessionIdentity(GetSessionIdentity {}) => {
+                Call::Session(SessionCall::GetIdentity)
+            }
+            ToolCall::SetSessionIdentity(p) => Call::Session(SessionCall::SetIdentity(p)),
         }
     }
 }
@@ -147,6 +160,14 @@ impl ToolName {
             ToolName::Resolve => (schema_for!(Resolve), schema_for!(Resolved)),
             ToolName::RequestReview => (schema_for!(RequestReview), schema_for!(Requested)),
             ToolName::SubscribeEvents => (schema_for!(SubscribeEvents), schema_for!(Events)),
+            ToolName::GetSessionIdentity => (
+                schema_for!(GetSessionIdentity),
+                schema_for!(SessionIdentity),
+            ),
+            ToolName::SetSessionIdentity => (
+                schema_for!(SetSessionIdentity),
+                schema_for!(SessionIdentity),
+            ),
         }
     }
 
@@ -174,6 +195,61 @@ pub fn all() -> Vec<Tool> {
 }
 
 // ---- arguments -------------------------------------------------------------
+
+/// Read this MCP session's current author, including its display/routing name,
+/// model and immutable provenance. Use `author.name` for `request_review.agent`
+/// and `subscribe_events.awaiting_agent`. Available after initialize, even if
+/// the daemon connection is down.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GetSessionIdentity {}
+
+/// Set this MCP session's name and model for subsequent events. Both fields
+/// are required; use `get_session_identity` to retain a current value. Names and
+/// models must be nonempty, with no surrounding whitespace or control characters.
+/// The name is also the exact routing key for `request_review.agent` and
+/// `subscribe_events.awaiting_agent`; keep it stable while collaborating.
+/// Reconnects to the daemon before applying; on failure the old identity remains.
+/// Session ID, invoking human, Agent/Mcp provenance and historical authors are
+/// preserved. This changes only the calling session and appends no event.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(try_from = "SessionIdentityFields")]
+pub struct SetSessionIdentity {
+    pub(crate) name: String,
+    pub(crate) model: String,
+}
+
+/// Editable session fields, validated once at the tool boundary.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SessionIdentityFields {
+    /// Display name and exact routing key; nonempty, no surrounding whitespace
+    /// or control characters. Choose a distinct name for each collaborating agent.
+    #[schemars(length(min = 1))]
+    name: String,
+    /// Model running this session; nonempty, no surrounding whitespace or
+    /// control characters.
+    #[schemars(length(min = 1))]
+    model: String,
+}
+
+impl TryFrom<SessionIdentityFields> for SetSessionIdentity {
+    type Error = &'static str;
+
+    fn try_from(fields: SessionIdentityFields) -> Result<Self, Self::Error> {
+        for value in [&fields.name, &fields.model] {
+            if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
+                return Err(
+                    "name and model must be nonempty, with no surrounding whitespace or control characters",
+                );
+            }
+        }
+        Ok(Self {
+            name: fields.name,
+            model: fields.model,
+        })
+    }
+}
 
 /// Workspaces known to the daemon, each with its attached repos.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -331,7 +407,8 @@ fn yes() -> bool {
 }
 
 /// Ask a named agent to review. Subscribers with scope `AwaitingAgent` for
-/// that name are notified.
+/// that name are notified. Use the recipient's `get_session_identity` `author.name`
+/// unchanged as `agent`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RequestReview {
@@ -367,7 +444,8 @@ struct SubscribeEventsWire {
     /// and `awaiting_agent`.
     workspace_id: Option<WorkspaceId>,
     /// Only `ReviewRequested` events addressed to this agent name. Mutually
-    /// exclusive with `review_id` and `workspace_id`.
+    /// exclusive with `review_id` and `workspace_id`. To receive this session's
+    /// requests, use `get_session_identity`'s `author.name` unchanged.
     awaiting_agent: Option<String>,
     /// Replay after this log position; omit for live only.
     since_seq: Option<Seq>,
@@ -415,6 +493,13 @@ fn default_max() -> usize {
 }
 
 // ---- results ---------------------------------------------------------------
+
+/// The current author for this MCP session's future events. Its Agent name is
+/// also the exact routing key; `session_id`, `invoked_by` and `via` are read-only.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SessionIdentity {
+    pub author: Author,
+}
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Workspaces {
@@ -633,6 +718,98 @@ mod tests {
         assert_eq!(call.name(), ToolName::ListWorkspaces);
         assert!(ToolCall::parse(ToolName::ListWorkspaces, serde_json::json!({ "x": 1 })).is_err());
         assert!(ToolCall::parse(ToolName::GetReview, serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn session_identity_arguments_allow_only_valid_name_and_model() {
+        let call = ToolCall::parse(
+            ToolName::SetSessionIdentity,
+            serde_json::json!({ "name": "reviewer-a", "model": "example-model" }),
+        )
+        .unwrap();
+        let Call::Session(SessionCall::SetIdentity(identity)) = call.classify() else {
+            panic!("identity changes are session-local");
+        };
+        assert_eq!(identity.name, "reviewer-a");
+        assert_eq!(identity.model, "example-model");
+        assert!(matches!(
+            ToolCall::parse(ToolName::GetSessionIdentity, serde_json::json!({}))
+                .unwrap()
+                .classify(),
+            Call::Session(SessionCall::GetIdentity)
+        ));
+
+        for invalid in ["", " ", " reviewer-a", "reviewer-a ", "a\nb", "a\0b"] {
+            for arguments in [
+                serde_json::json!({ "name": invalid, "model": "model" }),
+                serde_json::json!({ "name": "reviewer-a", "model": invalid }),
+            ] {
+                assert!(ToolCall::parse(ToolName::SetSessionIdentity, arguments).is_err());
+            }
+        }
+        for arguments in [
+            serde_json::json!({}),
+            serde_json::json!({ "name": "reviewer-a" }),
+            serde_json::json!({ "model": "model" }),
+            serde_json::json!({ "name": null, "model": "model" }),
+            serde_json::json!({ "name": "reviewer-a", "model": 42 }),
+        ] {
+            assert!(ToolCall::parse(ToolName::SetSessionIdentity, arguments).is_err());
+        }
+        for field in [
+            "session_id",
+            "invoked_by",
+            "via",
+            "type",
+            "author",
+            "client_id",
+        ] {
+            let mut arguments = serde_json::json!({ "name": "reviewer-a", "model": "model" });
+            arguments[field] = serde_json::json!("forged");
+            assert!(ToolCall::parse(ToolName::SetSessionIdentity, arguments).is_err());
+            assert!(
+                ToolCall::parse(
+                    ToolName::GetSessionIdentity,
+                    serde_json::json!({ field: "another session" }),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn identity_schema_and_descriptions_explain_routing_and_editable_fields() {
+        let tool = ToolName::SetSessionIdentity.tool();
+        assert!(tool.description.contains("subsequent events"));
+        assert!(tool.description.contains("request_review.agent"));
+        assert!(tool.description.contains("subscribe_events.awaiting_agent"));
+        assert_eq!(
+            tool.input_schema.get("required"),
+            Some(&serde_json::json!(["name", "model"]))
+        );
+        assert_eq!(
+            tool.input_schema.get("additionalProperties"),
+            Some(&Value::Bool(false))
+        );
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .unwrap()
+            .as_object()
+            .unwrap();
+        assert_eq!(properties.len(), 2);
+        assert_eq!(properties["name"]["minLength"], 1);
+        assert_eq!(properties["model"]["minLength"], 1);
+        for name in [ToolName::GetSessionIdentity, ToolName::SetSessionIdentity] {
+            assert!(
+                name.tool()
+                    .output_schema
+                    .get("properties")
+                    .unwrap()
+                    .get("author")
+                    .is_some()
+            );
+        }
     }
 
     #[test]

@@ -8,8 +8,8 @@ use nits_mcp::jsonrpc::Incoming;
 use nits_mcp::server::AgentIdentity;
 use nits_mcp::{Endpoint, Server};
 use nits_protocol::{
-    BuildInfo, ClientMsg, Envelope, ProtocolVersion, Request, Response, ReviewId, SchemaVersion,
-    ServerMsg,
+    BuildInfo, ClientMsg, Envelope, ProtocolVersion, Request, Response, ReviewId, RpcError,
+    SchemaVersion, ServerMsg,
 };
 use nitsd::transport::{self, ByteRead, ByteWrite};
 use serde_json::{Value, json};
@@ -28,6 +28,17 @@ fn req(method: &str, params: Value) -> Incoming {
         method: method.into(),
         params,
     }
+}
+
+async fn tool_result(server: &mut Server, name: &str, arguments: Value) -> Value {
+    bounded(server.handle(req(
+        "tools/call",
+        json!({ "name": name, "arguments": arguments }),
+    )))
+    .await
+    .unwrap()
+    .result
+    .unwrap()
 }
 
 async fn accept_hello(
@@ -186,6 +197,96 @@ async fn lost_mutation_is_not_replayed_and_next_call_reconnects_with_same_proven
     .result
     .unwrap();
     assert_eq!(recovered["structuredContent"]["workspaces"], json!([]));
+    bounded(peer).await.unwrap();
+}
+
+#[tokio::test]
+async fn rejected_identity_handshake_preserves_the_live_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("daemon.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut original_rd, mut original_wr, original) = accept_client(&listener).await;
+        let (candidate_rd, mut candidate_wr, candidate) = accept_hello(&listener).await;
+        let ClientMsg::Hello {
+            author: original_author,
+            client_id: old_id,
+            ..
+        } = original
+        else {
+            panic!("expected original Hello");
+        };
+        let ClientMsg::Hello {
+            author: candidate_author,
+            client_id: new_id,
+            ..
+        } = candidate
+        else {
+            panic!("expected candidate Hello");
+        };
+        assert_ne!(old_id, new_id);
+        let mut expected = json!(original_author);
+        expected["name"] = json!("reviewer-a");
+        expected["model"] = json!("next-model");
+        assert_eq!(json!(candidate_author), expected);
+        transport::send_msg(
+            &mut candidate_wr,
+            &Envelope::current(ServerMsg::Rejected {
+                error: RpcError::UnsupportedProtocol {
+                    requested: ProtocolVersion::CURRENT,
+                    supported: vec![],
+                },
+            }),
+        )
+        .await
+        .unwrap();
+        drop((candidate_rd, candidate_wr));
+        let message = transport::recv_msg::<_, ClientMsg>(&mut original_rd)
+            .await
+            .unwrap()
+            .unwrap();
+        let ClientMsg::Request {
+            id,
+            request: Request::ListWorkspaces,
+        } = message.msg
+        else {
+            panic!("expected query on the original connection");
+        };
+        transport::send_msg(
+            &mut original_wr,
+            &Envelope::current(ServerMsg::Response {
+                id,
+                response: Response::Workspaces { workspaces: vec![] },
+            }),
+        )
+        .await
+        .unwrap();
+    });
+    let mut server = server(&socket);
+    bounded(server.handle(req(
+        "initialize",
+        json!({ "clientInfo": { "name": "original-agent" } }),
+    )))
+    .await
+    .unwrap();
+    let before = tool_result(&mut server, "get_session_identity", json!({})).await;
+    let failed = tool_result(
+        &mut server,
+        "set_session_identity",
+        json!({ "name": "reviewer-a", "model": "next-model" }),
+    )
+    .await;
+    assert_eq!(failed["isError"], true);
+    assert!(
+        failed["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("cannot connect")
+    );
+    let after = tool_result(&mut server, "get_session_identity", json!({})).await;
+    assert_eq!(before, after);
+    let query = tool_result(&mut server, "list_workspaces", json!({})).await;
+    assert_eq!(query["structuredContent"]["workspaces"], json!([]));
     bounded(peer).await.unwrap();
 }
 

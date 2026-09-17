@@ -95,17 +95,25 @@ async fn human(h: &Harness) -> Client {
 }
 
 fn server(h: &Harness) -> Server {
+    server_with_session(h, "sess-1")
+}
+
+fn server_with_session(h: &Harness, session_id: &str) -> Server {
+    server_at(&h.socket, session_id)
+}
+
+fn server_at(socket: &std::path::Path, session_id: &str) -> Server {
     Server::new(
         Endpoint {
             context: nits_config::Context::Local {
                 data_dir: None,
-                socket: Some(h.socket.clone()),
+                socket: Some(socket.to_owned()),
             },
             start: nitsd::contexts::StartPolicy::RequireRunning,
         },
         AgentIdentity {
             model: "test-model".into(),
-            session_id: "sess-1".into(),
+            session_id: session_id.into(),
             invoked_by: Some(Human {
                 name: "ada".into(),
                 machine: "box".into(),
@@ -116,6 +124,29 @@ fn server(h: &Harness) -> Server {
             version: "test".into(),
         },
     )
+}
+
+/// Cut the transport deterministically while the real daemon keeps its store.
+async fn forward_connections(
+    listener: tokio::net::UnixListener,
+    target: std::path::PathBuf,
+    shutdown: CancellationToken,
+) {
+    let mut tasks = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => break,
+            accepted = listener.accept() => {
+                let (mut incoming, _) = accepted.unwrap();
+                let destination = target.clone();
+                tasks.spawn(async move {
+                    let mut outgoing = tokio::net::UnixStream::connect(destination).await.unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut incoming, &mut outgoing).await;
+                });
+            }
+        }
+    }
+    tasks.shutdown().await;
 }
 
 fn req(id: u64, method: &str, params: Value) -> Incoming {
@@ -252,6 +283,18 @@ async fn tools_list_is_json_rpc_conformant() {
     let r = welcome.result.unwrap();
     assert_eq!(r["protocolVersion"], json!("2025-06-18"));
     assert_eq!(r["serverInfo"]["name"], json!("nits-mcp"));
+    let instructions = r["instructions"].as_str().unwrap();
+    for term in [
+        "get_session_identity",
+        "set_session_identity",
+        "author.name",
+        "awaiting_agent",
+    ] {
+        assert!(
+            instructions.contains(term),
+            "missing {term}: {instructions}"
+        );
+    }
 
     let out = s.handle(req(2, "tools/list", json!({}))).await.unwrap();
     assert_eq!(out.jsonrpc, "2.0");
@@ -275,6 +318,8 @@ async fn tools_list_is_json_rpc_conformant() {
             "resolve",
             "request_review",
             "subscribe_events",
+            "get_session_identity",
+            "set_session_identity",
         ]
     );
     for t in &tools {
@@ -305,6 +350,246 @@ async fn tools_list_is_json_rpc_conformant() {
         .await
         .unwrap();
     assert_eq!(unknown_tool.error.unwrap().code, -32602);
+}
+
+#[tokio::test]
+async fn session_identity_changes_future_authorship_and_preserves_other_sessions() {
+    let h = start();
+    let c = human(&h).await;
+    let (ws, rid) = seed(&h, &c).await;
+    let mut s = server(&h);
+    let mut other = server_with_session(&h, "sess-2");
+    init(&mut s).await;
+    init(&mut other).await;
+    let original = call(&mut s, "get_session_identity", json!({})).await;
+    let other_identity = call(&mut other, "get_session_identity", json!({})).await;
+    assert_eq!(original["author"]["name"], "claude-code");
+    assert_eq!(original["author"]["model"], "test-model");
+    let created = call(
+        &mut s,
+        "create_review",
+        json!({ "workspace_id": ws, "title": "r", "targets": main_feature(&rid) }),
+    )
+    .await;
+    let review_id = &created["review"]["id"];
+    let before = call(
+        &mut s,
+        "add_comment",
+        json!({ "review_id": review_id, "body": "before" }),
+    )
+    .await;
+    let previous_events = h.daemon.core().events_after(None).unwrap();
+    let updated = call(
+        &mut s,
+        "set_session_identity",
+        json!({ "name": "reviewer-a", "model": "example-model" }),
+    )
+    .await;
+    let mut expected = original.clone();
+    expected["author"]["name"] = json!("reviewer-a");
+    expected["author"]["model"] = json!("example-model");
+    assert_eq!(updated, expected);
+    assert_eq!(
+        call(&mut s, "get_session_identity", json!({})).await,
+        updated
+    );
+    assert_eq!(
+        call(&mut other, "get_session_identity", json!({})).await,
+        other_identity
+    );
+    assert_eq!(
+        h.daemon.core().events_after(None).unwrap(),
+        previous_events,
+        "identity writes no event"
+    );
+
+    let after = call(
+        &mut s,
+        "add_comment",
+        json!({ "review_id": review_id, "body": "after" }),
+    )
+    .await;
+    let reply = call(
+        &mut s,
+        "reply",
+        json!({ "review_id": review_id, "thread_id": before["thread_id"], "body": "reply" }),
+    )
+    .await;
+    let other_comment = call(
+        &mut other,
+        "add_comment",
+        json!({ "review_id": review_id, "body": "other" }),
+    )
+    .await;
+    assert_eq!(before["event"]["author"], original["author"]);
+    assert_eq!(after["event"]["author"], updated["author"]);
+    assert_eq!(reply["event"]["author"], updated["author"]);
+    assert_eq!(other_comment["event"]["author"], other_identity["author"]);
+    assert_ne!(before["event"]["client_id"], after["event"]["client_id"]);
+    assert_eq!(
+        after["event"]["client_seq"], 1,
+        "new connection has its own mutation sequence"
+    );
+
+    let persisted = h.daemon.core().events_after(None).unwrap();
+    assert_eq!(&persisted[..previous_events.len()], previous_events);
+    let comments = call(&mut s, "list_comments", json!({ "review_id": review_id })).await;
+    for (result, identity) in [
+        (&before, &original),
+        (&after, &updated),
+        (&reply, &updated),
+        (&other_comment, &other_identity),
+    ] {
+        let comment = comments["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|comment| comment["id"] == result["comment_id"])
+            .unwrap();
+        assert_eq!(comment["author"], identity["author"]);
+        let event = persisted
+            .iter()
+            .find(|event| json!(event.seq) == result["event"]["seq"])
+            .unwrap();
+        assert_eq!(json!(event.author), identity["author"]);
+    }
+}
+
+#[tokio::test]
+async fn session_name_routes_requests_across_model_updates() {
+    let h = start();
+    let c = human(&h).await;
+    let (ws, rid) = seed(&h, &c).await;
+    let mut reviewer = server(&h);
+    let mut requester = server_with_session(&h, "sess-2");
+    init(&mut reviewer).await;
+    init(&mut requester).await;
+    let created = call(
+        &mut requester,
+        "create_review",
+        json!({ "workspace_id": ws, "title": "r", "targets": main_feature(&rid) }),
+    )
+    .await;
+    let identity = call(
+        &mut reviewer,
+        "set_session_identity",
+        json!({ "name": "reviewer-a", "model": "example-model" }),
+    )
+    .await;
+    let since = h.daemon.core().last_seq().unwrap().unwrap();
+    let invitation = call(&mut requester, "request_review", json!({ "review_id": created["review"]["id"], "agent": identity["author"]["name"], "note": "please review" })).await;
+    call(&mut requester, "request_review", json!({ "review_id": created["review"]["id"], "agent": "another-agent", "note": "other work" })).await;
+    let model_update = call(
+        &mut reviewer,
+        "set_session_identity",
+        json!({ "name": identity["author"]["name"], "model": "next-model" }),
+    )
+    .await;
+    assert_eq!(model_update["author"]["name"], identity["author"]["name"]);
+    let polled = call(&mut reviewer, "subscribe_events", json!({ "awaiting_agent": model_update["author"]["name"], "since_seq": since, "timeout_ms": 1000 })).await;
+    assert_eq!(polled["events"], json!([invitation["event"]]));
+    assert_eq!(polled["last_seq"], invitation["event"]["seq"]);
+    let resumed = call(&mut reviewer, "subscribe_events", json!({ "awaiting_agent": model_update["author"]["name"], "since_seq": polled["last_seq"], "timeout_ms": 10 })).await;
+    assert_eq!(resumed["events"], json!([]));
+}
+
+#[tokio::test]
+async fn identity_survives_reconnect_and_failed_update_leaves_it_unchanged() {
+    let h = start();
+    let c = human(&h).await;
+    let (ws, rid) = seed(&h, &c).await;
+    let proxy_socket = h.socket.with_extension("proxy.sock");
+    let listener = tokio::net::UnixListener::bind(&proxy_socket).unwrap();
+    let shutdown = CancellationToken::new();
+    let proxy = tokio::spawn(forward_connections(
+        listener,
+        h.socket.clone(),
+        shutdown.clone(),
+    ));
+    let mut s = server_at(&proxy_socket, "sess-1");
+    for (name, arguments) in [
+        ("get_session_identity", json!({})),
+        (
+            "set_session_identity",
+            json!({ "name": "reviewer-a", "model": "example-model" }),
+        ),
+    ] {
+        assert!(
+            call_err(&mut s, name, arguments)
+                .await
+                .contains("initialize first")
+        );
+    }
+    init(&mut s).await;
+    let identity = call(
+        &mut s,
+        "set_session_identity",
+        json!({ "name": "reviewer-a", "model": "example-model" }),
+    )
+    .await;
+    let created = call(
+        &mut s,
+        "create_review",
+        json!({ "workspace_id": ws, "title": "r", "targets": main_feature(&rid) }),
+    )
+    .await;
+    let previous_events = h.daemon.core().events_after(None).unwrap();
+    shutdown.cancel();
+    proxy.await.unwrap();
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            s.client().unwrap().next_unsolicited()
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(
+        call(&mut s, "get_session_identity", json!({})).await,
+        identity,
+        "read needs no daemon connection"
+    );
+    let error = call_err(
+        &mut s,
+        "set_session_identity",
+        json!({ "name": "rejected-name", "model": "rejected-model" }),
+    )
+    .await;
+    assert!(error.contains("cannot connect"), "{error}");
+    assert_eq!(
+        call(&mut s, "get_session_identity", json!({})).await,
+        identity
+    );
+
+    std::fs::remove_file(&proxy_socket).unwrap();
+    let listener = tokio::net::UnixListener::bind(&proxy_socket).unwrap();
+    let shutdown = CancellationToken::new();
+    let proxy = tokio::spawn(forward_connections(
+        listener,
+        h.socket.clone(),
+        shutdown.clone(),
+    ));
+    let comment = call(
+        &mut s,
+        "add_comment",
+        json!({ "review_id": created["review"]["id"], "body": "after reconnect" }),
+    )
+    .await;
+    assert_eq!(comment["event"]["author"], identity["author"]);
+    assert_ne!(created["event"]["client_id"], comment["event"]["client_id"]);
+    assert_eq!(comment["event"]["client_seq"], 1);
+    let persisted = h.daemon.core().events_after(None).unwrap();
+    assert_eq!(&persisted[..previous_events.len()], previous_events);
+    assert_eq!(json!(persisted.last().unwrap().author), identity["author"]);
+    assert_eq!(
+        persisted.len(),
+        previous_events.len() + 1,
+        "failed update appends nothing"
+    );
+    shutdown.cancel();
+    proxy.await.unwrap();
+    std::fs::remove_file(&proxy_socket).unwrap();
 }
 
 #[tokio::test]
