@@ -22,6 +22,13 @@ $ nits diff
 Other ways to install — Homebrew, `apt`, `dnf`, the AUR — and the full
 documentation are at <https://github.com/JonoPrest/nits>.
 
+For scripts, `nits --json . --headless` creates or reuses the directory's
+working-tree review and prints one JSON object with `review_id`, `workspace_id`,
+`repo_id`, `outcome` (`"Created"` or `"Reused"`), and `base`/`head`. The latter are
+the daemon's recorded resolved refs, each containing a `tree` OID and `source`
+(commit OID or working-tree details). `--ui headless` is equivalent. Without
+`--json`, stdout remains just the review ID; status messages go to stderr.
+
 ## Licence
 
 MIT.
