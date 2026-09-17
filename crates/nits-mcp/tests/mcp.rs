@@ -1689,7 +1689,9 @@ async fn context_switch_is_atomic_preserves_identity_and_isolates_events() {
     assert_eq!(shared_review(&b, "review on b").await, review_id);
     let path = a.dir.path().join("contexts.toml");
     let mut config = nits_config::Config::default();
-    config.contexts.insert("a".into(), local_context(&a.socket));
+    config
+        .contexts
+        .insert("a".parse().unwrap(), local_context(&a.socket));
     let ws_server = nitsd::server::WsServer::bind(([127, 0, 0, 1], 0).into())
         .await
         .unwrap();
@@ -1697,9 +1699,9 @@ async fn context_switch_is_atomic_preserves_identity_and_isolates_events() {
     tokio::spawn(ws_server.run(Arc::clone(&b.daemon), b.shutdown.clone()));
     config
         .contexts
-        .insert("b".into(), nits_config::Context::Ws { url });
+        .insert("b".parse().unwrap(), nits_config::Context::Ws { url });
     config.contexts.insert(
-        "offline".into(),
+        "offline".parse().unwrap(),
         local_context(&a.socket.with_extension("missing")),
     );
     config.current_context = Some("a".parse().unwrap());
@@ -1763,7 +1765,7 @@ async fn context_switch_is_atomic_preserves_identity_and_isolates_events() {
     // A config edit after startup is visible to both discovery and switching.
     config
         .contexts
-        .insert("new-b".into(), local_context(&b.socket));
+        .insert("new-b".parse().unwrap(), local_context(&b.socket));
     config.save(&path).unwrap();
     assert!(
         call(&mut s, "list_contexts", json!({})).await["contexts"]
@@ -1858,10 +1860,12 @@ async fn switched_context_reconnects_to_its_own_endpoint_with_the_same_provenanc
     ));
     let path = a.dir.path().join("contexts.toml");
     let mut config = nits_config::Config::default();
-    config.contexts.insert("a".into(), local_context(&a.socket));
     config
         .contexts
-        .insert("b".into(), local_context(&proxy_socket));
+        .insert("a".parse().unwrap(), local_context(&a.socket));
+    config
+        .contexts
+        .insert("b".parse().unwrap(), local_context(&proxy_socket));
     config.save(&path).unwrap();
     let mut s = configured_server(&path, "a");
     init(&mut s).await;
@@ -1971,10 +1975,13 @@ async fn rejected_context_handshake_keeps_the_previous_connection_usable() {
         }
     });
     let mut config = nits_config::Config::default();
-    config.contexts.insert("a".into(), local_context(&h.socket));
     config
         .contexts
-        .insert("incompatible".into(), local_context(&rejected_socket));
+        .insert("a".parse().unwrap(), local_context(&h.socket));
+    config.contexts.insert(
+        "incompatible".parse().unwrap(),
+        local_context(&rejected_socket),
+    );
     config.save(&path).unwrap();
     let mut s = configured_server(&path, "a");
     init(&mut s).await;
@@ -2000,4 +2007,42 @@ async fn rejected_context_handshake_keeps_the_previous_connection_usable() {
         json!({"since_seq":0,"timeout_ms":10}),
     )
     .await;
+}
+
+#[tokio::test]
+async fn malformed_config_keys_are_reported_at_load_and_recovery_preserves_the_session() {
+    let h = start();
+    let path = h.dir.path().join("contexts.toml");
+    let mut config = nits_config::Config::default();
+    config
+        .contexts
+        .insert("valid".parse().unwrap(), local_context(&h.socket));
+    config.save(&path).unwrap();
+    let mut s = configured_server(&path, "valid");
+    init(&mut s).await;
+    std::fs::write(&path, "[contexts.\" broken \"]\ntype = \"Local\"\n").unwrap();
+    assert!(matches!(
+        nits_config::Config::load(&path),
+        Err(nits_config::ConfigError::Parse { .. })
+    ));
+    let error = call_err(&mut s, "list_contexts", json!({})).await;
+    assert!(
+        error.contains("parse ") && error.contains("context names must be nonempty"),
+        "{error}"
+    );
+    assert_eq!(
+        call(&mut s, "list_workspaces", json!({})).await["context"]["name"],
+        "valid"
+    );
+    config.save(&path).unwrap();
+    let listed = call(&mut s, "list_contexts", json!({})).await;
+    assert_eq!(listed["active"]["name"], "valid");
+    assert_eq!(listed["contexts"].as_array().unwrap().len(), 2);
+    assert!(
+        listed["contexts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|context| context["name"] == "valid")
+    );
 }

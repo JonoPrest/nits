@@ -384,13 +384,11 @@ impl Server {
                 let mut contexts: Vec<_> = config
                     .contexts
                     .iter()
-                    .map(|(name, context)| {
-                        Ok(tools::ContextIdentity {
-                            name: name.parse()?,
-                            kind: context.kind(),
-                        })
+                    .map(|(name, context)| tools::ContextIdentity {
+                        name: name.clone(),
+                        kind: context.kind(),
                     })
-                    .collect::<Result<_, nits_config::ConfigError>>()?;
+                    .collect();
                 if !config.contexts.contains_key(nits_config::DEFAULT_CONTEXT) {
                     contexts.insert(
                         0,

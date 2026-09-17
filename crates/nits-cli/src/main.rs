@@ -191,7 +191,7 @@ enum ContextCmd {
     },
     /// A daemon on this machine.
     AddLocal {
-        name: String,
+        name: ContextName,
         #[arg(long)]
         data_dir: Option<PathBuf>,
         #[arg(long)]
@@ -199,7 +199,7 @@ enum ContextCmd {
     },
     /// A daemon on another machine via `ssh HOST nits daemon stdio`.
     AddSsh {
-        name: String,
+        name: ContextName,
         /// Host as understood by your ssh config (`user@host`, alias).
         host: String,
         /// Remote `nits` binary. Default: `nits` on the remote PATH.
@@ -214,11 +214,11 @@ enum ContextCmd {
     },
     /// A daemon already listening for WebSocket clients.
     AddWs {
-        name: String,
+        name: ContextName,
         url: String,
     },
     Remove {
-        name: String,
+        name: ContextName,
     },
 }
 
@@ -233,7 +233,7 @@ enum DaemonCmd {
     Start,
     /// Ask the daemon to exit; it restarts on the next connection.
     Stop,
-    /// Be the daemon: serve this context's socket in the foreground.
+    /// Be the daemon: serve a machine-local socket in the foreground.
     ///
     /// Hidden because nothing needs to type it — `nits` starts daemons
     /// itself, with exactly this command (see `nitsd::launch`).
@@ -242,6 +242,8 @@ enum DaemonCmd {
     /// Pipe stdin/stdout to this machine's daemon, starting one if nothing
     /// answers; `--start-policy require-running` exits 3 instead. What
     /// `ssh host nits daemon stdio` runs for an ssh context.
+    /// Ignores persisted and environment client routing defaults; explicit
+    /// local contexts and local socket/data-dir flags still select the binding.
     #[command(hide = true)]
     Stdio(ServeArgs),
 }
@@ -489,21 +491,72 @@ fn resolve_context(
         });
     }
     if cli.socket.is_some() || cli.data_dir.is_some() {
-        return Ok(Selection {
-            name: (if cli.socket.is_some() {
-                "--socket"
-            } else {
-                "--data-dir"
-            })
-            .parse()?,
-            context: Context::Local {
-                data_dir: cli.data_dir.clone(),
-                socket: cli.socket.clone(),
-            },
-            origin: SelectionOrigin::AdHoc,
-        });
+        return local_selection(cli);
     }
     Ok(cfg.selection(cli.context.as_ref().map(|name| (name, origin)))?)
+}
+
+/// Serving endpoints belong to this machine. Client routing defaults must not
+/// redirect an SSH proxy on its destination, including a redefined `local` name.
+fn resolve_daemon_context(
+    command: &DaemonCmd,
+    cli: &Cli,
+    cfg: &nits_config::Config,
+    origin: SelectionOrigin,
+    url_source: Option<clap::parser::ValueSource>,
+) -> anyhow::Result<Selection> {
+    match command {
+        DaemonCmd::Status { .. } | DaemonCmd::Start | DaemonCmd::Stop => {
+            resolve_context(cli, cfg, origin)
+        }
+        DaemonCmd::Serve(_) | DaemonCmd::Stdio(_) => {
+            if let Some(url) = cli
+                .daemon_url
+                .as_ref()
+                .filter(|_| url_source == Some(clap::parser::ValueSource::CommandLine))
+            {
+                return Ok(Selection {
+                    name: "--daemon-url".parse()?,
+                    context: Context::Ws { url: url.clone() },
+                    origin: SelectionOrigin::AdHoc,
+                });
+            }
+            if cli.socket.is_some() || cli.data_dir.is_some() {
+                return local_selection(cli);
+            }
+            if let Some(name) = cli
+                .context
+                .as_ref()
+                .filter(|_| origin == SelectionOrigin::Flag)
+            {
+                return Ok(cfg.selection(Some((name, origin)))?);
+            }
+            Ok(Selection {
+                name: nits_config::DEFAULT_CONTEXT.parse()?,
+                context: Context::Local {
+                    data_dir: None,
+                    socket: None,
+                },
+                origin: SelectionOrigin::Implicit,
+            })
+        }
+    }
+}
+
+fn local_selection(cli: &Cli) -> anyhow::Result<Selection> {
+    Ok(Selection {
+        name: (if cli.socket.is_some() {
+            "--socket"
+        } else {
+            "--data-dir"
+        })
+        .parse()?,
+        context: Context::Local {
+            data_dir: cli.data_dir.clone(),
+            socket: cli.socket.clone(),
+        },
+        origin: SelectionOrigin::AdHoc,
+    })
 }
 
 fn config_path(cli: &Cli) -> anyhow::Result<PathBuf> {
@@ -850,7 +903,17 @@ async fn main() -> anyhow::Result<()> {
     {
         return context_cmd(&mut cfg, &cfg_path, &cli, origin, c, json);
     }
-    let selection = resolve_context(&cli, &cfg, origin)?;
+    let selection = if let Some(Cmd::Daemon(command)) = &cli.cmd {
+        resolve_daemon_context(
+            command,
+            &cli,
+            &cfg,
+            origin,
+            matches.value_source("daemon_url"),
+        )?
+    } else {
+        resolve_context(&cli, &cfg, origin)?
+    };
     if let Some(Cmd::Mcp) = cli.cmd {
         return mcp(selection, cfg_path, cli.start_policy.into()).await;
     }
@@ -1435,7 +1498,7 @@ fn context_cmd(
         ),
         ContextCmd::AddWs { name, url } => add(cfg, path, &name, &Context::Ws { url }, json),
         ContextCmd::Remove { name } => {
-            let removed = cfg.remove(&name)?;
+            let removed = cfg.remove(name.as_str())?;
             cfg.save(path)?;
             emit(json, &removed, || format!("removed {name}"))
         }
@@ -1446,11 +1509,11 @@ fn context_cmd(
 fn add(
     cfg: &mut nits_config::Config,
     path: &Path,
-    name: &str,
+    name: &ContextName,
     ctx: &Context,
     json: bool,
 ) -> anyhow::Result<()> {
-    cfg.contexts.insert(name.to_string(), ctx.clone());
+    cfg.contexts.insert(name.clone(), ctx.clone());
     cfg.save(path)?;
     emit(json, &(&name, &ctx), || {
         format!("added {name}\t{}", ctx.describe())
@@ -1487,7 +1550,7 @@ async fn daemon_cmd(
                 let mut v: Vec<(String, Context)> = cfg
                     .contexts
                     .iter()
-                    .map(|(n, c)| (n.clone(), c.clone()))
+                    .map(|(n, c)| (n.to_string(), c.clone()))
                     .collect();
                 if !cfg.contexts.contains_key(nits_config::DEFAULT_CONTEXT) {
                     v.insert(0, cfg.resolve(Some(nits_config::DEFAULT_CONTEXT))?);

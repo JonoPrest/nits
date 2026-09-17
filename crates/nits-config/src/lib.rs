@@ -46,6 +46,12 @@ impl ContextName {
     }
 }
 
+impl std::borrow::Borrow<str> for ContextName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 impl TryFrom<String> for ContextName {
     type Error = ConfigError;
     fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -331,7 +337,7 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_context: Option<ContextName>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub contexts: BTreeMap<String, Context>,
+    pub contexts: BTreeMap<ContextName, Context>,
 }
 
 impl Config {
@@ -448,7 +454,7 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.contexts.insert(
-            "box".into(),
+            "box".parse().unwrap(),
             Context::Ssh {
                 host: "build-box".into(),
                 bin: RemoteBin::Default,
@@ -457,7 +463,7 @@ mod tests {
             },
         );
         cfg.contexts.insert(
-            "shared".into(),
+            "shared".parse().unwrap(),
             Context::Ws {
                 url: "ws://h:7677".into(),
             },
@@ -483,7 +489,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut config = Config::default();
         config.contexts.insert(
-            "remote".into(),
+            "remote".parse().unwrap(),
             Context::Ws {
                 url: "ws://review.example:7677".into(),
             },
@@ -552,6 +558,23 @@ mod tests {
             "build-box"
         );
         assert!(toml::from_str::<Config>("current_context = ' '").is_err());
+    }
+
+    #[test]
+    fn context_map_keys_are_validated_when_decoding_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for name in ["", " broken ", "bad\\nname"] {
+            std::fs::write(&path, format!("[contexts.\"{name}\"]\ntype = \"Local\"\n")).unwrap();
+            let error = Config::load(&path).unwrap_err();
+            assert!(matches!(error, ConfigError::Parse { .. }));
+            assert!(error.to_string().contains("context names must be nonempty"));
+        }
+        std::fs::write(&path, "[contexts.build-box]\ntype = \"Local\"\n").unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.contexts.keys().next().unwrap().as_str(), "build-box");
+        config.save(&path).unwrap();
+        assert_eq!(Config::load(&path).unwrap(), config);
     }
 
     /// A config written before the daemon became `nits daemon serve` still

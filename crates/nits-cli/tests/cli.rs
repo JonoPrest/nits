@@ -527,9 +527,9 @@ fn upgraded_cli_stops_an_older_protocol_before_starting_its_daemon() {
     }
 }
 
-/// Contexts live in the config file and are always selected per process
-/// (`-c` / `NITS_CONTEXT`), never by a persisted "current"; `daemon` manages
-/// the selected one, including auto-start on first use and an ssh context
+/// Contexts live in the config file; this scenario explicitly selects each
+/// through `-c` / `NITS_CONTEXT`. `daemon` manages the selected one, including
+/// auto-start on first use and an ssh context
 /// whose remote side is exercised through a stand-in `ssh`.
 #[test]
 #[allow(clippy::too_many_lines)] // one scenario end to end
@@ -772,7 +772,7 @@ fn browser_ui_connects_to_named_ssh_and_websocket_contexts() {
     .unwrap();
     let mut cfg = nits_config::Config::default();
     cfg.contexts.insert(
-        "remote".into(),
+        "remote".parse().unwrap(),
         nits_config::Context::Ssh {
             host: "test-host".into(),
             bin: nits_config::RemoteBin::Default,
@@ -781,7 +781,7 @@ fn browser_ui_connects_to_named_ssh_and_websocket_contexts() {
         },
     );
     cfg.contexts.insert(
-        "remote-ws".into(),
+        "remote-ws".parse().unwrap(),
         nits_config::Context::Ws {
             url: h.ws_url.clone(),
         },
@@ -909,7 +909,7 @@ fn workspace_selection_is_global_and_remote_output_identifies_each_repo() {
     let cfg_path = h.dir.path().join("remote.toml");
     let mut cfg = nits_config::Config::default();
     cfg.contexts.insert(
-        "build-box".into(),
+        "build-box".parse().unwrap(),
         nits_config::Context::Ws {
             url: h.ws_url.clone(),
         },
@@ -1253,7 +1253,7 @@ fn persisted_context_precedence_and_origins_use_real_daemons() {
     let mut config = nits_config::Config::default();
     for (name, socket) in [("a", &a.socket), ("b", &b.socket)] {
         config.contexts.insert(
-            name.into(),
+            name.parse().unwrap(),
             nits_config::Context::Local {
                 data_dir: None,
                 socket: Some(socket.clone()),
@@ -1261,7 +1261,7 @@ fn persisted_context_precedence_and_origins_use_real_daemons() {
         );
     }
     config.contexts.insert(
-        "offline".into(),
+        "offline".parse().unwrap(),
         nits_config::Context::Ws {
             url: "ws://127.0.0.1:1".into(),
         },
@@ -1380,7 +1380,7 @@ fn mcp_launch_uses_persisted_selection_and_explicit_override() {
     let mut config = nits_config::Config::default();
     for (name, socket) in [("a", &a.socket), ("b", &b.socket)] {
         config.contexts.insert(
-            name.into(),
+            name.parse().unwrap(),
             nits_config::Context::Local {
                 data_dir: None,
                 socket: Some(socket.clone()),
@@ -1447,5 +1447,260 @@ fn mcp_launch_uses_persisted_selection_and_explicit_override() {
         }
         drop(input);
         assert!(child.wait().unwrap().success());
+    }
+}
+
+#[test]
+fn malformed_context_names_are_rejected_before_any_config_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    configured_nits(&path)
+        .args(["context", "add-local", "valid"])
+        .assert()
+        .success();
+    let before = std::fs::read(&path).unwrap();
+    for name in ["", " broken ", "bad\nname"] {
+        for args in [
+            vec!["context", "add-local", name],
+            vec!["context", "add-ssh", name, "review-host"],
+            vec!["context", "add-ws", name, "ws://127.0.0.1:1"],
+        ] {
+            configured_nits(&path).args(args).assert().failure();
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+    }
+    let listed = json_output(configured_nits(&path).args(["context", "list"]));
+    assert!(listed["contexts"]["valid"].is_object());
+    assert_eq!(listed["contexts"].as_object().unwrap().len(), 1);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // source and destination have independent client configurations
+fn ssh_stdio_ignores_the_destinations_client_context_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("source.toml");
+    let destination_path = dir.path().join("destination.toml");
+    let data_home = dir.path().join("destination-data");
+    let default_data = data_home.join("nits");
+    std::fs::create_dir_all(&default_data).unwrap();
+    let socket = default_data.join("nitsd.sock");
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_nits"))
+        .env("NITS_CONFIG", &destination_path)
+        .env_remove("NITS_CONTEXT")
+        .env_remove("NITS_WS_URL")
+        .env_remove("NITS_SOCKET")
+        .env_remove("NITS_DATA_DIR")
+        .args(["daemon", "serve", "--data-dir"])
+        .arg(&default_data)
+        .arg("--socket")
+        .arg(&socket)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut daemon = RunningUi(child);
+    wait_for_daemon_socket(&mut daemon.0, &socket);
+    configured_nits(&destination_path)
+        .arg("--socket")
+        .arg(&socket)
+        .args(["workspace", "add", "destination-workspace"])
+        .assert()
+        .success();
+    let fake_ssh = dir.path().join("destination-ssh");
+    std::fs::write(
+        &fake_ssh,
+        r#"#!/bin/sh
+shift 2
+export NITS_CONFIG="$NITS_TEST_REMOTE_CONFIG"
+export XDG_DATA_HOME="$NITS_TEST_REMOTE_DATA"
+unset NITS_CONTEXT NITS_WS_URL NITS_SOCKET NITS_DATA_DIR
+if [ -n "$NITS_TEST_REMOTE_CONTEXT" ]; then
+    export NITS_CONTEXT="$NITS_TEST_REMOTE_CONTEXT"
+    export NITS_WS_URL=ws://127.0.0.1:1
+fi
+exec "$NITS_TEST_BIN" "$@"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &fake_ssh,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let mut source = nits_config::Config::default();
+    source.contexts.insert(
+        "destination".parse().unwrap(),
+        nits_config::Context::Ssh {
+            host: "review-host".into(),
+            bin: nits_config::RemoteBin::Default,
+            args: Vec::new(),
+            ssh: Some(fake_ssh.to_str().unwrap().into()),
+        },
+    );
+    source.current_context = Some("destination".parse().unwrap());
+    source.save(&source_path).unwrap();
+    let mut destination = nits_config::Config::default();
+    // The fallback must not resolve the configured name "local" either.
+    destination.contexts.insert(
+        "local".parse().unwrap(),
+        nits_config::Context::Ws {
+            url: "ws://127.0.0.1:1".into(),
+        },
+    );
+    destination.current_context = Some("elsewhere".parse().unwrap());
+    let command = || {
+        let mut command = configured_nits(&source_path);
+        command
+            .env("NITS_TEST_REMOTE_CONFIG", &destination_path)
+            .env("NITS_TEST_REMOTE_DATA", &data_home)
+            .env("NITS_TEST_BIN", env!("CARGO_BIN_EXE_nits"))
+            .env_remove("NITS_TEST_REMOTE_CONTEXT")
+            .args(["--start-policy", "require-running"]);
+        command
+    };
+    for remote in [
+        nits_config::Context::Ws {
+            url: "ws://127.0.0.1:1".into(),
+        },
+        nits_config::Context::Ssh {
+            host: "unreachable-host".into(),
+            bin: nits_config::RemoteBin::Default,
+            args: Vec::new(),
+            ssh: None,
+        },
+    ] {
+        destination
+            .contexts
+            .insert("elsewhere".parse().unwrap(), remote);
+        destination.save(&destination_path).unwrap();
+        for environment in [None, Some("elsewhere")] {
+            let mut list = command();
+            if let Some(name) = environment {
+                list.env("NITS_TEST_REMOTE_CONTEXT", name);
+            }
+            let workspaces = json_output(list.args(["workspace", "list"]));
+            assert_eq!(workspaces[0]["name"], "destination-workspace");
+        }
+    }
+    // Client lifecycle commands must still select the source's persisted SSH context.
+    command()
+        .args(["daemon", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with(
+            "destination\tssh review-host\trunning",
+        ));
+    command()
+        .args(["daemon", "start"])
+        .assert()
+        .success()
+        .stdout("already running\n");
+    command()
+        .args(["daemon", "stop"])
+        .assert()
+        .success()
+        .stdout("stopping\n");
+    command()
+        .args(["daemon", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::ends_with("\tstopped\n"));
+}
+
+#[test]
+fn daemon_serving_honors_explicit_local_selections_and_rejects_explicit_remotes() {
+    let h = start();
+    let path = h.dir.path().join("serving.toml");
+    let mut config = nits_config::Config::default();
+    config.contexts.insert(
+        "on-machine".parse().unwrap(),
+        nits_config::Context::Local {
+            data_dir: None,
+            socket: Some(h.socket.clone()),
+        },
+    );
+    config.contexts.insert(
+        "elsewhere".parse().unwrap(),
+        nits_config::Context::Ws {
+            url: h.ws_url.clone(),
+        },
+    );
+    config.current_context = Some("elsewhere".parse().unwrap());
+    config.save(&path).unwrap();
+    configured_nits(&path)
+        .env("NITS_CONTEXT", "elsewhere")
+        .env("NITS_WS_URL", &h.ws_url)
+        .args(["-c", "on-machine", "daemon", "stdio"])
+        .assert()
+        .success();
+    configured_nits(&path)
+        .env("NITS_SOCKET", &h.socket)
+        .args(["-c", "elsewhere", "daemon", "stdio"])
+        .assert()
+        .success();
+    for command in ["serve", "stdio"] {
+        for selection in [vec!["-c", "elsewhere"], vec!["--daemon-url", &h.ws_url]] {
+            configured_nits(&path)
+                .args(selection)
+                .args(["daemon", command])
+                .assert()
+                .failure()
+                .stderr(predicate::str::contains(
+                    "daemon can only be served locally",
+                ));
+        }
+    }
+}
+
+#[test]
+fn daemon_serve_defaults_to_this_machine_even_when_local_names_a_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let data_home = dir.path().join("data");
+    let socket = data_home.join("nits/nitsd.sock");
+    let mut config = nits_config::Config::default();
+    config.contexts.insert(
+        "local".parse().unwrap(),
+        nits_config::Context::Ws {
+            url: "ws://127.0.0.1:1".into(),
+        },
+    );
+    config.current_context = Some("local".parse().unwrap());
+    config.save(&path).unwrap();
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_nits"))
+        .env("NITS_CONFIG", &path)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("NITS_CONTEXT", "local")
+        .env("NITS_WS_URL", "ws://127.0.0.1:1")
+        .env_remove("NITS_SOCKET")
+        .env_remove("NITS_DATA_DIR")
+        .args(["daemon", "serve"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut daemon = RunningUi(child);
+    wait_for_daemon_socket(&mut daemon.0, &socket);
+    let workspaces = json_output(
+        configured_nits(&path)
+            .arg("--socket")
+            .arg(&socket)
+            .args(["workspace", "list"]),
+    );
+    assert_eq!(workspaces, serde_json::json!([]));
+}
+
+fn wait_for_daemon_socket(child: &mut std::process::Child, socket: &Path) {
+    let started = std::time::Instant::now();
+    while std::os::unix::net::UnixStream::connect(socket).is_err() {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "daemon exited before listening"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "daemon did not listen on its machine-local socket"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }

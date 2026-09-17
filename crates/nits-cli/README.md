@@ -27,7 +27,15 @@ Select a default daemon with `nits context use <NAME>` (saved atomically in
 can be selected. `nits context show` reports the effective selection and its
 origin; `--json` returns `{name, context, origin}`. Ad-hoc transport flags take
 precedence over `-c`, then `NITS_CONTEXT`, the persisted default, and implicit
-`local`. To remove the persisted default, select another context first.
+`local`. To remove the persisted default, select another context first. Context
+names must be nonempty, with no surrounding whitespace or control characters.
+
+The internal `daemon serve` and `daemon stdio` commands default to this machine,
+ignoring saved and environment client routing defaults (`NITS_CONTEXT` and
+`NITS_WS_URL`), even if a context named `local` points elsewhere. Explicit local
+`-c` selections and socket/data-dir flags or environment values still work;
+explicit remote bindings are rejected. `daemon status|start|stop` use the normal
+client selection above.
 
 `nits mcp` uses the same startup default. Inside MCP, `list_contexts` reports
 configured names and the active daemon; `use_context {"name":"build-box"}`
