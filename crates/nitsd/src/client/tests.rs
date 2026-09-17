@@ -1,6 +1,6 @@
 //! Deterministic transport faults: no socket timing or daemon scheduling needed.
 
-use std::future::Future;
+use std::future::{Future, ready};
 use std::time::Duration;
 
 use super::*;
@@ -20,16 +20,18 @@ struct WriteFrames {
 }
 
 impl FrameWrite for WriteFrames {
-    async fn send(&mut self, frame: &[u8]) -> Result<(), CodecError> {
+    fn send(&mut self, frame: &[u8]) -> impl Future<Output = Result<(), CodecError>> + Send {
         if self.fail.is_cancelled() {
-            return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe).into());
+            return ready(Err(
+                std::io::Error::from(std::io::ErrorKind::BrokenPipe).into()
+            ));
         }
         self.frames.send(frame.to_vec()).unwrap();
-        Ok(())
+        ready(Ok(()))
     }
 
-    async fn close(&mut self) -> Result<(), CodecError> {
-        Ok(())
+    fn close(&mut self) -> impl Future<Output = Result<(), CodecError>> + Send {
+        ready(Ok(()))
     }
 }
 
