@@ -332,6 +332,9 @@ enum CommentCmd {
 
 #[derive(Debug, Args)]
 struct AddComment {
+    /// Finding (default), or informational review summary/status conversation.
+    #[arg(long, value_enum, default_value_t = CommentIntentArg::Finding)]
+    intent: CommentIntentArg,
     #[command(flatten)]
     review: ReviewArg,
     #[arg(long)]
@@ -352,6 +355,12 @@ struct AddComment {
     /// Attach a unified-diff suggestion the reviewer can apply.
     #[arg(long)]
     patch: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CommentIntentArg {
+    Finding,
+    Informational,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -1329,9 +1338,13 @@ async fn comment(ops: &mut Ops, cmd: CommentCmd, json: bool) -> anyhow::Result<(
                         .await?
                 }
             };
-            let kind = match a.patch {
-                Some(patch) => CommentKind::Suggestion { patch },
-                None => CommentKind::Note,
+            let kind = match (a.intent, a.patch) {
+                (CommentIntentArg::Finding, Some(patch)) => CommentKind::Suggestion { patch },
+                (CommentIntentArg::Finding, None) => CommentKind::Note,
+                (CommentIntentArg::Informational, None) => CommentKind::Informational,
+                (CommentIntentArg::Informational, Some(_)) => {
+                    bail!("informational notes cannot carry a suggestion")
+                }
             };
             let (t, event) = ops.new_thread(a.review.0, kind, anchor, a.body).await?;
             emit(json, &event, || t.thread_id.to_string())
@@ -1360,6 +1373,7 @@ async fn comment(ops: &mut Ops, cmd: CommentCmd, json: bool) -> anyhow::Result<(
                 for t in &snap.threads {
                     let state = match t.resolution {
                         nits_protocol::ThreadResolution::Open => "open",
+                        nits_protocol::ThreadResolution::Informational => "informational",
                         nits_protocol::ThreadResolution::Resolved { .. } => "resolved",
                     };
                     let _ = writeln!(out, "thread {} [{state}]", t.id);

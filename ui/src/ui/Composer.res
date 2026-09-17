@@ -25,9 +25,14 @@ let make = (~draft: View.Draft.t, ~pendingRefresh: bool, ~dispatch: Action.t => 
   }
   let placeholder = switch draft.replyTo {
   | Some(_) => "Reply…"
-  | None => "Comment…"
+  | None => draft.intent == Informational ? "Summary or status note…" : "Finding…"
   }
   <div className="composer panel">
+    {draft.replyTo == None && draft.intent == Informational
+      ? <p>
+          {React.string("Informational note — does not approve the review or resolve findings.")}
+        </p>
+      : React.null}
     {pendingRefresh
       ? <div className="composer-pending"> {React.string("changes pending")} </div>
       : React.null}

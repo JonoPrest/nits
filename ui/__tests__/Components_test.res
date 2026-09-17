@@ -360,10 +360,10 @@ describe("Threads", () => {
     expect(dispatch)->toHaveBeenCalledWith(Action.ApplySuggestion({commentId: thread.root}))
     let plain = {...thread, suggestion: false}
     cleanup()
-    let {container} = render(
+    let _ = render(
       <Threads title="Threads" threads=[plain] focus={Thread({index: 0})} indexOffset=0 dispatch />,
     )
-    expect(Element.querySelector(container, "button"))->toBeNull
+    expect(Array.length(Screen.queryAllByText("Apply suggestion (a)")))->toBe(0)
   })
 
   test("a focused thread shows every comment body and a click opens its file", () => {
@@ -2136,6 +2136,7 @@ describe("Commented lines and the inline composer", () => {
         lines: {start: 9, end_: 9},
         contextHash: "0",
       }),
+      intent: Finding,
       replyTo: None,
     }
     expect(View.Draft.isDocked(draft))->toBe(false)
@@ -2152,7 +2153,7 @@ describe("Commented lines and the inline composer", () => {
   })
 
   test("a review-level draft still docks", () => {
-    let draft: View.Draft.t = {anchor: Review({}), replyTo: None}
+    let draft: View.Draft.t = {anchor: Review({}), intent: Finding, replyTo: None}
     expect(View.Draft.isDocked(draft))->toBe(true)
   })
 })
@@ -2183,6 +2184,7 @@ describe("The shell's composer placement", () => {
       lines: {start: 9, end_: 9},
       contextHash: "0",
     }),
+    intent: Finding,
     replyTo: None,
   }
 
@@ -2224,7 +2226,7 @@ describe("The shell's composer placement", () => {
   })
 
   test("a review-level draft still docks, in both tabs", () => {
-    let review: View.Draft.t = {anchor: Review({}), replyTo: None}
+    let review: View.Draft.t = {anchor: Review({}), intent: Finding, replyTo: None}
     [View.Tab.FilesChanged, Browse]->Array.forEach(
       tab => {
         let {container} = shell(withDraft(~tab, ~draft=Some(review)))
@@ -2239,5 +2241,86 @@ describe("The shell's composer placement", () => {
         cleanup()
       },
     )
+  })
+})
+
+describe("Informational conversation", () => {
+  test("three findings and a summary count as three open items, with attributed replies", () => {
+    let base = Fixtures.parse(View.ThreadView.schema, "client", "ThreadView", "default")
+    let note = {
+      ...base,
+      id: "summary",
+      status: Informational,
+      place: Review({}),
+      suggestion: false,
+      comments: [
+        ...base.comments,
+        {
+          ...base.comments->Array.getUnsafe(0),
+          id: "reply",
+          body: "Progress update",
+          author: Human({name: "Bea", machine: "host"}),
+        },
+      ],
+    }
+    let findings = [base, {...base, id: "second"}, {...base, id: "third"}]
+    expect(Threads.openFindings([...findings, note]))->toBe(3)
+    expect(Threads.openFindings([{...base, status: Resolved}, note]))->toBe(0)
+    let dispatch = fn()
+    let chrome: array<View.Hint.t> = [{command: Reply, keys: "R", label: "reply"}]
+    let {container} = render(
+      <Threads
+        title="Conversation" threads=[note] focus={Thread({index: 0})} indexOffset=0 dispatch chrome
+      />,
+    )
+    expect(Screen.getByText("informational"))->toBeTruthy
+    expect(Screen.getByText("Progress update"))->toBeTruthy
+    expect(Screen.getByText("Bea"))->toBeTruthy
+    expect(Array.length(Screen.queryAllByText("Resolve finding")))->toBe(0)
+    expect(Array.length(Screen.queryAllByText("Reopen finding")))->toBe(0)
+    let reply = Screen.getByText("Reply")
+    expect(Element.getAttribute(reply, "title"))->toEqual(Nullable.make("reply (R)"))
+    FireEvent.click(reply)
+    expect(dispatch)->toHaveBeenLastCalledWith(Action.ReplyOpened({threadId: "summary"}))
+    expect(Element.textContent(container))->toContain("Progress update")
+    cleanup()
+    let _ = render(
+      <Threads
+        title="Conversation"
+        threads=[note]
+        focus={Composer({})}
+        indexOffset=0
+        dispatch
+        chrome
+        draft={{intent: Finding, anchor: Review({}), replyTo: Some(note.id)}}
+      />,
+    )
+    expect(Screen.getByPlaceholderText("Reply…"))->toBeTruthy
+    expect(Screen.getByText("Progress update"))->toBeTruthy
+    expect(Array.length(Screen.queryAllByText("Reply")))->toBe(0)
+  })
+
+  test("conversation exposes both intents and renders its composer", () => {
+    let model = {
+      ...Fixtures.parse(View.ViewModel.schema, "client", "ViewModel", "default"),
+      tab: Conversation,
+      draft: Some({intent: Informational, anchor: Review({}), replyTo: None}),
+    }
+    let dispatch = fn()
+    let core: Core.t = {
+      dispatch,
+      key: _ => (),
+      subscribe: f => {
+        f(model)
+        () => ()
+      },
+      attach: () => (),
+    }
+    let _ = render(<App.Shell core />)
+    FireEvent.click(Screen.getByText("Add informational note"))
+    expect(dispatch)->toHaveBeenLastCalledWith(Action.RunCommand({command: InformationalNote}))
+    FireEvent.click(Screen.getByText("Add review-wide finding"))
+    expect(dispatch)->toHaveBeenLastCalledWith(Action.RunCommand({command: ReviewFinding}))
+    expect(Screen.getByPlaceholderText("Summary or status note…"))->toBeTruthy
   })
 })

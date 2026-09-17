@@ -2766,3 +2766,48 @@ fn entering_search_results_resets_the_core_selection_without_a_view_round_trip()
         assert_eq!(core.view(), &published);
     }
 }
+
+#[test]
+fn informational_and_review_finding_composers_have_keyboard_commands() {
+    use nits_protocol::CommentIntent;
+    let mut core = ready();
+    press(&mut core, "space i").unwrap();
+    let draft = core.view().draft.as_ref().unwrap();
+    assert_eq!(draft.anchor, Anchor::Review);
+    assert_eq!(draft.intent, CommentIntent::Informational);
+    assert_eq!(core.view().focus, Focus::Composer);
+    press(&mut core, "esc").unwrap();
+    press(&mut core, "space f").unwrap();
+    let draft = core.view().draft.as_ref().unwrap();
+    assert_eq!(draft.anchor, Anchor::Review);
+    assert_eq!(draft.intent, CommentIntent::Finding);
+    press(&mut core, "esc").unwrap();
+    press(&mut core, "space i").unwrap();
+    core.handle(Input::User(Action::DraftSubmitted {
+        body: "Summary".into(),
+    }))
+    .unwrap();
+    let index = core
+        .view()
+        .threads
+        .iter()
+        .position(|t| t.status == nits_client_core::ThreadStatus::Informational)
+        .unwrap();
+    core.handle(Input::User(Action::SetFocus {
+        focus: Focus::Thread { index },
+    }))
+    .unwrap();
+    assert!(
+        !core
+            .view()
+            .hints
+            .iter()
+            .any(|h| h.command == Command::ToggleResolved)
+    );
+    assert!(nits_client_core::resolve_command(&core, Command::ToggleResolved).is_err());
+    press(&mut core, "r").unwrap();
+    assert_eq!(
+        core.view().draft.as_ref().unwrap().reply_to,
+        Some(core.view().threads[index].id)
+    );
+}

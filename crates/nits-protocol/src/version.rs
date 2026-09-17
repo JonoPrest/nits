@@ -22,7 +22,8 @@ use serde::{Deserialize, Serialize};
 /// Compatibility rule: equal `major` and daemon `minor >= client minor`. Minor
 /// bumps may add variants/fields; the daemon serialises responses at the
 /// client's requested minor so `deny_unknown_fields` on the client still
-/// holds. Major bumps may change anything and are never bridged silently.
+/// holds. Serving an older minor additionally requires an explicitly supported
+/// serializer; retired minors are rejected. Major bumps are never bridged silently.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ProtocolVersion {
@@ -35,7 +36,7 @@ impl ProtocolVersion {
     /// The version this crate serialises.
     pub const CURRENT: ProtocolVersion = ProtocolVersion {
         major: 0,
-        minor: 5,
+        minor: 6,
         patch: 0,
     };
 
@@ -48,7 +49,10 @@ impl ProtocolVersion {
         }
     }
 
-    /// Can a daemon speaking `self` serve a client requesting `requested`?
+    /// Is `requested` in the same-major compatibility family at or before `self`?
+    /// This does not promise an older-minor serializer exists: daemon negotiation
+    /// must also require an explicitly supported minor. The stable shutdown-only
+    /// fallback uses this predicate to reach older daemons during upgrades.
     #[must_use]
     pub fn can_serve(self, requested: ProtocolVersion) -> bool {
         self.major == requested.major && self.minor >= requested.minor
@@ -113,7 +117,7 @@ pub struct SchemaVersion(u32);
 
 impl SchemaVersion {
     /// The layout this build writes.
-    pub const CURRENT: SchemaVersion = SchemaVersion(1);
+    pub const CURRENT: SchemaVersion = SchemaVersion(2);
 
     #[must_use]
     pub const fn new(n: u32) -> Self {
@@ -192,7 +196,7 @@ mod tests {
         }
         assert_eq!(
             serde_json::to_string(&ProtocolVersion::CURRENT).unwrap(),
-            "\"0.5.0\""
+            "\"0.6.0\""
         );
     }
 

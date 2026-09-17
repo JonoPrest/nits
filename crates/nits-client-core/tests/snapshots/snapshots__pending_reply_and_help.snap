@@ -571,7 +571,7 @@ expression: core.view()
       "created": 2001,
       "summary": "Is `new` the right name?",
       "replies": 1,
-      "resolved": false,
+      "status": "Open",
       "place": {
         "type": "Lines",
         "file": {
@@ -622,7 +622,7 @@ expression: core.view()
       "created": 2002,
       "summary": "Looks good overall.",
       "replies": 0,
-      "resolved": false,
+      "status": "Open",
       "place": {
         "type": "Review"
       },
@@ -657,7 +657,7 @@ expression: core.view()
       "created": 2002,
       "summary": "Looks good overall.",
       "replies": 0,
-      "resolved": false,
+      "status": "Open",
       "place": {
         "type": "Review"
       },
@@ -812,6 +812,16 @@ expression: core.view()
       "keys": "space C",
       "command": "Commits",
       "label": "commits"
+    },
+    {
+      "keys": "space i",
+      "command": "InformationalNote",
+      "label": "informational note"
+    },
+    {
+      "keys": "space f",
+      "command": "ReviewFinding",
+      "label": "review-wide finding"
     },
     {
       "keys": "esc",
@@ -1126,6 +1136,16 @@ expression: core.view()
       "label": "commits"
     },
     {
+      "keys": "space i",
+      "command": "InformationalNote",
+      "label": "informational note"
+    },
+    {
+      "keys": "space f",
+      "command": "ReviewFinding",
+      "label": "review-wide finding"
+    },
+    {
       "keys": "esc",
       "command": "Back",
       "label": "back"
@@ -1424,6 +1444,20 @@ expression: core.view()
             "keys": "space C",
             "command": "Commits",
             "label": "commits",
+            "primary": false,
+            "overridden": false
+          },
+          {
+            "keys": "space i",
+            "command": "InformationalNote",
+            "label": "informational note",
+            "primary": false,
+            "overridden": false
+          },
+          {
+            "keys": "space f",
+            "command": "ReviewFinding",
+            "label": "review-wide finding",
             "primary": false,
             "overridden": false
           },

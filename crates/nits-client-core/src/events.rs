@@ -35,6 +35,10 @@ pub struct EventMeta {
 pub enum MutationError {
     #[error("comment {0} already exists")]
     DuplicateComment(CommentId),
+    #[error("informational notes require a review-level anchor")]
+    InformationalAnchor,
+    #[error("informational thread {0} cannot be resolved or reopened")]
+    InformationalThread(ThreadId),
     #[error("no thread {0}")]
     UnknownThread(ThreadId),
     #[error("no comment {0}")]
@@ -91,6 +95,11 @@ pub fn local_event(
         } => {
             if comment(*comment_id).is_ok() {
                 return Err(MutationError::DuplicateComment(*comment_id));
+            }
+            if matches!(kind, nits_protocol::CommentKind::Informational)
+                && !matches!(anchor, nits_protocol::Anchor::Review)
+            {
+                return Err(MutationError::InformationalAnchor);
             }
             Ok(EventBody::CommentCreated {
                 comment: Comment {
@@ -170,6 +179,9 @@ pub fn local_event(
         } => {
             let th = thread(*thread_id)?;
             match th.resolution {
+                ThreadResolution::Informational => {
+                    Err(MutationError::InformationalThread(*thread_id))
+                }
                 ThreadResolution::Resolved { .. } => {
                     Err(MutationError::AlreadyResolved(*thread_id))
                 }
@@ -185,6 +197,9 @@ pub fn local_event(
         } => {
             let th = thread(*thread_id)?;
             match th.resolution {
+                ThreadResolution::Informational => {
+                    Err(MutationError::InformationalThread(*thread_id))
+                }
                 ThreadResolution::Open => Err(MutationError::NotResolved(*thread_id)),
                 ThreadResolution::Resolved { .. } => Ok(EventBody::ThreadUnresolved {
                     review_id: *review_id,
@@ -293,7 +308,7 @@ pub fn apply_body(
                     review_id: comment.review_id,
                     root: comment.id,
                     replies: Vec::new(),
-                    resolution: ThreadResolution::Open,
+                    resolution: ThreadResolution::for_root(&comment.kind),
                 }),
             }
             vec![ViewSection::Threads]

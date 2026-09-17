@@ -535,6 +535,10 @@ fn head() -> Side {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddComment {
+    /// Finding (default) opens an actionable thread, even without a path.
+    /// Informational requires no path: summary/status conversation, never approval.
+    #[serde(default)]
+    pub intent: nits_protocol::CommentIntent,
     pub review_id: ReviewId,
     /// Needed only when the review spans several repos.
     pub repo_id: Option<RepoId>,

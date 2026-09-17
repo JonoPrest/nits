@@ -113,6 +113,11 @@ impl Core {
         if self.store.comment(review, id)?.is_some() {
             return Err(CoreError::invalid(format!("comment {id} already exists")));
         }
+        if matches!(kind, CommentKind::Informational) && !matches!(anchor, Anchor::Review) {
+            return Err(CoreError::invalid(
+                "informational notes require a review-level anchor",
+            ));
+        }
         let anchor = self.validate_anchor(review, anchor)?;
         let comment = Comment {
             id,
@@ -224,6 +229,11 @@ impl Core {
         thread: ThreadId,
     ) -> Result<(), CoreError> {
         let th = self.thread(review, thread)?;
+        if matches!(th.resolution, ThreadResolution::Informational) {
+            return Err(CoreError::invalid(
+                "informational threads cannot be resolved or reopened",
+            ));
+        }
         if matches!(th.resolution, ThreadResolution::Resolved { .. }) {
             return Err(CoreError::invalid(format!(
                 "thread {thread} is already resolved"
@@ -246,6 +256,11 @@ impl Core {
         thread: ThreadId,
     ) -> Result<(), CoreError> {
         let th = self.thread(review, thread)?;
+        if matches!(th.resolution, ThreadResolution::Informational) {
+            return Err(CoreError::invalid(
+                "informational threads cannot be resolved or reopened",
+            ));
+        }
         if matches!(th.resolution, ThreadResolution::Open) {
             return Err(CoreError::invalid(format!(
                 "thread {thread} is not resolved"

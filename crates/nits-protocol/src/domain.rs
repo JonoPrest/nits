@@ -361,11 +361,13 @@ pub enum Anchor {
 #[strum_discriminants(name(CommentKindKind), derive(EnumIter, Hash))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum CommentKind {
+    /// Plain text. A root opens an actionable finding, including review-wide
+    /// findings; replies retain the existing thread's lifecycle.
     Note,
+    /// An informational review root: no approval, resolution, or readiness implication.
+    Informational,
     /// A unified diff against the anchored blob that a client can apply.
-    Suggestion {
-        patch: String,
-    },
+    Suggestion { patch: String },
     /// Asks an agent (or human) to act.
     Request,
 }
@@ -410,8 +412,44 @@ pub struct Comment {
 #[strum_discriminants(name(ThreadResolutionKind), derive(EnumIter, Hash))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ThreadResolution {
+    /// Conversation without an actionable lifecycle; cannot be resolved or reopened.
+    Informational,
     Open,
-    Resolved { by: Author, at: Timestamp },
+    Resolved {
+        by: Author,
+        at: Timestamp,
+    },
+}
+
+impl ThreadResolution {
+    /// A root's kind determines whether its thread has an actionable lifecycle.
+    #[must_use]
+    pub fn for_root(kind: &CommentKind) -> Self {
+        match kind {
+            CommentKind::Informational => Self::Informational,
+            CommentKind::Note | CommentKind::Suggestion { .. } | CommentKind::Request => Self::Open,
+        }
+    }
+}
+
+/// Intent for new plain-text threads. Existing callers default to findings.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, strum::EnumIter,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum CommentIntent {
+    #[default]
+    Finding,
+    Informational,
+}
+
+impl From<CommentIntent> for CommentKind {
+    fn from(intent: CommentIntent) -> Self {
+        match intent {
+            CommentIntent::Finding => Self::Note,
+            CommentIntent::Informational => Self::Informational,
+        }
+    }
 }
 
 /// A comment thread. Its id equals the root comment's id; replies share the

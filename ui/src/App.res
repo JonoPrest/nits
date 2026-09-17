@@ -406,7 +406,7 @@ module Shell = {
           <Tabs
             tab=model.tab
             fileCount=model.progress.total
-            threadCount={Array.length(model.threads)}
+            threadCount={Threads.openFindings(model.threads)}
             chrome=model.chrome
             dispatch
           />
@@ -450,9 +450,35 @@ module Shell = {
           | Conversation =>
             // Every thread of the review, chronologically (GitHub-style):
             // file/line threads and review-level ones together.
-            <Threads
-              title="Conversation" threads=model.threads focus=model.focus indexOffset=0 dispatch
-            />
+            <>
+              <UI.Box>
+                <UI.Button
+                  label="Add informational note"
+                  title=?{Chrome.tip(model.chrome, InformationalNote)}
+                  onClick={() => dispatch(RunCommand({command: InformationalNote}))}
+                />
+                <UI.Button
+                  label="Add review-wide finding"
+                  title=?{Chrome.tip(model.chrome, ReviewFinding)}
+                  onClick={() => dispatch(RunCommand({command: ReviewFinding}))}
+                />
+              </UI.Box>
+              <Threads
+                title="Conversation"
+                threads=model.threads
+                focus=model.focus
+                indexOffset=0
+                dispatch
+                chrome=model.chrome
+                draft=?model.draft
+                pendingRefresh=model.pendingRefresh
+              />
+              {switch model.draft {
+              | Some(draft) if draft.replyTo == None =>
+                <Composer draft pendingRefresh=model.pendingRefresh dispatch />
+              | Some(_) | None => React.null
+              }}
+            </>
           | Browse =>
             <>
               <BrowseBar

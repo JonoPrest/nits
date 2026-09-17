@@ -2046,3 +2046,80 @@ async fn malformed_config_keys_are_reported_at_load_and_recovery_preserves_the_s
             .any(|context| context["name"] == "valid")
     );
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one lifecycle scenario through persistence or transport
+async fn informational_summary_and_replies_remain_subscribable_without_open_findings() {
+    let h = start();
+    let c = human(&h).await;
+    let (ws, rid) = seed(&h, &c).await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    let created = call(
+        &mut s,
+        "create_review",
+        json!({ "workspace_id": ws, "title": "review", "targets": main_feature(&rid) }),
+    )
+    .await;
+    let review = &created["review_id"];
+    for body in ["first finding", "second finding", "third finding"] {
+        call(
+            &mut s,
+            "add_comment",
+            json!({ "review_id": review, "path": "a.rs", "start_line": 1, "body": body }),
+        )
+        .await;
+    }
+    let summary = call(&mut s, "add_comment", json!({ "review_id": review, "intent": "Informational", "body": "Three findings; review in progress" })).await;
+    let mut other = server_with_session(&h, "status-author");
+    init(&mut other).await;
+    let reply = call(&mut other, "reply", json!({ "review_id": review, "thread_id": summary["thread_id"], "body": "Addressing the findings" })).await;
+    let listed = call(&mut s, "list_comments", json!({ "review_id": review })).await;
+    let threads = listed["threads"].as_array().unwrap();
+    assert_eq!(
+        threads
+            .iter()
+            .filter(|t| t["resolution"]["type"] == "Open")
+            .count(),
+        3
+    );
+    let info = threads
+        .iter()
+        .find(|t| t["id"] == summary["thread_id"])
+        .unwrap();
+    assert_eq!(info["resolution"]["type"], "Informational");
+    assert_eq!(info["replies"], json!([reply["comment_id"]]));
+    let events = call(
+        &mut s,
+        "subscribe_events",
+        json!({ "review_id": review, "since_seq": summary["seq"], "timeout_ms": 10 }),
+    )
+    .await;
+    let update = &events["events"][0]["body"]["comment"];
+    assert_eq!(update["id"], reply["comment_id"]);
+    assert_eq!(update["body"], "Addressing the findings");
+    assert_eq!(update["author"]["session_id"], "status-author");
+    let error = call_err(
+        &mut s,
+        "resolve",
+        json!({ "review_id": review, "thread_id": summary["thread_id"] }),
+    )
+    .await;
+    assert!(error.contains("informational"), "{error}");
+    call(
+        &mut s,
+        "add_comment",
+        json!({ "review_id": review, "intent": "Finding", "body": "Review-wide finding" }),
+    )
+    .await;
+    let listed = call(&mut s, "list_comments", json!({ "review_id": review })).await;
+    assert_eq!(
+        listed["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["resolution"]["type"] == "Open")
+            .count(),
+        4
+    );
+}

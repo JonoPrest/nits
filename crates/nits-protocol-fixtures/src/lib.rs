@@ -171,6 +171,7 @@ registry!(
     Side,
     Anchor,
     CommentKind,
+    CommentIntent,
     CommentState,
     Comment,
     ThreadResolution,
@@ -809,6 +810,7 @@ enum_fixture!(
     ]
 );
 unit_enum_fixture!(Side, "Side");
+unit_enum_fixture!(CommentIntent, "CommentIntent");
 enum_fixture!(
     Anchor,
     AnchorKind,
@@ -821,6 +823,7 @@ enum_fixture!(
     "CommentKind",
     [
         CommentKind::Note,
+        CommentKind::Informational,
         CommentKind::Suggestion {
             patch: "@@ -1 +1 @@\n-a\n+b\n".into()
         },
@@ -846,6 +849,7 @@ enum_fixture!(
     "ThreadResolution",
     [
         ThreadResolution::Open,
+        ThreadResolution::Informational,
         ThreadResolution::Resolved {
             by: human_author(),
             at: ts(9)
@@ -1213,7 +1217,7 @@ enum_fixture!(
             protocol: ProtocolVersion::CURRENT,
             daemon: daemon_build(),
             schema: SchemaVersion::CURRENT,
-            upgrade: Some(upgrade_notice()),
+            upgrade: None,
         },
         ServerMsg::Rejected {
             error: RpcError::UnsupportedProtocol {
@@ -1620,8 +1624,11 @@ fn daemon_build() -> BuildInfo {
 }
 fn upgrade_notice() -> UpgradeNotice {
     UpgradeNotice {
-        latest: ProtocolVersion::new(0, 2, 0),
-        message: "nitsd 0.3 speaks protocol 0.3.0; upgrade your client.".into(),
+        latest: ProtocolVersion::CURRENT,
+        message: format!(
+            "Upgrade your client to protocol {}.",
+            ProtocolVersion::CURRENT
+        ),
     }
 }
 struct_fixture!(ProtocolVersion, "ProtocolVersion", ProtocolVersion::CURRENT);

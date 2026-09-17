@@ -575,3 +575,121 @@ proptest! {
         prop_assert_eq!(s2.dump_views().unwrap(), s.dump_views().unwrap());
     }
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // one lifecycle scenario through persistence or transport
+fn schema_one_history_and_informational_threads_survive_migration_rebuild_and_reopen() {
+    use nits_protocol::ThreadResolution;
+    use redb::{ReadableDatabase, ReadableTable};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("history.redb");
+    let (events, views) = {
+        let store = Store::open(&path).unwrap();
+        store
+            .append(new_event(EventBody::WorkspaceCreated {
+                workspace: workspace(),
+            }))
+            .unwrap();
+        store
+            .append(new_event(EventBody::ReviewCreated { review: review(1) }))
+            .unwrap();
+        // Historical review-level Note roots must remain actionable, even if
+        // their body looks like a summary. Include a reply and a resolved root.
+        for (id, thread) in [(1, 1), (2, 1), (3, 3)] {
+            let mut c = comment(1, id, thread, 1);
+            c.anchor = Anchor::Review;
+            c.body = "Review summary from before informational notes existed".into();
+            store
+                .append(new_event(EventBody::CommentCreated { comment: c }))
+                .unwrap();
+        }
+        store
+            .append(new_event(EventBody::ThreadResolved {
+                review_id: review_id(1),
+                thread_id: thread_of(comment_id(3)),
+            }))
+            .unwrap();
+        (
+            store.events_after(None).unwrap(),
+            store.dump_views().unwrap(),
+        )
+    };
+    // Write actual schema-1 envelopes, not just a lowered meta stamp.
+    {
+        let db = redb::Database::open(&path).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut log = txn
+                .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
+                .unwrap();
+            let old: Vec<_> = log
+                .iter()
+                .unwrap()
+                .map(|entry| {
+                    let (seq, bytes) = entry.unwrap();
+                    let mut json: serde_json::Value =
+                        serde_json::from_slice(bytes.value()).unwrap();
+                    json["schema"] = serde_json::json!(1);
+                    (seq.value(), serde_json::to_vec(&json).unwrap())
+                })
+                .collect();
+            for (seq, bytes) in old {
+                log.insert(seq, bytes.as_slice()).unwrap();
+            }
+        }
+        txn.commit().unwrap();
+    }
+    stamp_schema(&path, 1);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.events_after(None).unwrap(), events);
+    assert_eq!(store.dump_views().unwrap(), views);
+    assert_eq!(store.schema_version().unwrap(), SchemaVersion::new(2));
+    let mut note = comment(1, 4, 4, 1);
+    note.kind = CommentKind::Informational;
+    note.anchor = Anchor::Review;
+    store
+        .append(new_event(EventBody::CommentCreated { comment: note }))
+        .unwrap();
+    let mut reply = comment(1, 5, 4, 1);
+    reply.anchor = Anchor::Review;
+    store
+        .append(new_event(EventBody::CommentCreated { comment: reply }))
+        .unwrap();
+    let expected = store.dump_views().unwrap();
+    store.rebuild_views().unwrap();
+    assert_eq!(store.dump_views().unwrap(), expected);
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.dump_views().unwrap(), expected);
+    let threads = store.threads(review_id(1)).unwrap();
+    assert_eq!(
+        threads
+            .iter()
+            .filter(|t| t.resolution == ThreadResolution::Open)
+            .count(),
+        1
+    );
+    assert_eq!(
+        threads
+            .iter()
+            .filter(|t| matches!(t.resolution, ThreadResolution::Resolved { .. }))
+            .count(),
+        1
+    );
+    let note = threads
+        .iter()
+        .find(|t| t.resolution == ThreadResolution::Informational)
+        .unwrap();
+    assert_eq!(note.replies, vec![comment_id(5)]);
+    drop(store);
+    let db = redb::Database::open(&path).unwrap();
+    let txn = db.begin_read().unwrap();
+    let log = txn
+        .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
+        .unwrap();
+    for entry in log.iter().unwrap() {
+        let (_, bytes) = entry.unwrap();
+        let event: serde_json::Value = serde_json::from_slice(bytes.value()).unwrap();
+        assert_eq!(event["schema"], serde_json::json!(2));
+    }
+}

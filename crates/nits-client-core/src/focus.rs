@@ -551,6 +551,8 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 | Command::NextPanel
                 | Command::ToggleViewed
                 | Command::Comment
+                | Command::ReviewFinding
+                | Command::InformationalNote
                 | Command::Reply
                 | Command::Delete
                 | Command::ApplySuggestion
@@ -976,6 +978,16 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             };
             Ok(Action::DraftOpened { anchor })
         }
+        Command::InformationalNote | Command::ReviewFinding => {
+            view.review.as_ref().ok_or(NoTarget::NoOpenReview)?;
+            Ok(if command == Command::InformationalNote {
+                Action::InformationalNoteOpened
+            } else {
+                Action::DraftOpened {
+                    anchor: Anchor::Review,
+                }
+            })
+        }
         Command::Reply => {
             let Focus::Thread { index } = focus else {
                 return Err(nothing());
@@ -1008,11 +1020,13 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 return Err(nothing());
             };
             let t = view.threads.get(index).ok_or_else(nothing)?;
-            Ok(if t.resolved {
-                Action::UnresolveThread { thread_id: t.id }
-            } else {
-                Action::ResolveThread { thread_id: t.id }
-            })
+            match t.status {
+                crate::diff::ThreadStatus::Resolved => {
+                    Ok(Action::UnresolveThread { thread_id: t.id })
+                }
+                crate::diff::ThreadStatus::Open => Ok(Action::ResolveThread { thread_id: t.id }),
+                crate::diff::ThreadStatus::Informational => Err(nothing()),
+            }
         }
         Command::FileSearch => {
             if view.review.is_none() {

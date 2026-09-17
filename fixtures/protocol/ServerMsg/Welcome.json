@@ -3,11 +3,8 @@
     "name": "nitsd",
     "version": "0.1.0"
   },
-  "protocol": "0.5.0",
-  "schema": 1,
+  "protocol": "0.6.0",
+  "schema": 2,
   "type": "Welcome",
-  "upgrade": {
-    "latest": "0.2.0",
-    "message": "nitsd 0.3 speaks protocol 0.3.0; upgrade your client."
-  }
+  "upgrade": null
 }

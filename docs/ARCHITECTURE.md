@@ -130,7 +130,7 @@ Comment {
   id: ulid,               client-generated → enables optimistic create
   review_id, thread_id,
   author: Author,
-  kind: Note | Suggestion { patch } | Request,
+  kind: Note | Informational | Suggestion { patch } | Request,
   anchor: Anchor,
   body, created, edited,
   state: Live | Outdated { last_good_anchor } | Deleted
@@ -151,6 +151,15 @@ Anchors reference blobs, not diffs. Opening a file in the explorer and commentin
 on it uses the same path as commenting inside a diff; the diff is just a way to
 navigate to a blob.
 ```
+
+A root's kind sets its thread lifecycle: `Note`, `Suggestion` and `Request` create
+`Open` actionable threads; `Informational` creates a review-level conversation with
+`ThreadResolution::Informational`, which cannot be resolved or reopened. Replies
+retain that lifecycle and the root's anchor. Informational notes imply no approval,
+merge readiness, or resolution of other findings. Existing `Note` roots remain
+findings, including review-wide notes: no history is reclassified automatically.
+MCP `add_comment.intent` and CLI `comment add --intent` select `Finding` (default)
+or `Informational` (`finding`/`informational` in CLI).
 
 ### 4.5 Re-anchoring
 
@@ -275,6 +284,11 @@ Two independent versions, both typed in `nits-protocol::version`.
 - Deprecation path: a daemon may keep serving an old minor for a time and attach
   `Welcome.upgrade: UpgradeNotice { latest, message }`; clients surface it. Once dropped, the
   handshake is rejected with the supported list, so the error is specific and actionable.
+- Protocol 0.6 currently serves **only minor 0.6**: older minors are retired and
+  rejected during Hello, before any event or snapshot. The daemon has one serializer;
+  the same-major compatibility predicate alone does not prove it can encode an old
+  minor. Adding a supported minor requires its serializer. The stable shutdown-only
+  fallback can still stop older same-major daemons during upgrades.
 - A frame whose `v` differs from the negotiated version is answered with `VersionMismatch`.
 - Bumping: any change to a fixture under `fixtures/protocol/` requires bumping
   `ProtocolVersion::CURRENT` (minor if additive, major otherwise); CI diffs fixtures.
@@ -287,6 +301,9 @@ Two independent versions, both typed in `nits-protocol::version`.
   restamp; newer → refuse to open with a clear error (a newer `nits` wrote this; upgrade).
 - Events are stored as JSON with a per-event `schema` tag, so the event log itself migrates by
   re-serialisation, and materialised views can always be rebuilt from the migrated log.
+- Schema 2 adds informational kinds/lifecycles. The 1→2 migration reserializes
+  and restamps stored events and rebuilds views, retaining old Note roots and all
+  replies/resolutions unchanged. Older binaries refuse the schema 2 store.
 - The daemon reports `schema` in `Welcome` for diagnostics only; clients never depend on it.
 
 ## 5. Client core (sans-I/O)

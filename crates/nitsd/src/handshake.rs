@@ -66,7 +66,12 @@ impl AwaitingHello {
                 },
             ));
         }
-        let Some(serve_as) = SUPPORTED.iter().copied().find(|s| s.can_serve(protocol)) else {
+        // Same-major compatibility alone is insufficient: each supported
+        // minor must have a serializer. We currently encode only CURRENT.
+        if !SUPPORTED
+            .iter()
+            .any(|s| s.major == protocol.major && s.minor == protocol.minor)
+        {
             return Err(reject(
                 protocol,
                 RpcError::UnsupportedProtocol {
@@ -74,10 +79,10 @@ impl AwaitingHello {
                     supported: SUPPORTED.to_vec(),
                 },
             ));
-        };
+        }
         // The client is served at the version it asked for; the daemon
         // never surprises a client with fields from a newer minor.
-        let upgrade = (protocol.minor < serve_as.minor).then(|| UpgradeNotice {
+        let upgrade = (protocol.minor < ProtocolVersion::CURRENT.minor).then(|| UpgradeNotice {
             latest: ProtocolVersion::CURRENT,
             message: format!(
                 "protocol {protocol} is still served; {} is current",

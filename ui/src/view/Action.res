@@ -34,6 +34,7 @@ type t =
     })
   | @as("OpenReview") OpenReview({@as("review_id") reviewId: reviewId})
   | @as("CloseReview") CloseReview({})
+  | @as("InformationalNoteOpened") InformationalNoteOpened({})
   | @as("DraftOpened") DraftOpened({anchor: Domain.Anchor.t})
   | @as("DraftSubmitted") DraftSubmitted({body: string})
   | @as("DraftDiscarded") DraftDiscarded({})
