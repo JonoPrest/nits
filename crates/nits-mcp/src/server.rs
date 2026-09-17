@@ -511,6 +511,7 @@ impl Server {
                     files,
                     threads: snap.threads,
                     comments: snap.comments,
+                    requests: snap.requests,
                     seq: snap.seq,
                 })
             }
@@ -543,6 +544,7 @@ impl Server {
                     context: self.context_identity(),
                     threads: snap.threads,
                     comments: snap.comments,
+                    requests: snap.requests,
                     seq: snap.seq,
                 })
             }
@@ -696,6 +698,7 @@ impl Server {
                     })
                     .await?;
                 ok(tools::Requested {
+                    request_id: nits_protocol::ReviewRequestId::from_event_seq(event.seq),
                     review_id: p.review_id,
                     agent: p.agent,
                     seq: event.seq,

@@ -118,6 +118,31 @@ ulid_id!(
     ClientId
 );
 
+/// Stable identity of a review request, assigned by its committed log event.
+/// The store's global event sequence is unique and survives rebuilds and upgrades.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(transparent)]
+pub struct ReviewRequestId(Seq);
+
+impl ReviewRequestId {
+    #[must_use]
+    pub const fn from_event_seq(seq: Seq) -> Self {
+        Self(seq)
+    }
+
+    #[must_use]
+    pub const fn event_seq(self) -> Seq {
+        self.0
+    }
+}
+
+impl fmt::Display for ReviewRequestId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Raw 20-byte git object id (SHA-1). Wrapped by the typed OIDs below.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Oid([u8; 20]);

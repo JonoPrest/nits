@@ -408,7 +408,7 @@ async fn scripted_session_keeps_every_patch_small() {
         body: "x".repeat(10_000)
     }));
     until(&mut rx, &mut seen, |p| {
-        matches!(p, ViewPatch::Conversation { conversation } if conversation.iter().any(|t| !t.pending))
+        matches!(p, ViewPatch::Conversation { conversation, .. } if conversation.iter().any(|t| !t.pending))
     })
     .await;
 

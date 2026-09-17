@@ -1785,3 +1785,74 @@ fn comment_intent_distinguishes_review_notes_and_findings() {
         .failure()
         .stderr(predicate::str::contains("cannot carry a suggestion"));
 }
+
+#[test]
+fn review_show_discovers_requests_from_a_previous_connection() {
+    use nits_protocol::{Author, ClientId, ClientSeq, Mutation};
+    use nitsd::client::{Client, Identity};
+    let h = start();
+    let workspace = h.out(&["workspace", "add", "requests"]);
+    h.out(&[
+        "workspace",
+        "attach",
+        &workspace,
+        h.repo.path().to_str().unwrap(),
+    ]);
+    let review = h.out(&[
+        "review",
+        "create",
+        "--workspace",
+        &workspace,
+        "--base",
+        "main",
+        "--head",
+        "feature",
+    ]);
+    let event = h.rt.block_on(async {
+        let writer = Client::connect_unix(
+            &h.socket,
+            Identity {
+                client_id: ClientId::from_parts(1, 90),
+                client: BuildInfo {
+                    name: "request-author".into(),
+                    version: "test".into(),
+                },
+                author: Author::Human {
+                    name: "ada".into(),
+                    machine: "box".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let Response::Committed { event } = writer
+            .request(Request::Mutate {
+                client_seq: ClientSeq::new(1),
+                mutation: Mutation::RequestReview {
+                    review_id: review.parse().unwrap(),
+                    agent: "review-agent".into(),
+                    note: "Please review the parser".into(),
+                },
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("committed request")
+        };
+        event
+    });
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&h.out(&["--json", "review", "show", &review])).unwrap();
+    assert_eq!(snapshot["requests"][0]["id"], serde_json::json!(event.seq));
+    assert_eq!(snapshot["requests"][0]["requester"]["name"], "ada");
+    assert_eq!(snapshot["requests"][0]["recipient"], "review-agent");
+    assert_eq!(snapshot["requests"][0]["note"], "Please review the parser");
+    assert_eq!(
+        snapshot["requests"][0]["created"],
+        serde_json::json!(event.ts)
+    );
+    let text = h.out(&["review", "show", &review]);
+    assert!(text.contains("0 threads, 0 comments, 1 requests"));
+    assert!(text.contains("ada → review-agent"));
+    assert!(text.contains("Please review the parser"));
+}

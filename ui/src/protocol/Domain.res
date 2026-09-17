@@ -344,6 +344,18 @@ module TreeDelta = {
   }
 }
 
+module ReviewRequest = {
+  @schema
+  type t = {
+    id: reviewRequestId,
+    @as("review_id") reviewId: reviewId,
+    requester: Author.t,
+    recipient: string,
+    note: string,
+    created: timestamp,
+  }
+}
+
 module ReviewSnapshot = {
   @schema
   type t = {
@@ -352,6 +364,7 @@ module ReviewSnapshot = {
     threads: array<Thread.t>,
     comments: array<Comment.t>,
     viewed: array<ViewedMark.t>,
+    requests: array<ReviewRequest.t>,
     seq: seq,
   }
 }

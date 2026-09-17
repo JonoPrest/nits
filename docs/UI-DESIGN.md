@@ -128,6 +128,12 @@ finding from any panel. Both have keymap-derived buttons in Conversation. Notes 
 findings accept attributed replies; only findings expose resolve/reopen. Notes imply
 no approval, readiness, or resolution. Legacy Note comments remain findings.
 
+Durable review requests appear above threads in Conversation with requester,
+recipient, note and creation time. Their count is separate from open findings.
+`g r` focuses Requests, `j`/`k` move between cards, and Enter / Open changes
+returns to the current review diff. Requests imply no approval or completion;
+there is no acknowledged/completed lifecycle or revision checkpoint yet.
+
 ## Browse
 
 A third tab for reading code without a diff: full file tree (every file,

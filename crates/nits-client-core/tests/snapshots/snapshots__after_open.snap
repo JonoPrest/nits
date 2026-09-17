@@ -669,6 +669,7 @@ expression: core.view()
       "context": null
     }
   ],
+  "requests": [],
   "stepper": null,
   "focus": {
     "type": "Diff",
@@ -803,6 +804,11 @@ expression: core.view()
       "keys": "g t",
       "command": "FocusThreads",
       "label": "focus threads"
+    },
+    {
+      "keys": "g r",
+      "command": "FocusRequests",
+      "label": "review requests"
     },
     {
       "keys": "g m",
@@ -1115,6 +1121,11 @@ expression: core.view()
       "keys": "g t",
       "command": "FocusThreads",
       "label": "focus threads"
+    },
+    {
+      "keys": "g r",
+      "command": "FocusRequests",
+      "label": "review requests"
     },
     {
       "keys": "g m",
@@ -1529,6 +1540,7 @@ expression: core.view()
         }
       ],
       "viewed": [],
+      "requests": [],
       "seq": 1
     },
     "pending": [],

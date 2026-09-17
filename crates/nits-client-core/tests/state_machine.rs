@@ -59,6 +59,7 @@ fn snapshot(id: ReviewId, seq: Seq) -> ReviewSnapshot {
         threads: Vec::new(),
         comments: Vec::new(),
         viewed: Vec::new(),
+        requests: Vec::new(),
         seq,
     }
 }
@@ -1295,4 +1296,95 @@ proptest! {
             }
         }
     }
+}
+
+#[test]
+fn request_delivered_ahead_of_older_open_snapshot_survives_handoff() {
+    let mut core = subscribed(1);
+    let review_id = ReviewId::from_parts(4, 1);
+    let effects = core
+        .handle(Input::User(Action::OpenReview { review_id }))
+        .unwrap();
+    let (id, _) = sent_request(&effects).unwrap();
+    let request = event(
+        2,
+        EventBody::ReviewRequested {
+            review_id,
+            agent: "review-agent".into(),
+            note: "Review the update".into(),
+        },
+    );
+    core.handle(Input::Server(ServerMsg::Event {
+        event: request.clone(),
+    }))
+    .unwrap();
+    core.handle(Input::Server(ServerMsg::StreamItem {
+        id,
+        item: StreamItem::ReviewSnapshot {
+            snapshot: snapshot(review_id, Seq::new(1)),
+        },
+    }))
+    .unwrap();
+    core.handle(Input::Server(ServerMsg::StreamEnd { id }))
+        .unwrap();
+    assert_eq!(
+        core.view().requests,
+        vec![nits_protocol::ReviewRequest::from_event(&request).unwrap()]
+    );
+    assert!(core.view().threads.is_empty());
+    // A later live request is delivered normally and keeps deterministic order.
+    core.handle(Input::Server(ServerMsg::Event {
+        event: event(
+            3,
+            EventBody::ReviewRequested {
+                review_id,
+                agent: "other-agent".into(),
+                note: "Follow-up".into(),
+            },
+        ),
+    }))
+    .unwrap();
+    assert_eq!(core.view().requests.len(), 2);
+}
+
+#[test]
+fn committed_request_fold_is_idempotent_scoped_and_ordered_by_identity() {
+    let review_id = ReviewId::from_parts(4, 1);
+    let mut snapshot = snapshot(review_id, Seq::new(1));
+    let request = |seq, review_id| {
+        event(
+            seq,
+            EventBody::ReviewRequested {
+                review_id,
+                agent: "review-agent".into(),
+                note: "Please review".into(),
+            },
+        )
+    };
+    for event in [
+        request(3, review_id),
+        request(2, review_id),
+        request(3, review_id),
+        request(4, ReviewId::from_parts(4, 2)),
+    ] {
+        let sections = nits_client_core::apply_event(&mut snapshot, &event);
+        assert_eq!(
+            sections,
+            if event.seq == Seq::new(4) {
+                Vec::new()
+            } else {
+                vec![ViewSection::Conversation]
+            }
+        );
+    }
+    assert_eq!(
+        snapshot
+            .requests
+            .iter()
+            .map(|r| r.id.event_seq())
+            .collect::<Vec<_>>(),
+        vec![Seq::new(2), Seq::new(3)]
+    );
+    assert!(snapshot.comments.is_empty());
+    assert!(snapshot.threads.is_empty());
 }

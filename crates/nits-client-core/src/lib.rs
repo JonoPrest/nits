@@ -55,7 +55,7 @@ pub use diff::{
     ThreadPlace, ThreadPlaceKind, ThreadStatus, ThreadView, conversation, threads,
 };
 pub use events::{
-    EventMeta, MutationError, MutationErrorKind, apply_body, local_event, thread_id_of,
+    EventMeta, MutationError, MutationErrorKind, apply_body, apply_event, local_event, thread_id_of,
 };
 pub use explorer::{
     MAX_HITS, Progress, SearchHit, SearchView, TreeNode, TreeNodeKind, TreeView, ViewedState,
@@ -601,6 +601,9 @@ pub struct ClientCore {
     /// The open review as the daemon last confirmed it; `view.review.snapshot`
     /// is this plus `pending`.
     committed: Option<ReviewSnapshot>,
+    /// Live invitations arriving while a snapshot is in flight. A response
+    /// can carry an older cursor than an event delivered ahead of it.
+    snapshot_requests: BTreeMap<RequestId, (ReviewId, Vec<nits_protocol::ReviewRequest>)>,
     /// Mutations sent and not yet echoed by the daemon, in send order.
     pending: Vec<Pending>,
     explorer: explorer::ExplorerState,
@@ -681,6 +684,7 @@ impl ClientCore {
             deferred: Vec::new(),
             content,
             committed: None,
+            snapshot_requests: BTreeMap::new(),
             pending: Vec::new(),
             explorer: explorer::ExplorerState::default(),
             stepper: None,
@@ -1008,6 +1012,15 @@ impl ClientCore {
             self.view.diff = diff;
             self.view.diffs = diffs;
             sections.push(ViewSection::Diff);
+        }
+        let requests = self
+            .view
+            .review
+            .as_ref()
+            .map_or_else(Vec::new, |r| r.snapshot.requests.clone());
+        if requests != self.view.requests {
+            self.view.requests = requests;
+            sections.push(ViewSection::Conversation);
         }
         if threads != self.view.threads {
             let conversation = diff::conversation(&threads);
@@ -1816,6 +1829,17 @@ impl ClientCore {
                     return Ok(Vec::new());
                 }
                 self.view.tab = tab;
+                if matches!(self.view.focus, Focus::ReviewRequest { .. })
+                    && tab != Tab::Conversation
+                {
+                    self.view.focus = focus::clamp(
+                        &self.view,
+                        Focus::Diff {
+                            row: 0,
+                            side: nits_protocol::Side::Head,
+                        },
+                    );
+                }
                 Ok(vec![render(&[ViewSection::Focus])])
             }
             Action::ToggleFileCollapse { file } => {
@@ -2333,6 +2357,9 @@ impl ClientCore {
                     return Err(CoreError::FocusOutOfRange(focus));
                 }
                 self.view.focus = focus;
+                if matches!(focus, Focus::ReviewRequest { .. }) {
+                    self.view.tab = Tab::Conversation;
+                }
                 let mut effects = Vec::new();
                 // A focused row outside the viewport scrolls the viewport.
                 if let Focus::Diff { row, .. } = focus
@@ -2730,7 +2757,22 @@ impl ClientCore {
     /// A review snapshot arrived (streamed or single): it becomes the open
     /// review, replacing any other. Pending mutations for the same review
     /// survive (they are still on their way to the daemon).
-    fn install_snapshot(&mut self, snapshot: ReviewSnapshot, effects: &mut Vec<Effect>) {
+    fn install_snapshot(
+        &mut self,
+        id: RequestId,
+        mut snapshot: ReviewSnapshot,
+        effects: &mut Vec<Effect>,
+    ) {
+        if let Some((_, requests)) = self.snapshot_requests.remove(&id) {
+            for request in requests {
+                if request.id.event_seq() > snapshot.seq
+                    && !snapshot.requests.iter().any(|r| r.id == request.id)
+                {
+                    snapshot.requests.push(request);
+                }
+            }
+            snapshot.requests.sort_by_key(|r| r.id);
+        }
         let same = self
             .committed
             .as_ref()
@@ -2784,6 +2826,11 @@ impl ClientCore {
         self.next_request += 1;
         if matches!(waiting, InFlight::Search) {
             self.latest_search = Some(id);
+        }
+        if let Request::OpenReview { review_id, .. } | Request::ReviewSnapshot { review_id } =
+            &request
+        {
+            self.snapshot_requests.insert(id, (*review_id, Vec::new()));
         }
         self.in_flight.insert(id, waiting);
         Effect::Send(ClientMsg::Request { id, request })
@@ -2890,6 +2937,7 @@ impl ClientCore {
                 let mut effects = Vec::new();
                 match waiting {
                     InFlight::OpenReview { .. } => {
+                        self.snapshot_requests.remove(&id);
                         if self.view.review.is_some() {
                             // The streamed open carries the file list; land
                             // on the first diff (UI-DESIGN §Layout).
@@ -2926,6 +2974,7 @@ impl ClientCore {
                 Ok(effects)
             }
             ServerMsg::Error { id, error } => {
+                self.snapshot_requests.remove(&id);
                 let Some(waiting) = self.in_flight.remove(&id) else {
                     return Err(CoreError::UnknownRequest(id));
                 };
@@ -3023,6 +3072,7 @@ impl ClientCore {
     }
 
     fn clear_in_flight(&mut self) {
+        self.snapshot_requests.clear();
         let keys: Vec<CacheKey> = self.in_flight.values().filter_map(InFlight::key).collect();
         for k in &keys {
             self.content_failed(k);
@@ -3048,7 +3098,7 @@ impl ClientCore {
                 if snapshot.review.id != review_id {
                     return Err(unexpected("ReviewSnapshot for the requested review"));
                 }
-                self.install_snapshot(snapshot, &mut effects);
+                self.install_snapshot(id, snapshot, &mut effects);
                 self.expect_streamed_trees(&mut effects);
                 effects.push(render(&[
                     ViewSection::ReviewList,
@@ -3236,7 +3286,7 @@ impl ClientCore {
                     });
                 }
                 let mut effects = Vec::new();
-                self.install_snapshot(snapshot, &mut effects);
+                self.install_snapshot(id, snapshot, &mut effects);
                 self.review_opened_piecewise(review_id, &mut effects);
                 effects.push(render(&[
                     ViewSection::ReviewList,
@@ -3430,6 +3480,7 @@ impl ClientCore {
             }
         };
         self.in_flight.remove(&id);
+        self.snapshot_requests.remove(&id);
         Ok(effects)
     }
 
@@ -3438,6 +3489,13 @@ impl ClientCore {
     // One arm per event; splitting would hide the exhaustive match.
     #[allow(clippy::too_many_lines)]
     fn apply_event(&mut self, event: Event) -> Vec<Effect> {
+        if let Some(request) = nits_protocol::ReviewRequest::from_event(&event) {
+            for (review_id, requests) in self.snapshot_requests.values_mut() {
+                if request.review_id == *review_id && !requests.iter().any(|r| r.id == request.id) {
+                    requests.push(request.clone());
+                }
+            }
+        }
         let mut sections = Vec::new();
         let mut effects = Vec::new();
         if event.client_id == self.config.client_id {
@@ -3573,12 +3631,8 @@ impl ClientCore {
             .review_id()
             .is_some_and(|id| self.committed.as_ref().is_some_and(|c| c.review.id == id));
         if concerns_open {
-            let meta = EventMeta {
-                author: event.author.clone(),
-                ts: event.ts,
-            };
             if let Some(committed) = &mut self.committed {
-                sections.extend(apply_body(committed, &meta, &event.body));
+                sections.extend(apply_event(committed, &event));
             }
             sections.extend(self.rebase());
             if let EventBody::ReviewTargetsResolved { review_id, .. } = event.body {

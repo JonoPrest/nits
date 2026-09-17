@@ -2,7 +2,8 @@
 //! §5.2).
 //!
 //! Two functions, no state:
-//! - [`apply_body`] folds one committed or pending event into a snapshot.
+//! - [`apply_event`] folds committed events, including durable request identity.
+//! - [`apply_body`] folds provisional mutation bodies into a snapshot.
 //!   The client applies committed events to its committed snapshot and
 //!   pending events on top of a copy; the two-client simulator's daemon
 //!   model applies the same function, so client and daemon cannot drift.
@@ -248,6 +249,31 @@ pub fn local_event(
             Err(MutationError::Unsupported(MutationKind::from(mutation)))
         }
     }
+}
+
+/// Fold a committed event, including request identities that cannot exist
+/// provisionally. Duplicate delivery of a request keeps one durable record.
+/// Snapshot cursors describe the original materialization; the connection owns
+/// the advancing live-event cursor.
+pub fn apply_event(
+    snapshot: &mut ReviewSnapshot,
+    event: &nits_protocol::Event,
+) -> Vec<ViewSection> {
+    if let Some(request) = nits_protocol::ReviewRequest::from_event(event)
+        && request.review_id == snapshot.review.id
+        && !snapshot.requests.iter().any(|r| r.id == request.id)
+    {
+        snapshot.requests.push(request);
+        snapshot.requests.sort_by_key(|r| r.id);
+    }
+    apply_body(
+        snapshot,
+        &EventMeta {
+            author: event.author.clone(),
+            ts: event.ts,
+        },
+        &event.body,
+    )
 }
 
 /// Fold `body` into `snapshot` and say which view sections it touched.

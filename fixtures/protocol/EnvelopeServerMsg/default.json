@@ -4,10 +4,10 @@
       "name": "nitsd",
       "version": "0.1.0"
     },
-    "protocol": "0.6.0",
-    "schema": 2,
+    "protocol": "0.7.0",
+    "schema": 3,
     "type": "Welcome",
     "upgrade": null
   },
-  "v": "0.6.0"
+  "v": "0.7.0"
 }

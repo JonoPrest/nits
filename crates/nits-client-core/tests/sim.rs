@@ -40,6 +40,7 @@ fn snapshot() -> ReviewSnapshot {
         threads: Vec::new(),
         comments: Vec::new(),
         viewed: Vec::new(),
+        requests: Vec::new(),
         seq: Seq::new(1),
     }
 }
@@ -552,4 +553,67 @@ fn informational_notes_converge_with_concurrent_replies_and_reconnect_without_op
         );
     }
     sim.converged().unwrap();
+}
+
+#[test]
+fn requests_reach_live_clients_and_fresh_disconnected_recipients() {
+    let mut sim = Sim::new(snapshot(), vec![human("ada"), human("bob")]);
+    sim.connect_and_open(A).unwrap();
+    let first = sim.request_review(
+        human("ada"),
+        "review-agent".into(),
+        "Please review the parser".into(),
+    );
+    sim.settle();
+    sim.connect_and_open(B).unwrap();
+    sim.converged().unwrap();
+    assert_eq!(sim.client(B).view().requests[0].id.event_seq(), first.seq);
+    assert!(sim.client(B).view().threads.is_empty());
+    sim.disconnect(B);
+    let second = sim.request_review(human("ada"), "review-agent".into(), "Follow-up".into());
+    sim.settle();
+    sim.reconnect(B).unwrap();
+    sim.settle();
+    sim.converged().unwrap();
+    assert_eq!(sim.client(B).view().requests.len(), 2);
+    assert_eq!(sim.client(B).view().requests[1].id.event_seq(), second.seq);
+    // Request navigation is independent of findings, even in an empty review.
+    sim.act(
+        B,
+        Action::RunCommand {
+            command: nits_client_core::Command::FocusRequests,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        sim.client(B).view().tab,
+        nits_client_core::Tab::Conversation
+    );
+    assert_eq!(
+        sim.client(B).view().focus,
+        nits_client_core::Focus::ReviewRequest { index: 0 }
+    );
+    sim.act(
+        B,
+        Action::RunCommand {
+            command: nits_client_core::Command::MoveDown,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        sim.client(B).view().focus,
+        nits_client_core::Focus::ReviewRequest { index: 1 }
+    );
+    sim.act(
+        B,
+        Action::RunCommand {
+            command: nits_client_core::Command::Open,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        sim.client(B).view().tab,
+        nits_client_core::Tab::FilesChanged
+    );
+    assert_eq!(sim.client(B).view().requests.len(), 2);
 }

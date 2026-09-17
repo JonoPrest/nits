@@ -2,7 +2,7 @@
 //! model joined by per-client FIFO queues whose delivery the test controls
 //! one message at a time. No I/O, no clock, no threads.
 //!
-//! The daemon model reuses `nits_client_core::{local_event, apply_body}`
+//! The daemon model reuses `nits_client_core::{local_event, apply_event}`
 //! for its own state, so "converged" means the client's optimistic
 //! semantics and the daemon's agree — which is exactly what §5.2 promises.
 
@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 
 use nits_client_core::{
     Action, CacheConfig, ClientCore, Config, CoreError, Effect, EventMeta, IdSeed, Input,
-    MutationError, TransportEvent, apply_body, local_event,
+    MutationError, TransportEvent, apply_event, local_event,
 };
 use nits_protocol::{
     Author, BuildInfo, ClientId, ClientMsg, EntityKind, Event, ProtocolVersion, Request, RequestId,
@@ -72,6 +72,8 @@ pub enum Divergence {
     Comments(Peer),
     #[error("client {0:?} threads differ from the daemon's")]
     Threads(Peer),
+    #[error("client {0:?} requests differ from the daemon's")]
+    Requests(Peer),
     #[error("client {0:?} has no review open")]
     NotOpen(Peer),
 }
@@ -139,6 +141,35 @@ impl Sim {
     #[must_use]
     pub fn peers(&self) -> Vec<Peer> {
         (0..self.clients.len()).map(Peer).collect()
+    }
+
+    /// Commit an external actor's review invitation and queue live delivery.
+    pub fn request_review(&mut self, requester: Author, recipient: String, note: String) -> Event {
+        let event = Event {
+            seq: self.daemon.next_seq(),
+            ts: Timestamp::from_millis(self.daemon.now_ms),
+            author: requester,
+            client_id: ClientId::from_parts(1, u128::MAX),
+            client_seq: nits_protocol::ClientSeq::new(self.daemon.next_seq().get()),
+            body: nits_protocol::EventBody::ReviewRequested {
+                review_id: self.daemon.snapshot.review.id,
+                agent: recipient,
+                note,
+            },
+        };
+        apply_event(&mut self.daemon.snapshot, &event);
+        self.daemon.log.push(event.clone());
+        for i in 0..self.clients.len() {
+            if self.clients[i].session == (Session::Live { subscribed: true }) {
+                self.push_down(
+                    Peer(i),
+                    ServerMsg::Event {
+                        event: event.clone(),
+                    },
+                );
+            }
+        }
+        event
     }
 
     /// Messages waiting in each direction for `peer`.
@@ -244,6 +275,9 @@ impl Sim {
             }
             if open.snapshot.threads != self.daemon.snapshot.threads {
                 return Err(Divergence::Threads(peer));
+            }
+            if open.snapshot.requests != self.daemon.snapshot.requests {
+                return Err(Divergence::Requests(peer));
             }
         }
         Ok(())
@@ -410,7 +444,7 @@ impl Sim {
                             client_seq,
                             body,
                         };
-                        apply_body(&mut self.daemon.snapshot, &meta, &event.body);
+                        apply_event(&mut self.daemon.snapshot, &event);
                         self.daemon.log.push(event.clone());
                         self.push_down(
                             peer,

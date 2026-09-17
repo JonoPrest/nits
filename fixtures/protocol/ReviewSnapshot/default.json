@@ -76,6 +76,20 @@
       "thread_id": "01HF7YAVYG0000000000000005"
     }
   ],
+  "requests": [
+    {
+      "created": 1700000000000,
+      "id": 40,
+      "note": "Please review the updated parser.",
+      "recipient": "review-agent",
+      "requester": {
+        "machine": "laptop",
+        "name": "ada",
+        "type": "Human"
+      },
+      "review_id": "01HF7YATZ80000000000000004"
+    }
+  ],
   "resolved": [
     {
       "base": {

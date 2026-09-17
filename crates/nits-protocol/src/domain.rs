@@ -11,6 +11,43 @@ use crate::ids::{
 use crate::invariants::{LineRange, NonEmpty, RepoPath};
 use crate::render::ExpandDir;
 
+/// A durable invitation to review. Requests carry no approval or finding lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ReviewRequest {
+    pub id: crate::ReviewRequestId,
+    pub review_id: ReviewId,
+    pub requester: Author,
+    pub recipient: String,
+    pub note: String,
+    pub created: Timestamp,
+}
+
+impl ReviewRequest {
+    /// Derive the same record for historical replay, live delivery, and view rebuilds.
+    #[must_use]
+    pub fn from_event(event: &crate::Event) -> Option<Self> {
+        if let crate::EventBody::ReviewRequested {
+            review_id,
+            agent,
+            note,
+        } = &event.body
+        {
+            Some(Self {
+                id: crate::ReviewRequestId::from_event_seq(event.seq),
+                review_id: *review_id,
+                requester: event.author.clone(),
+                recipient: agent.clone(),
+                note: note.clone(),
+                created: event.ts,
+            })
+        } else {
+            None
+        }
+    }
+}
+
 /// A named group of repositories.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

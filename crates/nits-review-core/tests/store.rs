@@ -643,7 +643,7 @@ fn schema_one_history_and_informational_threads_survive_migration_rebuild_and_re
     let store = Store::open(&path).unwrap();
     assert_eq!(store.events_after(None).unwrap(), events);
     assert_eq!(store.dump_views().unwrap(), views);
-    assert_eq!(store.schema_version().unwrap(), SchemaVersion::new(2));
+    assert_eq!(store.schema_version().unwrap(), SchemaVersion::CURRENT);
     let mut note = comment(1, 4, 4, 1);
     note.kind = CommentKind::Informational;
     note.anchor = Anchor::Review;
@@ -688,8 +688,154 @@ fn schema_one_history_and_informational_threads_survive_migration_rebuild_and_re
         .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
         .unwrap();
     for entry in log.iter().unwrap() {
-        let (_, bytes) = entry.unwrap();
+        let (seq, bytes) = entry.unwrap();
         let event: serde_json::Value = serde_json::from_slice(bytes.value()).unwrap();
-        assert_eq!(event["schema"], serde_json::json!(2));
+        // 1→2 rewrites the old envelopes; 2→3 only rebuilds the new view.
+        // Events appended after opening use the current schema.
+        let expected_schema = if seq.value() <= events.last().unwrap().seq.get() {
+            2
+        } else {
+            SchemaVersion::CURRENT.get()
+        };
+        assert_eq!(event["schema"], serde_json::json!(expected_schema));
     }
+}
+
+#[test]
+fn schema_two_requests_survive_upgrade_reopen_and_rebuild() {
+    use redb::ReadableTable;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.redb");
+    let (events, expected) = {
+        let store = Store::open(&path).unwrap();
+        store
+            .append(new_event(EventBody::WorkspaceCreated {
+                workspace: workspace(),
+            }))
+            .unwrap();
+        store
+            .append(new_event(EventBody::ReviewCreated { review: review(1) }))
+            .unwrap();
+        for note in ["Review the parser", "Review the follow-up"] {
+            store
+                .append(new_event(EventBody::ReviewRequested {
+                    review_id: review_id(1),
+                    agent: "review-agent".into(),
+                    note: note.into(),
+                }))
+                .unwrap();
+        }
+        (
+            store.events_after(None).unwrap(),
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+        )
+    };
+    // Reproduce schema 2: identical historical event JSON, current view_seq,
+    // and no request view table. Simply checking a stale view cursor misses this upgrade.
+    {
+        let db = redb::Database::open(&path).unwrap();
+        let txn = db.begin_write().unwrap();
+        txn.delete_table(redb::TableDefinition::<(&str, u64), &[u8]>::new(
+            "review_requests",
+        ))
+        .unwrap();
+        {
+            let mut log = txn
+                .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
+                .unwrap();
+            let rows: Vec<_> = log
+                .iter()
+                .unwrap()
+                .map(|entry| {
+                    let (seq, bytes) = entry.unwrap();
+                    let mut json: serde_json::Value =
+                        serde_json::from_slice(bytes.value()).unwrap();
+                    json["schema"] = serde_json::json!(2);
+                    (seq.value(), serde_json::to_vec(&json).unwrap())
+                })
+                .collect();
+            for (seq, bytes) in rows {
+                log.insert(seq, bytes.as_slice()).unwrap();
+            }
+        }
+        txn.commit().unwrap();
+    }
+    stamp_schema(&path, 2);
+    for _ in 0..2 {
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SchemaVersion::CURRENT);
+        assert_eq!(store.events_after(None).unwrap(), events);
+        assert_eq!(
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+            expected
+        );
+        store.rebuild_views().unwrap();
+        assert_eq!(
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+            expected
+        );
+    }
+    assert_eq!(expected.requests.len(), 2);
+    assert_eq!(expected.requests[0].id.event_seq(), Seq::new(3));
+    assert_eq!(expected.requests[0].requester, human());
+    assert_eq!(expected.requests[0].recipient, "review-agent");
+    assert_eq!(expected.requests[0].note, "Review the parser");
+    assert_eq!(expected.requests[0].created, events[2].ts);
+    assert!(expected.threads.is_empty());
+    assert!(expected.comments.is_empty());
+}
+
+#[test]
+fn snapshot_requests_and_cursor_share_one_read_transaction() {
+    let (_dir, store) = open_temp();
+    let store = Arc::new(store);
+    store
+        .append(new_event(EventBody::WorkspaceCreated {
+            workspace: workspace(),
+        }))
+        .unwrap();
+    store
+        .append(new_event(EventBody::ReviewCreated { review: review(1) }))
+        .unwrap();
+    let writer = Arc::clone(&store);
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let writer_barrier = Arc::clone(&barrier);
+    let handle = std::thread::spawn(move || {
+        writer_barrier.wait();
+        for n in 0..100 {
+            writer
+                .append(new_event(EventBody::ReviewRequested {
+                    review_id: review_id(1),
+                    agent: "review-agent".into(),
+                    note: format!("Request {n}"),
+                }))
+                .unwrap();
+        }
+    });
+    barrier.wait();
+    for _ in 0..150 {
+        let snapshot = store.review_snapshot(review_id(1)).unwrap().unwrap();
+        // Only requests follow the first two events. A cursor can never cover
+        // a request missing from its snapshot, even while the writer appends.
+        assert_eq!(
+            u64::try_from(snapshot.requests.len()).unwrap(),
+            snapshot.seq.get() - 2
+        );
+        for (offset, request) in snapshot.requests.iter().enumerate() {
+            assert_eq!(
+                request.id.event_seq().get(),
+                u64::try_from(offset).unwrap() + 3
+            );
+        }
+    }
+    handle.join().unwrap();
+    assert_eq!(
+        store
+            .review_snapshot(review_id(1))
+            .unwrap()
+            .unwrap()
+            .requests
+            .len(),
+        100
+    );
 }

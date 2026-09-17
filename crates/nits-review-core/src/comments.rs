@@ -282,12 +282,12 @@ impl Core {
         review: ReviewId,
         agent: String,
         note: String,
-    ) -> Result<(), CoreError> {
+    ) -> Result<nits_protocol::ReviewRequestId, CoreError> {
         self.review(review)?;
         if agent.trim().is_empty() {
             return Err(CoreError::invalid("agent name must not be empty"));
         }
-        self.append(
+        let event = self.append(
             ctx,
             EventBody::ReviewRequested {
                 review_id: review,
@@ -295,7 +295,7 @@ impl Core {
                 note,
             },
         )?;
-        Ok(())
+        Ok(nits_protocol::ReviewRequestId::from_event_seq(event.seq))
     }
 
     /// Apply a suggestion's patch to the working tree. The file must still

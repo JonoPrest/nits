@@ -13,6 +13,7 @@ type expect<'a>
 @send external toEqual: (expect<'a>, 'a) => unit = "toEqual"
 @send external toBeTruthy: expect<'a> => unit = "toBeTruthy"
 @send external toContain: (expect<'a>, 'b) => unit = "toContain"
+@send external toHaveBeenCalledTimes: (expect<'a>, int) => unit = "toHaveBeenCalledTimes"
 @send external toHaveBeenCalledWith: (expect<'f>, 'a) => unit = "toHaveBeenCalledWith"
 @send external toHaveBeenLastCalledWith: (expect<'f>, 'a) => unit = "toHaveBeenLastCalledWith"
 @send external toMatchSnapshot: (expect<'a>, string) => unit = "toMatchSnapshot"

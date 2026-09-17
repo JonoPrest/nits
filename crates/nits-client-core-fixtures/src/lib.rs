@@ -591,6 +591,7 @@ enum_fixture!(
             side: Side::Head,
         },
         Focus::Thread { index: 0 },
+        Focus::ReviewRequest { index: 0 },
         Focus::Composer,
         Focus::CommitStepper { index: 0 },
         Focus::Help,
@@ -919,6 +920,7 @@ enum_fixture!(
             threads: vec![local::<ThreadView>()?],
         },
         ViewPatch::Conversation {
+            requests: vec![proto::<ReviewRequest>()?],
             conversation: vec![local::<ThreadView>()?],
         },
         ViewPatch::CommitStepper {
@@ -992,6 +994,7 @@ struct_fixture!(
         diffs: vec![local::<DiffView>()?],
         threads: vec![local::<ThreadView>()?],
         conversation: Vec::new(),
+        requests: vec![proto::<ReviewRequest>()?],
         stepper: Some(local::<CommitStepper>()?),
         focus: Focus::Diff {
             row: 121,

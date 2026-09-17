@@ -44,6 +44,8 @@ let schemas: dict<S.t<unknown>> = Dict.fromArray([
   ("TreeEntry", erase(Domain.TreeEntry.schema)),
   ("TreeSnapshot", erase(Domain.TreeSnapshot.schema)),
   ("TreeDelta", erase(Domain.TreeDelta.schema)),
+  ("ReviewRequestId", erase(Ids.reviewRequestIdSchema)),
+  ("ReviewRequest", erase(Domain.ReviewRequest.schema)),
   ("ReviewSnapshot", erase(Domain.ReviewSnapshot.schema)),
   ("SpanClass", erase(Render.SpanClass.schema)),
   ("Span", erase(Render.Span.schema)),
