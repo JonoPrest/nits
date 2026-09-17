@@ -156,6 +156,7 @@ registry!(
     RowPlace,
     CommentView,
     ThreadView,
+    ThreadStatus,
     ThreadPlace,
     CommitStepper,
     StepperCommit,
@@ -294,6 +295,7 @@ struct_fixture!(
     Draft,
     "Draft",
     Draft {
+        intent: nits_protocol::CommentIntent::Finding,
         anchor: proto_named::<Anchor>("Lines")?,
         reply_to: Some(thread_id()?),
     }
@@ -536,7 +538,7 @@ struct_fixture!(
         created: proto::<Comment>()?.created,
         summary: "This should be a newtype.".into(),
         replies: 1,
-        resolved: false,
+        status: ThreadStatus::Open,
         place: local_named::<ThreadPlace>("Lines")?,
         outdated: false,
         pending: true,
@@ -641,6 +643,7 @@ struct_fixture!(
 );
 unit_enum_fixture!(Context, "Context");
 unit_enum_fixture!(Command, "Command");
+unit_enum_fixture!(ThreadStatus, "ThreadStatus");
 struct_fixture!(
     Override,
     "Override",
@@ -683,6 +686,7 @@ enum_fixture!(
             review_id: review_id()?,
         },
         Action::CloseReview,
+        Action::InformationalNoteOpened,
         Action::DraftOpened {
             anchor: proto_named::<Anchor>("Lines")?,
         },

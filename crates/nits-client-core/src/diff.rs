@@ -38,9 +38,15 @@ pub enum ThreadPlace {
     },
 }
 
+/// Actionable status, kept separate from location and comment content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::EnumIter)]
+pub enum ThreadStatus {
+    Open,
+    Resolved,
+    Informational,
+}
+
 /// One thread as the thread list shows it.
-// Four independent flags is the domain; a bit set would hide the names.
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThreadView {
@@ -51,7 +57,7 @@ pub struct ThreadView {
     /// First line of the root comment.
     pub summary: String,
     pub replies: u32,
-    pub resolved: bool,
+    pub status: ThreadStatus,
     pub place: ThreadPlace,
     /// The root could not be re-anchored after the head moved.
     pub outdated: bool,
@@ -229,7 +235,11 @@ fn thread_view(snapshot: &ReviewSnapshot, t: &Thread, pending: &PendingIds) -> O
         created: root.created,
         summary: root.body.lines().next().unwrap_or_default().to_owned(),
         replies: u32::try_from(t.replies.len()).unwrap_or(u32::MAX),
-        resolved: matches!(t.resolution, ThreadResolution::Resolved { .. }),
+        status: match t.resolution {
+            ThreadResolution::Open => ThreadStatus::Open,
+            ThreadResolution::Resolved { .. } => ThreadStatus::Resolved,
+            ThreadResolution::Informational => ThreadStatus::Informational,
+        },
         place: place_of(anchor),
         outdated,
         pending: pending.comments.iter().any(in_thread) || pending.threads.contains(&t.id),

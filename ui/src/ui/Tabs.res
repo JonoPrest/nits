@@ -23,7 +23,7 @@ let make = (
       >
         {React.string(label)}
         {switch count {
-        | Some(n) => <UI.Badge text={Int.toString(n)} />
+        | Some(n) => <UI.Badge text={Int.toString(n) ++ (target == Conversation ? " open" : "")} />
         | None => React.null
         }}
       </button>

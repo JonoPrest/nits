@@ -2,6 +2,16 @@
 
 open View
 
+let openFindings = (threads: array<ThreadView.t>) =>
+  threads->Array.filter(t => t.status == Open)->Array.length
+
+let statusText = (status: ThreadStatus.t) =>
+  switch status {
+  | Open => "open finding"
+  | Resolved => "resolved finding"
+  | Informational => "informational"
+  }
+
 let authorName = (a: Domain.Author.t) =>
   switch a {
   | Human({name}) => name
@@ -25,11 +35,15 @@ module Item = {
     ~onSelect: unit => unit,
     ~onApply: unit => unit,
     ~onOriginal: unit => unit,
+    ~chrome: array<Hint.t>,
+    ~onReply: unit => unit,
+    ~onResolve: unit => unit,
+    ~composer: React.element,
   ) => {
     let (focusRef, onKeyDown) = ThreadFocus.use(~focused)
     let flags =
       [
-        thread.resolved ? "resolved" : "",
+        thread.status == Resolved ? "resolved" : "",
         thread.outdated ? "outdated" : "",
         thread.pending ? "pending" : "",
       ]->Array.filter(s => s != "")
@@ -43,6 +57,7 @@ module Item = {
       >
         <div className="thread-meta">
           <span className="thread-author"> {React.string(authorName(thread.author))} </span>
+          <UI.Badge text={statusText(thread.status)} />
           <span className="thread-place"> {React.string(placeText(thread.place))} </span>
           {thread.replies > 0
             ? <UI.Badge text={Int.toString(thread.replies) ++ " replies"} />
@@ -51,7 +66,7 @@ module Item = {
             ? <span className="thread-pending"> {React.string("…")} </span>
             : React.null}
         </div>
-        {focused
+        {focused || composer != React.null
           ? <ul className="thread-comments">
               {thread.comments
               ->Array.map(c =>
@@ -73,6 +88,20 @@ module Item = {
               ->React.array}
             </ul>
           : <div className="thread-summary"> {React.string(thread.summary)} </div>}
+        <div onClick={ev => ReactEvent.Mouse.stopPropagation(ev)}>
+          {composer != React.null
+            ? composer
+            : <UI.Button label="Reply" title=?{Chrome.tip(chrome, Reply)} onClick=onReply />}
+          {switch thread.status {
+          | Informational => React.null
+          | Open | Resolved =>
+            <UI.Button
+              label={thread.status == Resolved ? "Reopen finding" : "Resolve finding"}
+              title=?{Chrome.tip(chrome, ToggleResolved)}
+              onClick=onResolve
+            />
+          }}
+        </div>
         {thread.suggestion
           ? <UI.Button label="Apply suggestion (a)" kind=Primary onClick=onApply />
           : React.null}
@@ -94,6 +123,9 @@ let make = (
   ~focus: Focus.t,
   ~indexOffset: int,
   ~dispatch: Action.t => unit,
+  ~chrome: array<Hint.t>=[],
+  ~draft: option<Draft.t>=?,
+  ~pendingRefresh: bool=false,
 ) => {
   let focusedIndex = switch focus {
   | Thread({index}) => Some(index)
@@ -125,6 +157,19 @@ let make = (
                 | (_, _, Review(_)) => ()
                 }
               }}
+              chrome
+              composer={switch draft {
+              | Some(draft) if draft.replyTo == Some(t.id) =>
+                <Composer draft pendingRefresh dispatch />
+              | Some(_) | None => React.null
+              }}
+              onReply={() => dispatch(ReplyOpened({threadId: t.id}))}
+              onResolve={() =>
+                dispatch(
+                  t.status == Resolved
+                    ? UnresolveThread({threadId: t.id})
+                    : ResolveThread({threadId: t.id}),
+                )}
               onApply={() => dispatch(ApplySuggestion({commentId: t.root}))}
               onOriginal={() => dispatch(OpenOriginalDiff({threadId: t.id}))}
             />

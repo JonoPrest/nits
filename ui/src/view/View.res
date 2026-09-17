@@ -42,7 +42,11 @@ module ConnectionView = {
 
 module Draft = {
   @schema
-  type t = {anchor: Domain.Anchor.t, @as("reply_to") replyTo: @s.null option<threadId>}
+  type t = {
+    intent: Domain.CommentIntent.t,
+    anchor: Domain.Anchor.t,
+    @as("reply_to") replyTo: @s.null option<threadId>,
+  }
 
   /// Whether this draft docks at the bottom of the tab. A reply renders
   /// in its thread's card and a line comment under its own row; only a
@@ -330,6 +334,11 @@ module CommentView = {
   }
 }
 
+module ThreadStatus = {
+  @schema
+  type t = Open | Resolved | Informational
+}
+
 module ThreadView = {
   @schema
   type t = {
@@ -339,7 +348,7 @@ module ThreadView = {
     created: timestamp,
     summary: string,
     replies: int,
-    resolved: bool,
+    status: ThreadStatus.t,
     place: ThreadPlace.t,
     outdated: bool,
     pending: bool,
@@ -411,6 +420,8 @@ module Command = {
     | NextPanel
     | ToggleViewed
     | Comment
+    | ReviewFinding
+    | InformationalNote
     | Reply
     | Delete
     | ApplySuggestion

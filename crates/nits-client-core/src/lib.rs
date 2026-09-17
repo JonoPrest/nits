@@ -52,7 +52,7 @@ pub use connection::{Connection, ConnectionKind};
 pub use content::{CacheConfig, DiskTier, DiskTierKind, FileRef, PREFETCH_RADIUS};
 pub use diff::{
     CommentView, CommitStepper, DiffRow, DiffView, PendingIds, RowPlace, RowThread, StepperCommit,
-    ThreadPlace, ThreadPlaceKind, ThreadView, conversation, threads,
+    ThreadPlace, ThreadPlaceKind, ThreadStatus, ThreadView, conversation, threads,
 };
 pub use events::{
     EventMeta, MutationError, MutationErrorKind, apply_body, local_event, thread_id_of,
@@ -158,7 +158,9 @@ pub enum Action {
         review_id: ReviewId,
     },
     CloseReview,
-    /// The user started writing a comment at `anchor`. The editor is the
+    /// Start a review-level informational note, without an actionable lifecycle.
+    InformationalNoteOpened,
+    /// The user started writing a finding at `anchor`. The editor is the
     /// host's; the core only records that one is open.
     DraftOpened {
         anchor: Anchor,
@@ -1092,11 +1094,16 @@ impl ClientCore {
             self.view.mode = mode;
             sections.push(ViewSection::Hints);
         }
-        let hints = if self.chords.is_empty() {
+        let mut hints = if self.chords.is_empty() {
             self.keymap.hints(focus.context())
         } else {
             self.keymap.pending_hints(focus.context(), &self.chords)
         };
+        // Informational conversation has no resolution lifecycle. Its focused
+        // hint bar (including custom prefix continuations) must reflect that.
+        hints.retain(|hint| {
+            hint.command != Command::ToggleResolved || focus::resolve(self, hint.command).is_ok()
+        });
         if hints != self.view.hints {
             self.view.hints = hints;
             sections.push(ViewSection::Hints);
@@ -1767,6 +1774,7 @@ impl ClientCore {
                 };
                 self.visual_anchor = None;
                 self.view.draft = Some(Draft {
+                    intent: nits_protocol::CommentIntent::Finding,
                     anchor,
                     reply_to: None,
                 });
@@ -1796,6 +1804,7 @@ impl ClientCore {
                 };
                 self.visual_anchor = None;
                 self.view.draft = Some(Draft {
+                    intent: nits_protocol::CommentIntent::Finding,
                     anchor,
                     reply_to: None,
                 });
@@ -2272,6 +2281,15 @@ impl ClientCore {
                     }
                 }
             }
+            Action::InformationalNoteOpened => {
+                let effects = self.user(Action::DraftOpened {
+                    anchor: Anchor::Review,
+                })?;
+                if let Some(draft) = &mut self.view.draft {
+                    draft.intent = nits_protocol::CommentIntent::Informational;
+                }
+                Ok(effects)
+            }
             Action::DraftOpened { anchor } => {
                 if self.view.review.is_none() {
                     return Err(CoreError::NoOpenReview);
@@ -2281,6 +2299,7 @@ impl ClientCore {
                 }
                 self.visual_anchor = None;
                 self.view.draft = Some(Draft {
+                    intent: nits_protocol::CommentIntent::Finding,
                     anchor,
                     reply_to: None,
                 });
@@ -2302,6 +2321,7 @@ impl ClientCore {
                     .and_then(|t| open.snapshot.comments.iter().find(|c| c.id == t.root))
                     .ok_or(CoreError::UnknownThread(thread_id))?;
                 self.view.draft = Some(Draft {
+                    intent: nits_protocol::CommentIntent::Finding,
                     anchor: root.anchor.clone(),
                     reply_to: Some(thread_id),
                 });
@@ -2387,7 +2407,7 @@ impl ClientCore {
                     Mutation::AddComment {
                         review_id,
                         comment_id,
-                        kind: CommentKind::Note,
+                        kind: draft.intent.into(),
                         anchor,
                         body,
                         context,

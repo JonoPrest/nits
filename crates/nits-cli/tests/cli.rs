@@ -1704,3 +1704,84 @@ fn wait_for_daemon_socket(child: &mut std::process::Child, socket: &Path) {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
+
+#[test]
+fn comment_intent_distinguishes_review_notes_and_findings() {
+    let h = start();
+    let ws = h.out(&["workspace", "add", "review"]);
+    h.out(&["workspace", "attach", &ws, h.repo.path().to_str().unwrap()]);
+    let review = h.out(&[
+        "review",
+        "create",
+        "--workspace",
+        &ws,
+        "--base",
+        "main",
+        "--head",
+        "feature",
+    ]);
+    let note = h.out(&[
+        "comment",
+        "add",
+        &review,
+        "--intent",
+        "informational",
+        "--body",
+        "Review summary",
+    ]);
+    h.out(&[
+        "comment",
+        "reply",
+        &review,
+        &note,
+        "--body",
+        "Progress update",
+    ]);
+    h.out(&[
+        "comment",
+        "add",
+        &review,
+        "--intent",
+        "finding",
+        "--body",
+        "Review-wide defect",
+    ]);
+    let listed = h.out(&["comment", "list", &review]);
+    assert!(listed.contains("informational"), "{listed}");
+    assert!(listed.contains("open"), "{listed}");
+    h.nits()
+        .args(["comment", "resolve", &review, &note])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("informational"));
+    h.nits()
+        .args([
+            "comment",
+            "add",
+            &review,
+            "--intent",
+            "informational",
+            "--path",
+            "a.rs",
+            "--body",
+            "invalid",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("review-level anchor"));
+    h.nits()
+        .args([
+            "comment",
+            "add",
+            &review,
+            "--intent",
+            "informational",
+            "--patch",
+            "patch",
+            "--body",
+            "invalid",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot carry a suggestion"));
+}

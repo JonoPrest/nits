@@ -121,6 +121,13 @@ light both):
   Conversation tab link "open original diff".
 - **Browse comments** anchor to `file@ref` with no diff pair.
 
+Review conversation distinguishes open/resolved findings from informational notes.
+The Conversation badge counts **open findings**; all conversation remains visible.
+`<leader>i` starts an informational review note and `<leader>f` starts a review-wide
+finding from any panel. Both have keymap-derived buttons in Conversation. Notes and
+findings accept attributed replies; only findings expose resolve/reopen. Notes imply
+no approval, readiness, or resolution. Legacy Note comments remain findings.
+
 ## Browse
 
 A third tab for reading code without a diff: full file tree (every file,

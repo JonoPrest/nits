@@ -466,3 +466,90 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn informational_notes_converge_with_concurrent_replies_and_reconnect_without_opening_findings() {
+    use nits_client_core::{CoreError, MutationError, ThreadStatus};
+    let mut sim = two_clients_one_thread();
+    let finding = thread_id(&sim);
+    sim.act(A, Action::InformationalNoteOpened).unwrap();
+    sim.act(
+        A,
+        Action::DraftSubmitted {
+            body: "Summary, not approval".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        sim.client(A)
+            .view()
+            .threads
+            .iter()
+            .filter(|t| t.status == ThreadStatus::Open)
+            .count(),
+        1
+    );
+    assert!(
+        sim.client(A)
+            .view()
+            .threads
+            .iter()
+            .any(|t| t.status == ThreadStatus::Informational && t.pending)
+    );
+    sim.settle();
+    let note = sim
+        .daemon_snapshot()
+        .threads
+        .iter()
+        .find(|t| t.resolution == ThreadResolution::Informational)
+        .unwrap()
+        .id;
+    for peer in [A, B] {
+        sim.act(
+            peer,
+            Action::Reply {
+                thread_id: note,
+                body: format!("status from {}", peer.0),
+            },
+        )
+        .unwrap();
+    }
+    assert!(sim.deliver_up(B));
+    assert!(sim.deliver_up(A));
+    sim.disconnect(B);
+    sim.settle();
+    sim.act(A, Action::ResolveThread { thread_id: finding })
+        .unwrap();
+    sim.settle();
+    sim.reconnect(B).unwrap();
+    sim.settle();
+    sim.converged().unwrap();
+    for peer in [A, B] {
+        let view = sim.client(peer).view();
+        assert_eq!(
+            view.threads
+                .iter()
+                .filter(|t| t.status == ThreadStatus::Open)
+                .count(),
+            0
+        );
+        let thread = view.threads.iter().find(|t| t.id == note).unwrap();
+        assert_eq!(thread.status, ThreadStatus::Informational);
+        assert_eq!(thread.comments.len(), 3);
+        assert_eq!(thread.comments[1].author, human("bob"));
+        assert_eq!(thread.comments[2].author, human("ada"));
+        assert_eq!(
+            sim.act(peer, Action::ResolveThread { thread_id: note }),
+            Err(CoreError::Mutation(MutationError::InformationalThread(
+                note
+            )))
+        );
+        assert_eq!(
+            sim.act(peer, Action::UnresolveThread { thread_id: note }),
+            Err(CoreError::Mutation(MutationError::InformationalThread(
+                note
+            )))
+        );
+    }
+    sim.converged().unwrap();
+}

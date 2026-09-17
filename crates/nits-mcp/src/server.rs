@@ -758,7 +758,7 @@ impl Server {
             }
         };
         let (t, event) = ops
-            .new_thread(p.review_id, CommentKind::Note, anchor, p.body)
+            .new_thread(p.review_id, p.intent.into(), anchor, p.body)
             .await?;
         thread_json(t, event.seq)
     }

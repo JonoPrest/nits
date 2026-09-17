@@ -502,7 +502,9 @@ impl Sim {
 /// The wire error the real daemon would answer with.
 fn rpc_error(e: &MutationError) -> RpcError {
     match e {
-        MutationError::DuplicateComment(_)
+        MutationError::InformationalAnchor
+        | MutationError::InformationalThread(_)
+        | MutationError::DuplicateComment(_)
         | MutationError::AlreadyResolved(_)
         | MutationError::NotResolved(_)
         | MutationError::Unsupported(_) => RpcError::Invalid {

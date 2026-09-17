@@ -15,7 +15,7 @@ let make = (
   let (focusRef, onKeyDown) = ThreadFocus.use(~focused)
   let flags =
     [
-      thread.resolved ? "resolved" : "",
+      thread.status == Resolved ? "resolved" : "",
       thread.outdated ? "outdated" : "",
       thread.pending ? "pending" : "",
     ]->Array.filter(s => s != "")
@@ -64,16 +64,18 @@ let make = (
                 onClick={() => dispatch(ApplySuggestion({commentId: thread.root}))}
               />
             : React.null}
-          <UI.Button
-            label={thread.resolved ? "Unresolve (x)" : "Resolve (x)"}
-            kind=Ghost
-            onClick={() =>
-              dispatch(
-                thread.resolved
-                  ? UnresolveThread({threadId: thread.id})
-                  : ResolveThread({threadId: thread.id}),
-              )}
-          />
+          {thread.status == Informational
+            ? React.null
+            : <UI.Button
+                label={thread.status == Resolved ? "Unresolve (x)" : "Resolve (x)"}
+                kind=Ghost
+                onClick={() =>
+                  dispatch(
+                    thread.status == Resolved
+                      ? UnresolveThread({threadId: thread.id})
+                      : ResolveThread({threadId: thread.id}),
+                  )}
+              />}
         </div>
       }}
     </div>,

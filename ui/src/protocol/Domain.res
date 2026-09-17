@@ -182,11 +182,17 @@ module Anchor = {
   @@warning("+27")
 }
 
+module CommentIntent = {
+  @schema
+  type t = Finding | Informational
+}
+
 module CommentKind = {
   @@warning("-27")
   @schema @tag("type")
   type t =
     | @as("Note") Note({})
+    | @as("Informational") Informational({})
     | @as("Suggestion") Suggestion({patch: string})
     | @as("Request") Request({})
   @@warning("+27")
@@ -255,6 +261,7 @@ module ThreadResolution = {
   type t =
     | @as("Open") Open({})
     | @as("Resolved") Resolved({by: Author.t, at: timestamp})
+    | @as("Informational") Informational({})
   @@warning("+27")
 }
 

@@ -50,21 +50,30 @@ fn same_version_is_welcomed_without_upgrade_notice() {
 }
 
 #[test]
-fn older_minor_is_served_with_upgrade_notice() {
-    let cur = ProtocolVersion::CURRENT;
-    if cur.minor == 0 {
-        // Nothing older to ask for within this major; the rule is covered
-        // by `ProtocolVersion::can_serve` tests until 0.2.
-        return;
+fn older_minor_is_rejected_before_any_incompatible_snapshot_or_event() {
+    for minor in 0..ProtocolVersion::CURRENT.minor {
+        let old = ProtocolVersion::new(ProtocolVersion::CURRENT.major, minor, 0);
+        let rejected = daemon().negotiate(hello(old)).unwrap_err();
+        assert_eq!(rejected.reply.v, old);
+        assert_eq!(
+            rejected.reply.msg,
+            ServerMsg::Rejected {
+                error: RpcError::UnsupportedProtocol {
+                    requested: old,
+                    supported: vec![ProtocolVersion::CURRENT],
+                }
+            }
+        );
     }
-    let old = ProtocolVersion::new(cur.major, cur.minor - 1, 0);
-    let (n, welcome) = daemon().negotiate(hello(old)).unwrap();
-    assert_eq!(n.protocol, old, "served at the client's version");
-    assert_eq!(welcome.v, old);
-    let ServerMsg::Welcome { upgrade, .. } = welcome.msg else {
-        panic!("expected Welcome, got {welcome:?}");
-    };
-    assert_eq!(upgrade.unwrap().latest, cur);
+}
+
+#[test]
+fn same_minor_patch_versions_share_the_serializer() {
+    let current = ProtocolVersion::CURRENT;
+    let version = ProtocolVersion::new(current.major, current.minor, current.patch + 1);
+    let (negotiated, welcome) = daemon().negotiate(hello(version)).unwrap();
+    assert_eq!(negotiated.protocol, version);
+    assert_eq!(welcome.v, version);
 }
 
 #[test]

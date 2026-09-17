@@ -1,4 +1,4 @@
 {
-  "latest": "0.2.0",
-  "message": "nitsd 0.3 speaks protocol 0.3.0; upgrade your client."
+  "latest": "0.6.0",
+  "message": "Upgrade your client to protocol 0.6.0."
 }

@@ -85,6 +85,8 @@ pub enum Command {
     NextPanel,
     ToggleViewed,
     Comment,
+    ReviewFinding,
+    InformationalNote,
     Reply,
     /// Delete the focused thread's root comment (own comments only).
     Delete,
@@ -578,6 +580,8 @@ impl Keymap {
             l('h', C::ToggleWhitespace),
             l('b', C::ToggleSidebar),
             l('C', C::Commits),
+            l('i', C::InformationalNote),
+            l('f', C::ReviewFinding),
             b(X::Global, keys!("esc"), C::Back, false),
             b(X::Global, keys!("ctrl+shift+c"), C::Connect, false),
             b(X::Global, keys!("ctrl+shift+d"), C::Disconnect, false),
@@ -1041,6 +1045,8 @@ pub fn label(command: Command) -> &'static str {
         Command::NextPanel => "next panel",
         Command::ToggleViewed => "mark viewed",
         Command::Comment => "comment",
+        Command::ReviewFinding => "review-wide finding",
+        Command::InformationalNote => "informational note",
         Command::Reply => "reply",
         Command::Delete => "delete",
         Command::ApplySuggestion => "apply suggestion",
@@ -1103,6 +1109,8 @@ pub fn modes_of(command: Command) -> &'static [Mode] {
         | Command::GoTop
         | Command::GoBottom
         | Command::Comment
+        | Command::ReviewFinding
+        | Command::InformationalNote
         | Command::VisualMode => &[M::Normal, M::Visual],
         Command::NextHunk
         | Command::PrevHunk

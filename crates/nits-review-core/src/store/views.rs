@@ -202,7 +202,7 @@ pub(super) fn apply(t: &mut Write<'_>, event: &Event) -> Result<(), StoreError> 
                     review_id: comment.review_id,
                     root: comment.id,
                     replies: vec![],
-                    resolution: ThreadResolution::Open,
+                    resolution: ThreadResolution::for_root(&comment.kind),
                 }
             };
             t.threads.insert(

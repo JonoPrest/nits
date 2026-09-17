@@ -1284,3 +1284,126 @@ fn directory_bootstrap_discovers_nested_paths_without_partial_invalid_refs() {
     assert_eq!(again.outcome, nits_protocol::DirectoryReviewOutcome::Reused);
     assert_eq!(before, core.last_seq().unwrap());
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // one lifecycle scenario through persistence or transport
+fn informational_summary_is_conversation_not_an_open_finding() {
+    let w = world();
+    let review = review_id(1);
+    w.core
+        .create_review(&human(), review, ws(), "review".into(), targets())
+        .unwrap();
+    let blob = head_blob(&w.core, review, rid(1), "src/main.rs");
+    for n in 1..=3 {
+        w.core
+            .add_comment(
+                &agent(),
+                review,
+                cid(n),
+                CommentKind::Note,
+                lines_anchor(rid(1), p("src/main.rs"), Side::Head, blob, 2, 2).unwrap(),
+                format!("finding {n}"),
+                None,
+            )
+            .unwrap();
+    }
+    let summary = w
+        .core
+        .add_comment(
+            &agent(),
+            review,
+            cid(4),
+            CommentKind::Informational,
+            Anchor::Review,
+            "Three findings; review is in progress".into(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        w.core
+            .threads(review)
+            .unwrap()
+            .iter()
+            .filter(|t| t.resolution == ThreadResolution::Open)
+            .count(),
+        3
+    );
+    let reply = w
+        .core
+        .reply(
+            &other_human(),
+            review,
+            summary.thread_id,
+            cid(5),
+            CommentKind::Note,
+            "Two findings fixed; one remains".into(),
+        )
+        .unwrap();
+    assert_eq!(reply.author, other_human().author);
+    assert_eq!(reply.anchor, Anchor::Review);
+    for n in 1..=2 {
+        w.core
+            .resolve_thread(&human(), review, thread_id_of(cid(n)))
+            .unwrap();
+    }
+    let before = w.core.events_after(None).unwrap();
+    assert!(
+        w.core
+            .resolve_thread(&human(), review, summary.thread_id)
+            .is_err()
+    );
+    assert!(
+        w.core
+            .unresolve_thread(&human(), review, summary.thread_id)
+            .is_err()
+    );
+    assert_eq!(w.core.events_after(None).unwrap(), before);
+    assert!(
+        w.core
+            .add_comment(
+                &human(),
+                review,
+                cid(6),
+                CommentKind::Informational,
+                lines_anchor(rid(1), p("src/main.rs"), Side::Head, blob, 2, 2).unwrap(),
+                "invalid".into(),
+                None
+            )
+            .is_err()
+    );
+    assert_eq!(
+        w.core
+            .threads(review)
+            .unwrap()
+            .iter()
+            .filter(|t| t.resolution == ThreadResolution::Open)
+            .count(),
+        1
+    );
+    w.core
+        .add_comment(
+            &human(),
+            review,
+            cid(7),
+            CommentKind::Note,
+            Anchor::Review,
+            "Review-wide actionable concern".into(),
+            None,
+        )
+        .unwrap();
+    let threads = w.core.threads(review).unwrap();
+    assert_eq!(
+        threads
+            .iter()
+            .filter(|t| t.resolution == ThreadResolution::Open)
+            .count(),
+        2
+    );
+    let note = threads.iter().find(|t| t.id == summary.thread_id).unwrap();
+    assert_eq!(note.resolution, ThreadResolution::Informational);
+    assert_eq!(note.replies, vec![reply.id]);
+    assert_eq!(
+        w.core.review(review).unwrap().review.status,
+        ReviewStatus::Open
+    );
+}

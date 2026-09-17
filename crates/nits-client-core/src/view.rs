@@ -56,6 +56,7 @@ pub enum ConnectionView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Draft {
+    pub intent: nits_protocol::CommentIntent,
     pub anchor: Anchor,
     pub reply_to: Option<ThreadId>,
 }

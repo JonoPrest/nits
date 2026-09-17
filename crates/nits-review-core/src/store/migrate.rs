@@ -28,7 +28,23 @@ type Migration = fn(&WriteTransaction) -> Result<(), String>;
 ///
 /// Schema 0 is "a store created before versioning existed" (no `meta` stamp);
 /// upgrading it to 1 is a no-op because the tables are identical.
-const MIGRATIONS: &[Migration] = &[migrate_0_to_1];
+const MIGRATIONS: &[Migration] = &[migrate_0_to_1, migrate_1_to_2];
+
+/// Schema 2 admits informational comments and threads. Historical Note roots
+/// retain their actionable lifecycle, including every resolution and reply.
+fn migrate_1_to_2(txn: &WriteTransaction) -> Result<(), String> {
+    fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
+        let mut tables = tables::Write::open(txn)?;
+        for (_, mut stored) in tables.all_events()? {
+            stored.schema = SchemaVersion::new(2);
+            tables.put_event(&stored)?;
+        }
+        tables.clear_views()?;
+        tables.clear_view_seq()?;
+        Ok(())
+    }
+    migrate(txn).map_err(|error| error.to_string())
+}
 
 #[allow(clippy::unnecessary_wraps)] // must match the `Migration` fn-pointer type
 fn migrate_0_to_1(_txn: &WriteTransaction) -> Result<(), String> {
