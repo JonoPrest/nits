@@ -239,6 +239,19 @@ TreeDelta    { from_root, to_root, added: [TreeEntry], removed: [path], changed:
 
 Encoding is an isolated layer; the Rust↔Rust hop may move to capnproto/flatbuffers later if measured to matter. JSON is the fixed contract between `nits-client-core` and the UI.
 
+`get_file` accepts optional `start_line` and `end_line`, supplied together as an
+inclusive, 1-based range. Both omitted (or null) keep the full-file text. Zero,
+reversed, incomplete, and non-integer bounds are rejected. The response preserves
+the review-side pinned `blob_oid` and absolute line numbers, including unchanged
+files and `Base`. Text responses add `lines: { total_lines, returned_range }`;
+`returned_range` is `{ start, end }` for the actual lines returned. The end clamps
+at EOF; a start beyond EOF or an empty file returns empty text and a null range.
+A trailing newline adds no extra source line. Binary full-file reads keep their
+placeholder and return `lines: null`; bounded binary reads fail with a tool error.
+`content` still describes the full blob render. Selection uses the shared text
+formatter over the existing Core blob render: the MCP payload is bounded, but
+daemon rendering and the daemon-to-MCP stream still collect the full file.
+
 ### 4.9 Versioning and evolution
 
 Two independent versions, both typed in `nits-protocol::version`.

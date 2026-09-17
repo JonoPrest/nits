@@ -48,6 +48,10 @@ fn small_repo() -> TestRepo {
 }
 
 fn start() -> Harness {
+    start_with_repo(small_repo())
+}
+
+fn start_with_repo(repo: TestRepo) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let socket = std::env::temp_dir().join(format!(
         "nits-mcp-{}-{}.sock",
@@ -69,7 +73,7 @@ fn start() -> Harness {
         dir,
         socket,
         shutdown,
-        repo: small_repo(),
+        repo,
         daemon,
     }
 }
@@ -684,6 +688,208 @@ async fn tools_round_trip_through_core() {
     let review = call(&mut s, "get_review", json!({ "review_id": review_id })).await;
     assert_eq!(review["review"]["status"], "Archived");
     assert_eq!(review["review"]["title"], "renamed");
+}
+
+#[tokio::test]
+async fn bounded_files_keep_review_blobs_and_absolute_lines_across_chunks() {
+    let base = (1..=1030)
+        .map(|n| format!("base {n}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let head = base.replace("base", "head");
+    let h = start_with_repo(
+        RepoBuilder::new()
+            .commit(
+                "base",
+                files!["changed.txt" => &base, "unchanged.txt" => &base],
+            )
+            .branch("feature")
+            .commit("head", files!["changed.txt" => &head])
+            .build()
+            .unwrap(),
+    );
+    let c = human(&h).await;
+    let (ws, rid) = seed(&h, &c).await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    let created = call(
+        &mut s,
+        "create_review",
+        json!({
+            "workspace_id": ws, "title": "ranges", "targets": main_feature(&rid)
+        }),
+    )
+    .await;
+    let cases = [
+        ("changed.txt", "Head", &head, "feature:changed.txt"),
+        ("changed.txt", "Base", &base, "main:changed.txt"),
+        ("unchanged.txt", "Head", &base, "feature:unchanged.txt"),
+        ("unchanged.txt", "Base", &base, "main:unchanged.txt"),
+    ];
+    let oids: Vec<_> = cases
+        .iter()
+        .map(|(_, _, _, rev)| h.repo.git(&["rev-parse", rev]).unwrap())
+        .collect();
+    // Both mutable refs and the checkout now disagree with the review snapshot.
+    h.repo
+        .write_file("changed.txt", b"later revision\n")
+        .unwrap();
+    h.repo.write_file("unchanged.txt", b"also later\n").unwrap();
+    h.repo.git(&["add", "."]).unwrap();
+    h.repo.git(&["commit", "-qm", "later"]).unwrap();
+    h.repo.git(&["branch", "-f", "main", "feature"]).unwrap();
+    h.repo
+        .write_file("changed.txt", b"uncommitted checkout\n")
+        .unwrap();
+
+    for ((path, side, source, _), oid) in cases.into_iter().zip(oids) {
+        let args = json!({ "review_id": created["review_id"], "repo_id": rid, "path": path, "side": side });
+        let full = call(&mut s, "get_file", args.clone()).await;
+        let expected: Vec<_> = source
+            .lines()
+            .enumerate()
+            .map(|(i, line)| format!("{:>5}│{line}\n", i + 1))
+            .collect();
+        assert_eq!(full["text"], expected.concat());
+        assert_eq!(full["blob_oid"], oid);
+        assert_eq!(
+            full["lines"],
+            json!({ "total_lines": 1030, "returned_range": { "start": 1, "end": 1030 } })
+        );
+        let mut args = args;
+        args["start_line"] = json!(995);
+        args["end_line"] = json!(1015);
+        let bounded = call(&mut s, "get_file", args).await;
+        assert_eq!(bounded["text"], expected[994..1015].concat());
+        assert_eq!(
+            bounded["lines"],
+            json!({ "total_lines": 1030, "returned_range": { "start": 995, "end": 1015 } })
+        );
+        for field in ["repo_id", "path", "side", "blob_oid", "lang", "content"] {
+            assert_eq!(bounded[field], full[field], "{path} {side} {field}");
+        }
+        assert_eq!(bounded["text"].as_str().unwrap().lines().count(), 21);
+    }
+}
+
+#[tokio::test]
+async fn file_ranges_define_eof_empty_and_binary_behavior() {
+    let h = start_with_repo(RepoBuilder::new()
+        .commit("base", files![
+            "empty.txt" => "", "binary.dat" => b"binary\0content",
+            "terminated.txt" => "one\ntwo\n", "unterminated.txt" => "one\ntwo",
+            "crlf.txt" => "one\r\ntwo\r\n", "blank.txt" => "\n", "last-blank.txt" => "one\n\n"
+        ])
+        .branch("feature").build().unwrap());
+    let c = human(&h).await;
+    let (ws, rid) = seed(&h, &c).await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    let created = call(
+        &mut s,
+        "create_review",
+        json!({
+            "workspace_id": ws, "title": "edges", "targets": main_feature(&rid)
+        }),
+    )
+    .await;
+    for (path, source) in [
+        ("empty.txt", ""),
+        ("terminated.txt", "one\ntwo\n"),
+        ("unterminated.txt", "one\ntwo"),
+        ("crlf.txt", "one\ntwo\n"),
+        ("blank.txt", "\n"),
+        ("last-blank.txt", "one\n\n"),
+    ] {
+        let source: Vec<_> = source
+            .lines()
+            .enumerate()
+            .map(|(i, line)| format!("{:>5}│{line}\n", i + 1))
+            .collect();
+        let total = source.len();
+        let args = json!({ "review_id": created["review_id"], "path": path });
+        let full = call(&mut s, "get_file", args.clone()).await;
+        assert_eq!(full["text"], source.concat());
+        let range = if total == 0 {
+            Value::Null
+        } else {
+            json!({ "start": 1, "end": total })
+        };
+        assert_eq!(
+            full["lines"],
+            json!({ "total_lines": total, "returned_range": range })
+        );
+        for (start, end) in [
+            (1_u32, 1_u32),
+            (1, 2),
+            (1, u32::MAX),
+            (2, 20),
+            (3, 3),
+            (u32::MAX, u32::MAX),
+        ] {
+            let mut args = args.clone();
+            args["start_line"] = json!(start);
+            args["end_line"] = json!(end);
+            let bounded = call(&mut s, "get_file", args).await;
+            let selected = source
+                .iter()
+                .skip(start as usize - 1)
+                .take((end - start + 1) as usize)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(bounded["text"], selected.concat(), "{path} {start}..={end}");
+            let range = if selected.is_empty() {
+                Value::Null
+            } else {
+                json!({ "start": start, "end": (end as usize).min(total) })
+            };
+            assert_eq!(
+                bounded["lines"],
+                json!({ "total_lines": total, "returned_range": range })
+            );
+            assert_eq!(bounded["blob_oid"], full["blob_oid"]);
+        }
+    }
+    let args = json!({ "review_id": created["review_id"], "path": "binary.dat" });
+    let binary = call(&mut s, "get_file", args.clone()).await;
+    assert_eq!(binary["text"], "(binary file)\n");
+    assert_eq!(binary["content"], json!({ "type": "Binary" }));
+    assert!(binary["lines"].is_null());
+    let mut args = args;
+    args["start_line"] = json!(1);
+    args["end_line"] = json!(1);
+    assert!(
+        call_err(&mut s, "get_file", args)
+            .await
+            .contains("binary files have no source lines")
+    );
+}
+
+#[tokio::test]
+async fn get_file_rejects_invalid_line_bounds_before_reading_a_review() {
+    let h = start();
+    let mut s = server(&h);
+    init(&mut s).await;
+    for bounds in [
+        json!({"start_line": 0, "end_line": 2}),
+        json!({"start_line": 1, "end_line": 0}),
+        json!({"start_line": 2, "end_line": 1}),
+        json!({"start_line": 1}),
+        json!({"end_line": 2}),
+        json!({"start_line": null, "end_line": 2}),
+        json!({"start_line": 1, "end_line": null}),
+        json!({"start_line": -1, "end_line": 2}),
+        json!({"start_line": 1.5, "end_line": 2}),
+        json!({"start_line": 1, "end_line": 4_294_967_296_u64}),
+        json!({"start_line": "1", "end_line": 2}),
+    ] {
+        let mut args = bounds;
+        args["review_id"] = json!(ReviewId::from_parts(1, 1));
+        args["path"] = json!("a.rs");
+        let error = call_err(&mut s, "get_file", args.clone()).await;
+        assert!(error.contains("invalid params"), "{args}: {error}");
+    }
 }
 
 #[tokio::test]

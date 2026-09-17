@@ -5,9 +5,9 @@
 //! comment.
 
 use nits_protocol::{
-    Author, BaseRefSpec, BlobOid, ChangeKind, Comment, CommentId, Event, FileChange, NonEmpty,
-    RefSpec, RenderContent, RepoId, RepoPath, ResolvedTarget, Review, ReviewId, ReviewStatus, Seq,
-    Side, SubscribeScope, Thread, ThreadId, Workspace, WorkspaceId,
+    Author, BaseRefSpec, BlobOid, ChangeKind, Comment, CommentId, Event, FileChange, LineNo,
+    LineRange, NonEmpty, RefSpec, RenderContent, RepoId, RepoPath, ResolvedTarget, Review,
+    ReviewId, ReviewStatus, Seq, Side, SubscribeScope, Thread, ThreadId, Workspace, WorkspaceId,
 };
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -366,19 +366,60 @@ pub struct GetDiff {
     pub context_lines: Option<u32>,
 }
 
-/// Full contents of a file at the review's base or head, numbered. Works
-/// for unchanged files too.
+/// Contents of a file at the review's base or head, with absolute line numbers.
+/// Works for unchanged files too. Omit both bounds for the full file; otherwise
+/// supply both for an inclusive range. Ends beyond EOF are clamped; starts beyond
+/// EOF return empty text and a null `returned_range`. Empty files have zero lines.
+/// Binary files have no line metadata and reject bounded reads.
 #[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "GetFileWire")]
 pub struct GetFile {
     pub review_id: ReviewId,
-    /// Needed only when the review spans several repos.
     pub repo_id: Option<RepoId>,
+    pub path: RepoPath,
+    pub side: Side,
+    pub lines: Option<LineRange>,
+}
+
+/// Flat wire bounds become a single validated range before dispatch.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct GetFileWire {
+    review_id: ReviewId,
+    /// Needed only when the review spans several repos.
+    repo_id: Option<RepoId>,
     /// Path relative to the repo root.
-    pub path: String,
+    path: RepoPath,
     /// Default `Head`.
     #[serde(default = "head")]
-    pub side: Side,
+    side: Side,
+    /// Inclusive 1-based start; requires `end_line`. Omit both for the full file.
+    start_line: Option<LineNo>,
+    /// Inclusive 1-based end, at least `start_line`; clamped at EOF. Requires `start_line`.
+    end_line: Option<LineNo>,
+}
+
+impl TryFrom<GetFileWire> for GetFile {
+    type Error = nitsd::ops::OpsError;
+
+    fn try_from(wire: GetFileWire) -> Result<Self, Self::Error> {
+        let lines = match (wire.start_line, wire.end_line) {
+            (None, None) => None,
+            (Some(start), Some(end)) => Some(LineRange::new(start, end)?),
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(Self::Error::Invalid(
+                    "start_line and end_line must be supplied together".into(),
+                ));
+            }
+        };
+        Ok(Self {
+            review_id: wire.review_id,
+            repo_id: wire.repo_id,
+            path: wire.path,
+            side: wire.side,
+            lines,
+        })
+    }
 }
 
 fn head() -> Side {
@@ -626,8 +667,18 @@ pub struct FileText {
     pub blob_oid: BlobOid,
     pub lang: Option<String>,
     pub content: RenderContent,
+    /// Source-line metadata; null for binary files. Render content describes the full blob.
+    pub lines: Option<FileLines>,
     /// Numbered file text.
     pub text: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct FileLines {
+    /// Number of source lines in the full blob. A trailing newline adds no extra line.
+    pub total_lines: u32,
+    /// Actual inclusive source range returned; null for empty files or starts beyond EOF.
+    pub returned_range: Option<LineRange>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -800,6 +851,53 @@ mod tests {
         assert_eq!(call.name(), ToolName::ListWorkspaces);
         assert!(ToolCall::parse(ToolName::ListWorkspaces, serde_json::json!({ "x": 1 })).is_err());
         assert!(ToolCall::parse(ToolName::GetReview, serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn file_bounds_parse_to_a_single_range_and_remain_a_query() {
+        let review_id = ReviewId::from_parts(1, 1);
+        for (bounds, expected) in [
+            (serde_json::json!({}), None),
+            (
+                serde_json::json!({ "start_line": null, "end_line": null }),
+                None,
+            ),
+            (
+                serde_json::json!({ "start_line": 995, "end_line": 1015 }),
+                Some(
+                    LineRange::new(LineNo::new(995).unwrap(), LineNo::new(1015).unwrap()).unwrap(),
+                ),
+            ),
+        ] {
+            let mut args = bounds;
+            args["review_id"] = serde_json::json!(review_id);
+            args["path"] = serde_json::json!("source.rs");
+            let Call::Query(QueryCall::GetFile(parsed)) =
+                ToolCall::parse(ToolName::GetFile, args).unwrap().classify()
+            else {
+                panic!("get_file must remain a query");
+            };
+            assert_eq!(parsed.lines, expected);
+            assert_eq!(parsed.side, Side::Head);
+        }
+        let tool = ToolName::GetFile.tool();
+        assert!(tool.description.contains("inclusive range"));
+        assert!(tool.description.contains("EOF"));
+        assert_eq!(
+            tool.input_schema.get("additionalProperties"),
+            Some(&Value::Bool(false))
+        );
+        let properties = tool.input_schema.get("properties").unwrap();
+        assert!(properties.get("start_line").is_some());
+        assert!(properties.get("end_line").is_some());
+        assert!(properties.get("lines").is_none());
+        assert!(
+            tool.output_schema
+                .get("properties")
+                .unwrap()
+                .get("lines")
+                .is_some()
+        );
     }
 
     #[test]
