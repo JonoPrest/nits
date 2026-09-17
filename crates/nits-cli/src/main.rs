@@ -51,7 +51,7 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = StartPolicyArg::StartIfNeeded, global = true)]
     start_policy: StartPolicyArg,
     /// Port for the served web UI (default: a free port).
-    #[arg(long, env = "NITS_PORT", default_value_t = 0)]
+    #[arg(long, env = "NITS_PORT", default_value_t = 0, global = true)]
     port: u16,
     /// Print protocol values as JSON instead of text.
     #[arg(long, global = true)]
@@ -69,10 +69,10 @@ struct Cli {
     /// remote context); `--ui desktop` launches the Tauri app instead.
     #[arg(value_name = "PATH")]
     path: Option<PathBuf>,
-    #[arg(long, value_enum, default_value_t = Ui::Web, conflicts_with = "headless")]
+    #[arg(long, value_enum, default_value_t = Ui::Web, conflicts_with = "headless", global = true)]
     ui: Ui,
     /// Shorthand for `--ui headless`.
-    #[arg(long)]
+    #[arg(long, global = true)]
     headless: bool,
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -115,6 +115,18 @@ impl From<StartPolicyArg> for contexts::StartPolicy {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
+    /// Open a portable review/thread/reply reference in the browser UI.
+    Open {
+        reference: nits_protocol::ReviewReference,
+    },
+    /// Print a portable reference on the selected daemon context.
+    Reference {
+        review: ReviewId,
+        #[arg(long, conflicts_with = "comment")]
+        thread: Option<ThreadId>,
+        #[arg(long)]
+        comment: Option<nits_protocol::CommentId>,
+    },
     /// Named daemons to talk to (local, ssh, websocket), like kubectl contexts.
     #[command(subcommand)]
     Context(ContextCmd),
@@ -500,6 +512,24 @@ fn ref_label(reference: &RefSpec) -> String {
     }
 }
 
+/// A socket reference identifies a running endpoint, but cannot infer the
+/// daemon's data directory. Never start an unrelated store at that address.
+fn client_start_policy(cli: &Cli) -> anyhow::Result<contexts::StartPolicy> {
+    if cli.context.is_none()
+        && cli.socket.is_none()
+        && cli.data_dir.is_none()
+        && cli.daemon_url.is_none()
+        && let Some(Cmd::Open { reference }) = &cli.cmd
+        && matches!(
+            reference.context.locator()?,
+            nits_protocol::ReferenceLocator::Socket(_)
+        )
+    {
+        return Ok(contexts::StartPolicy::RequireRunning);
+    }
+    Ok(cli.start_policy.into())
+}
+
 /// The context to use: ad-hoc flags beat `--context` beats the config.
 fn resolve_context(
     cli: &Cli,
@@ -516,7 +546,48 @@ fn resolve_context(
     if cli.socket.is_some() || cli.data_dir.is_some() {
         return local_selection(cli);
     }
+    if cli.context.is_none()
+        && let Some(Cmd::Open { reference }) = &cli.cmd
+    {
+        return match reference.context.locator()? {
+            nits_protocol::ReferenceLocator::Named(name) => {
+                Ok(cfg.selection(Some((&name.parse()?, SelectionOrigin::Flag)))?)
+            }
+            nits_protocol::ReferenceLocator::Socket(socket) => Ok(Selection {
+                name: "reference".parse()?,
+                context: Context::Local {
+                    data_dir: None,
+                    socket: Some(socket.into()),
+                },
+                origin: SelectionOrigin::AdHoc,
+            }),
+            nits_protocol::ReferenceLocator::WebSocket(url) => Ok(Selection {
+                name: "reference".parse()?,
+                context: Context::Ws { url },
+                origin: SelectionOrigin::AdHoc,
+            }),
+        };
+    }
     Ok(cfg.selection(cli.context.as_ref().map(|name| (name, origin)))?)
+}
+
+/// Saved contexts retain their identity; ad-hoc endpoints retain their actual
+/// daemon address rather than a fabricated context name or HTTP bridge port.
+fn reference_context(selection: &Selection) -> anyhow::Result<nits_protocol::ReferenceContext> {
+    match selection.origin {
+        SelectionOrigin::AdHoc => Ok(contexts::DaemonEndpoint::resolve(
+            &selection.context,
+            contexts::StartPolicy::RequireRunning,
+        )?
+        .reference_context()?),
+        SelectionOrigin::Flag
+        | SelectionOrigin::Environment
+        | SelectionOrigin::Persisted
+        | SelectionOrigin::Implicit
+        | SelectionOrigin::Mcp => Ok(nits_protocol::ReferenceContext::named(
+            selection.name.as_str(),
+        )?),
+    }
 }
 
 /// Serving endpoints belong to this machine. Client routing defaults must not
@@ -650,7 +721,7 @@ fn principal(cli: &Cli) -> (BuildInfo, Author) {
 }
 
 async fn connect(cli: &Cli, ctx: &Context) -> anyhow::Result<Ops> {
-    let client = contexts::connect(ctx, identity(cli), cli.start_policy.into())
+    let client = contexts::connect(ctx, identity(cli), client_start_policy(cli)?)
         .await
         .with_context(|| format!("connecting to {}", ctx.describe()))?;
     Ok(Ops::new(client))
@@ -947,6 +1018,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(Cmd::Mcp) = cli.cmd {
         return mcp(selection, cfg_path, cli.start_policy.into()).await;
     }
+    let reference_context = reference_context(&selection)?;
     let Selection {
         name, context: ctx, ..
     } = selection;
@@ -954,13 +1026,36 @@ async fn main() -> anyhow::Result<()> {
         return daemon_cmd(&cfg, name.as_str(), &ctx, c, json, cli.start_policy.into()).await;
     }
     let ops = connect(&cli, &ctx).await?;
+    if let Some(Cmd::Open { reference }) = &cli.cmd {
+        return open_reference(&cli, &ctx, ops, reference_context, reference).await;
+    }
     let Some(cmd) = cli.cmd else {
-        return open_ui(&cli, &ctx, ops).await;
+        return open_ui(&cli, &ctx, ops, reference_context, None).await;
     };
     let mut ops = ops;
     match cmd {
         Cmd::Context(_) | Cmd::Daemon(_) | Cmd::Keys(_) | Cmd::Mcp => {
             unreachable!("handled above")
+        }
+        Cmd::Open { .. } => unreachable!("handled above"),
+        Cmd::Reference {
+            review,
+            thread,
+            comment,
+        } => {
+            let target = match (thread, comment) {
+                (Some(thread_id), None) => nits_protocol::ReferenceTarget::Thread { thread_id },
+                (None, Some(comment_id)) => nits_protocol::ReferenceTarget::Comment { comment_id },
+                (None, None) => nits_protocol::ReferenceTarget::Review,
+                (Some(_), Some(_)) => bail!("choose --thread or --comment"),
+            };
+            let reference = nits_protocol::ReviewReference {
+                context: reference_context,
+                review_id: review,
+                target,
+            };
+            reference.resolve(&ops.snapshot(review).await?)?;
+            emit(json, &reference, || reference.to_string())
         }
         Cmd::Workspace(c) => workspace(&mut ops, c, json).await,
         Cmd::Review(c) => review(&mut ops, c, cli.workspace, json).await,
@@ -975,11 +1070,41 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+async fn open_reference(
+    cli: &Cli,
+    ctx: &Context,
+    ops: Ops,
+    reference_context: nits_protocol::ReferenceContext,
+    reference: &nits_protocol::ReviewReference,
+) -> anyhow::Result<()> {
+    // Explicit flags override the reference context; rewrite the browser
+    // route to the selected identity, then validate on that daemon.
+    let reference = nits_protocol::ReviewReference {
+        context: reference_context.clone(),
+        ..reference.clone()
+    };
+    reference.resolve(&ops.snapshot(reference.review_id).await?)?;
+    if cli.headless || cli.ui == Ui::Headless {
+        return emit(cli.json, &reference, || reference.to_string());
+    }
+    anyhow::ensure!(
+        cli.ui == Ui::Web,
+        "reference opening currently uses --ui web"
+    );
+    return open_ui(cli, ctx, ops, reference_context, Some(reference)).await;
+}
+
 /// Bare `nits [path]`: with a path, find or create that directory's
 /// review (head = working tree); then serve the browser UI in the
 /// foreground on a free port and print the URL (deep-linked when a
 /// review was resolved). Without a path: the workspace menu.
-async fn open_ui(cli: &Cli, ctx: &Context, mut ops: Ops) -> anyhow::Result<()> {
+async fn open_ui(
+    cli: &Cli,
+    ctx: &Context,
+    mut ops: Ops,
+    reference_context: nits_protocol::ReferenceContext,
+    reference: Option<nits_protocol::ReviewReference>,
+) -> anyhow::Result<()> {
     let directory = if let Some(path) = &cli.path {
         Some(directory_review(&mut ops, ctx, path).await?)
     } else {
@@ -1013,18 +1138,22 @@ async fn open_ui(cli: &Cli, ctx: &Context, mut ops: Ops) -> anyhow::Result<()> {
     // The bridge owns a ClientCore and therefore its own daemon connection.
     // Release the command client's SSH proxy before the host dials another.
     drop(ops);
-    let endpoint = contexts::DaemonEndpoint::resolve(ctx, cli.start_policy.into())?;
+    let endpoint = contexts::DaemonEndpoint::resolve(ctx, client_start_policy(cli)?)?;
     let (client, author) = principal(cli);
-    let host = nits_client_web::web_config(
+    let mut host = nits_client_web::web_config(
         endpoint,
         client,
         author,
         nits_client_core::IdSeed(nitsd::ids::fresh_parts().1),
         nits_client_host::KvConfig::Memory,
     );
+    host.reference_context = Some(reference_context);
     let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, cli.port));
     let server = nits_client_web::serve(addr, host).await?;
-    let query = review_id.map_or_else(String::new, |id| format!("?review={id}"));
+    let query = reference.map_or_else(
+        || review_id.map_or_else(String::new, |id| format!("?review={id}")),
+        |reference| reference.browser_query(),
+    );
     println!("\n  nits: http://{}/{query}\n", server.addr());
     tokio::signal::ctrl_c().await?;
     server.stop();
@@ -1820,6 +1949,88 @@ mod tests {
                 "ws://review.example:7677"
             ]
             .map(std::ffi::OsString::from)
+        );
+    }
+    #[test]
+    fn reference_context_beats_persisted_default_and_explicit_context_beats_reference() {
+        let mut cfg = nits_config::Config::default();
+        let saved: ContextName = "review-box".parse().unwrap();
+        let other: ContextName = "other".parse().unwrap();
+        cfg.contexts.insert(
+            saved.clone(),
+            Context::Ws {
+                url: "ws://review.example:7677".into(),
+            },
+        );
+        cfg.contexts.insert(
+            other.clone(),
+            Context::Ws {
+                url: "ws://other.example:7677".into(),
+            },
+        );
+        cfg.current_context = Some(other.clone());
+        let reference = nits_protocol::ReviewReference {
+            context: nits_protocol::ReferenceContext::named(saved.as_str()).unwrap(),
+            review_id: ReviewId::from_parts(1, 1),
+            target: nits_protocol::ReferenceTarget::Review,
+        }
+        .to_string();
+        let mut cli = Cli::try_parse_from(["nits", "open", &reference, "--headless"]).unwrap();
+        // The test process must not inherit a developer's context overrides.
+        cli.context = None;
+        cli.socket = None;
+        cli.daemon_url = None;
+        cli.data_dir = None;
+        assert_eq!(
+            resolve_context(&cli, &cfg, SelectionOrigin::Flag)
+                .unwrap()
+                .name,
+            saved
+        );
+        cli.context = Some(other.clone());
+        assert_eq!(
+            resolve_context(&cli, &cfg, SelectionOrigin::Flag)
+                .unwrap()
+                .name,
+            other
+        );
+        cli.context = None;
+        cfg.contexts.remove(&saved);
+        assert!(
+            resolve_context(&cli, &cfg, SelectionOrigin::Flag)
+                .unwrap_err()
+                .to_string()
+                .contains("no context named review-box")
+        );
+        cli.socket = Some("/tmp/nits-reference.sock".into());
+        assert!(matches!(
+            resolve_context(&cli, &cfg, SelectionOrigin::Flag)
+                .unwrap()
+                .context,
+            Context::Local { .. }
+        ));
+    }
+    #[test]
+    fn socket_reference_requires_running_daemon_without_guessing_its_store() {
+        let reference = nits_protocol::ReviewReference {
+            context: nits_protocol::ReferenceContext::socket("/tmp/nits-reference.sock").unwrap(),
+            review_id: ReviewId::from_parts(1, 1),
+            target: nits_protocol::ReferenceTarget::Review,
+        }
+        .to_string();
+        let mut cli = Cli::try_parse_from(["nits", "open", &reference]).unwrap();
+        cli.context = None;
+        cli.socket = None;
+        cli.data_dir = None;
+        cli.daemon_url = None;
+        assert_eq!(
+            client_start_policy(&cli).unwrap(),
+            contexts::StartPolicy::RequireRunning
+        );
+        cli.context = Some("known-store".parse().unwrap());
+        assert_eq!(
+            client_start_policy(&cli).unwrap(),
+            contexts::StartPolicy::StartIfNeeded
         );
     }
 }

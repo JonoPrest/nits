@@ -113,6 +113,22 @@ pub enum DaemonEndpoint {
 }
 
 impl DaemonEndpoint {
+    /// Fallback identity for standalone hosts. CLI hosts replace SSH's host
+    /// name with the selected saved context, preserving custom SSH settings.
+    pub fn reference_context(
+        &self,
+    ) -> Result<nits_protocol::ReferenceContext, nits_protocol::ReferenceError> {
+        match self {
+            Self::Local { spec, .. } => nits_protocol::ReferenceContext::socket(
+                &std::path::absolute(&spec.socket)
+                    .map_err(|_| nits_protocol::ReferenceError::Malformed)?
+                    .to_string_lossy(),
+            ),
+            Self::Ssh { target, .. } => nits_protocol::ReferenceContext::named(&target.host),
+            Self::WebSocket { url } => nits_protocol::ReferenceContext::websocket(url),
+        }
+    }
+
     /// Resolve a configured context for repeated connection attempts.
     pub fn resolve(ctx: &Context, start: StartPolicy) -> Result<Self, ContextError> {
         match ctx {
@@ -613,5 +629,37 @@ mod tests {
         );
         assert_eq!(shutdown_protocol(&[other_major]), None);
         assert_eq!(shutdown_protocol(&[]), None);
+    }
+    #[test]
+    fn references_identify_daemon_endpoints_and_make_relative_sockets_absolute() {
+        let endpoint = DaemonEndpoint::resolve(
+            &Context::Local {
+                data_dir: Some("state".into()),
+                socket: None,
+            },
+            StartPolicy::RequireRunning,
+        )
+        .unwrap();
+        let identity = endpoint.reference_context().unwrap();
+        assert_eq!(
+            identity.locator().unwrap(),
+            nits_protocol::ReferenceLocator::Socket(
+                std::path::absolute("state/nitsd.sock")
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+        let endpoint = DaemonEndpoint::resolve(
+            &Context::Ws {
+                url: "wss://reviews.example/daemon".into(),
+            },
+            StartPolicy::RequireRunning,
+        )
+        .unwrap();
+        assert_eq!(
+            endpoint.reference_context().unwrap().locator().unwrap(),
+            nits_protocol::ReferenceLocator::WebSocket("wss://reviews.example/daemon".into())
+        );
     }
 }

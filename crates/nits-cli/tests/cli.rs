@@ -1856,3 +1856,42 @@ fn review_show_discovers_requests_from_a_previous_connection() {
     assert!(text.contains("ada → review-agent"));
     assert!(text.contains("Please review the parser"));
 }
+
+#[test]
+fn references_open_replies_and_resolved_findings_on_the_selected_daemon() {
+    let h = start();
+    let review = h.out(&[h.repo.path().to_str().unwrap(), "--headless"]);
+    let thread = h.out(&["comment", "add", &review, "--body", "Finding"]);
+    let reply = h.out(&[
+        "comment",
+        "reply",
+        &review,
+        &thread,
+        "--body",
+        "Verification",
+    ]);
+    let reference = h.out(&["reference", &review, "--comment", &reply]);
+    assert!(reference.starts_with("nits://socket/"));
+    assert!(reference.ends_with(&format!("/review/{review}/comment/{reply}")));
+    h.out(&["comment", "resolve", &review, &thread]);
+    // No NITS_SOCKET/explicit override: use the daemon identity in the reference.
+    h.nits()
+        .env_remove("NITS_SOCKET")
+        .args(["open", &reference, "--headless"])
+        .assert()
+        .success()
+        .stdout(format!("{reference}\n"));
+    let thread_ref = h.out(&["reference", &review, "--thread", &thread]);
+    assert!(thread_ref.ends_with(&format!("/thread/{thread}")));
+    let missing = nits_protocol::CommentId::from_parts(99, 99).to_string();
+    h.nits()
+        .args(["reference", &review, "--comment", &missing])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing"));
+    h.nits()
+        .args(["open", "nits://context/%GG/review/invalid", "--headless"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid nits reference"));
+}

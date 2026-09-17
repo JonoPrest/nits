@@ -128,6 +128,28 @@ pub struct OpenReview {
 }
 
 impl OpenReview {
+    /// The retained historical source, only while it is the open viewport.
+    /// Current files can share its path without sharing its navigation state.
+    #[must_use]
+    pub fn original_render(&self) -> Option<&RenderKey> {
+        self.original.as_ref().filter(|original| {
+            self.open_file
+                .as_ref()
+                .is_some_and(|file| file.render == **original)
+        })
+    }
+
+    /// Historical diffs are read-only. A pinned Browse blob retains its
+    /// captured source and supports composition against that exact blob.
+    #[must_use]
+    pub fn original_is_read_only(&self) -> bool {
+        self.original_render()
+            .is_some_and(|render| match render.target {
+                nits_protocol::RenderTarget::Diff { .. } => true,
+                nits_protocol::RenderTarget::Blob { .. } => false,
+            })
+    }
+
     #[must_use]
     pub fn new(snapshot: ReviewSnapshot) -> Self {
         Self {
@@ -365,6 +387,10 @@ pub struct ViewModel {
     /// during the key or click rather than after a round trip — the core
     /// still owns *which file* that is.
     pub copy_target: Option<RepoPath>,
+    /// Portable reference selected by the core for the clipboard gesture.
+    pub copy_reference: Option<nits_protocol::ReviewReference>,
+    /// Exact reply to highlight and scroll into view in the expanded thread.
+    pub focused_comment: Option<nits_protocol::CommentId>,
     pub connection: ConnectionView,
     /// Last request error the daemon returned; cleared on (re)subscribe.
     pub last_error: Option<RpcError>,

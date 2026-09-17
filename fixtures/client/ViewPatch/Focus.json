@@ -1,10 +1,12 @@
 {
+  "copy_reference": "nits://context/review-box/review/01HF7YATZ80000000000000004",
   "copy_target": "src/lib.rs",
   "focus": {
     "row": 121,
     "side": "Head",
     "type": "Diff"
   },
+  "focused_comment": "01HF7YAVYG0000000000000005",
   "scroll": {
     "align": "Center",
     "row": 121,

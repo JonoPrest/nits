@@ -164,11 +164,14 @@ module Shell = {
     // Deep link: open `?review=<id>` once the daemon is subscribed.
     let deepLinked = React.useRef(false)
     React.useEffect1(() => {
-      switch (model.connection, CoreWs.reviewParam()) {
+      switch (model.connection, CoreWs.referenceParam()->Option.orElse(CoreWs.reviewParam())) {
       | (Disconnected(_), _) => deepLinked.current = false
       | (Subscribed(_), Some(reviewId)) if !deepLinked.current => {
           deepLinked.current = true
-          core.dispatch(OpenReview({reviewId: reviewId}))
+          switch CoreWs.referenceParam() {
+          | Some(reference) => core.dispatch(OpenReference({reference: reference}))
+          | None => core.dispatch(OpenReview({reviewId: reviewId}))
+          }
         }
       | _ => ()
       }
@@ -225,9 +228,16 @@ module Shell = {
           // drops the copy rather than guessing at it.
           awaitingCopy.current = awaitingCopy.current->Array.filter(wanted => wanted > seq)
           if (
-            answered && model.lastKey->Option.flatMap(k => k.command) == Some(View.Command.CopyPath)
+            answered &&
+            model.lastKey
+            ->Option.flatMap(k => k.command)
+            ->Option.mapOr(false, command => command == CopyPath || command == CopyReference)
           ) {
-            switch model.copyTarget {
+            let target =
+              model.lastKey->Option.flatMap(k => k.command) == Some(CopyReference)
+                ? model.copyReference
+                : model.copyTarget
+            switch target {
             | Some(path) => copy(path)
             | None => ()
             }
@@ -256,13 +266,13 @@ module Shell = {
             let before = sent.current
             sent.current = before + 1
             switch outcome {
-            | Runs(CopyPath) =>
+            | Runs((CopyPath | CopyReference) as command) =>
               if seqOf(m) >= before {
                 // The core has accounted for every key before this one,
                 // so this view is the one this key acts on, and its
                 // context is the one the key lands in: copy inside the
                 // gesture, which is the only place the browser allows it.
-                switch m.copyTarget {
+                switch command == CopyReference ? m.copyReference : m.copyTarget {
                 | Some(path) => copy(path)
                 | None => ()
                 }
@@ -340,10 +350,17 @@ module Shell = {
       anchorRestored.current = false
       None
     }, [key])
+    React.useEffect1(() => {
+      if model.tab == Conversation {
+        model.focusedComment->Option.forEach(Focused.comment)
+      }
+      None
+    }, [key ++ model.focusedComment->Option.getOr("")])
     let dispatch = (action: Action.t) => {
       switch action {
       // Inside the click, for the same reason as the key press above.
       | CopyPath({path}) => copy(path)
+      | CopyReference({reference}) => copy(reference)
       | _ => ()
       }
       core.dispatch(action)
@@ -410,6 +427,12 @@ module Shell = {
             refSelector=?model.refSelector
             dispatch
           />
+          {switch model.lastError {
+          | Some(Invalid({reason})) => <p role="alert"> {React.string(reason)} </p>
+          | Some(NotFound({id})) =>
+            <p role="alert"> {React.string("Reference target was not found: " ++ id)} </p>
+          | _ => React.null
+          }}
           <Tabs
             tab=model.tab
             fileCount=model.progress.total
@@ -426,30 +449,43 @@ module Shell = {
               | Some(search) => <SearchBox search dispatch />
               | None => React.null
               }}
-              {Array.length(model.diffs) > 0
-                ? <div className="diff-stack">
-                    {model.diffs
-                    ->Array.map(diff =>
-                      <FileDiff
-                        key={diff.file.repoId ++ diff.file.path}
-                        diff
-                        layout=model.prefs.layout
-                        focus=model.focus
-                        threads=model.threads
-                        draft=model.draft
-                        pendingRefresh=model.pendingRefresh
-                        chrome=model.chrome
-                        visual=?model.visual
-                        isOpen={switch model.diff {
-                        | Some(open_) => open_.file == diff.file
-                        | None => false
-                        }}
-                        dispatch
-                      />
-                    )
-                    ->React.array}
-                  </div>
-                : <div className="diff-empty"> {React.string("No changed files")} </div>}
+              {switch model.diff {
+              | Some(diff) if diff.original =>
+                <DiffView
+                  diff
+                  layout=model.prefs.layout
+                  focus=model.focus
+                  scroll=?model.scroll
+                  chrome=model.chrome
+                  threads=model.threads
+                  dispatch
+                />
+              | _ =>
+                Array.length(model.diffs) > 0
+                  ? <div className="diff-stack">
+                      {model.diffs
+                      ->Array.map(diff =>
+                        <FileDiff
+                          key={diff.file.repoId ++ diff.file.path}
+                          diff
+                          layout=model.prefs.layout
+                          focus=model.focus
+                          threads=model.threads
+                          draft=model.draft
+                          pendingRefresh=model.pendingRefresh
+                          chrome=model.chrome
+                          visual=?model.visual
+                          isOpen={switch model.diff {
+                          | Some(open_) => open_.file == diff.file
+                          | None => false
+                          }}
+                          dispatch
+                        />
+                      )
+                      ->React.array}
+                    </div>
+                  : <div className="diff-empty"> {React.string("No changed files")} </div>
+              }}
               {switch model.draft {
               | Some(draft) if View.Draft.isDocked(draft) =>
                 <Composer chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch />
@@ -487,6 +523,7 @@ module Shell = {
               </UI.Box>
               <Threads
                 title="Conversation"
+                focusedComment=?model.focusedComment
                 threads=model.threads
                 focus=model.focus
                 indexOffset=0

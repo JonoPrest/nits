@@ -150,6 +150,7 @@ enum Command {
 /// allocator; it is not installed directly into any core.
 #[derive(Debug, Clone)]
 pub struct WebConfig {
+    pub reference_context: Option<nits_client_core::protocol::ReferenceContext>,
     pub endpoint: DaemonEndpoint,
     pub kv: KvConfig,
     pub client: BuildInfo,
@@ -171,6 +172,7 @@ pub fn web_config(
     kv: KvConfig,
 ) -> WebConfig {
     WebConfig {
+        reference_context: None,
         endpoint,
         kv,
         client,
@@ -378,6 +380,11 @@ async fn route(
         let _active = ActiveSession::new(active, session_shutdown.clone());
         let session = sessions.next()?;
         let (handle, mut host_patches) = sessions.host.spawn(session, session_shutdown.clone());
+        if let Some(context) = &sessions.config.reference_context {
+            handle.dispatch(Action::SetReferenceContext {
+                context: context.clone(),
+            });
+        }
         // A bounded per-session queue keeps a slow browser from growing the
         // host's output without limit. It has exactly one receiver and never
         // carries another session's patches.

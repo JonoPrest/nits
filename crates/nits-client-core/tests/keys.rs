@@ -398,6 +398,8 @@ fn every_action_is_reachable_from_a_binding() {
     // Actions whose payload only the host can supply (text, a workspace
     // choice, a scroll position — though `Open` also produces Viewport).
     let host_only: BTreeSet<ActionKind> = [
+        ActionKind::SetReferenceContext, // host supplies daemon identity
+        ActionKind::OpenReference,       // external route text
         ActionKind::DraftSubmitted,
         ActionKind::DeferThread, // reason and optional URL are host editor input
         ActionKind::Reply,       // `r` opens a reply draft; the text is host's
@@ -792,7 +794,12 @@ fn every_action_is_reachable_from_a_binding() {
     assert!(with_outdated.view().threads[index].outdated);
     states.push(with_outdated);
     states.push(base);
-    for state in &states {
+    for state in &mut states {
+        state
+            .handle(Input::User(Action::SetReferenceContext {
+                context: nits_protocol::ReferenceContext::named("review-box").unwrap(),
+            }))
+            .unwrap();
         for cmd in Command::iter() {
             if let Ok(action) = nits_client_core::resolve_command(state, cmd) {
                 reached.insert(ActionKind::from(&action));

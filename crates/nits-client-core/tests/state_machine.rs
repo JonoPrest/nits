@@ -162,7 +162,11 @@ fn sent_request(effects: &[Effect]) -> Option<(RequestId, Request)> {
 
 /// Drive a fresh core to `Subscribed { last_seq: seq }`.
 fn subscribed(seq: u64) -> ClientCore {
-    let mut core = ClientCore::new(config());
+    subscribed_with(seq, config())
+}
+
+fn subscribed_with(seq: u64, config: Config) -> ClientCore {
+    let mut core = ClientCore::new(config);
     let effects = core.handle(Input::User(Action::Connect)).unwrap();
     assert_eq!(effects[0], Effect::Connect);
     let effects = core
@@ -1387,4 +1391,371 @@ fn committed_request_fold_is_idempotent_scoped_and_ordered_by_identity() {
     );
     assert!(snapshot.comments.is_empty());
     assert!(snapshot.threads.is_empty());
+}
+
+fn referenced_snapshot(id: ReviewId, anchor: Anchor) -> (ReviewSnapshot, nits_protocol::CommentId) {
+    let mut snap = snapshot(id, Seq::new(1));
+    let mut root = comment(id, 20);
+    root.anchor = anchor;
+    let mut reply = comment(id, 21);
+    reply.thread_id = root.thread_id;
+    reply.anchor = root.anchor.clone();
+    reply.body = "Verified the fix".into();
+    let reply_id = reply.id;
+    snap.threads.push(nits_protocol::Thread {
+        id: root.thread_id,
+        review_id: id,
+        root: root.id,
+        replies: vec![reply.id],
+        resolution: nits_protocol::ThreadResolution::Open,
+    });
+    snap.comments = vec![root, reply];
+    (snap, reply_id)
+}
+
+fn reference_header() -> nits_protocol::FileRenderHeader {
+    nits_protocol::FileRenderHeader {
+        repo_id: repo_id(),
+        path: nits_protocol::RepoPath::new("src/main.rs").unwrap(),
+        target: nits_protocol::RenderTarget::Diff {
+            change: nits_protocol::ChangeKind::Added {
+                new: nits_protocol::BlobOid::new(Oid::from_bytes([7; 20])),
+            },
+        },
+        opts: RenderOpts::default(),
+        lang: None,
+        content: nits_protocol::RenderContent::Text {
+            total_rows: 1,
+            chunk_rows: 100,
+            chunk_count: 1,
+            highlighted: false,
+            additions: 1,
+            deletions: 0,
+            gaps: nits_protocol::GapTable::default(),
+        },
+    }
+}
+
+fn reference_for(
+    review_id: ReviewId,
+    target: nits_protocol::ReferenceTarget,
+) -> nits_protocol::ReviewReference {
+    nits_protocol::ReviewReference {
+        context: nits_protocol::ReferenceContext::named("review-box").unwrap(),
+        review_id,
+        target,
+    }
+}
+
+fn request_reference(
+    core: &mut ClientCore,
+    reference: &nits_protocol::ReviewReference,
+) -> RequestId {
+    core.handle(Input::User(Action::SetReferenceContext {
+        context: reference.context.clone(),
+    }))
+    .unwrap();
+    let effects = core
+        .handle(Input::User(Action::OpenReference {
+            reference: reference.to_string(),
+        }))
+        .unwrap();
+    let (id, request) = sent_request(&effects).unwrap();
+    assert!(
+        matches!(request, Request::OpenReview { review_id, .. } | Request::ReviewSnapshot { review_id } if review_id == reference.review_id)
+    );
+    id
+}
+
+#[test]
+fn portable_references_land_on_exact_reply_across_review_file_line_and_resolved_threads() {
+    use nits_protocol::{BlobOid, LineNo, LineRange, ReferenceTarget, Side, ThreadResolution};
+    let id = ReviewId::from_parts(41, 1);
+    let blob = BlobOid::new(Oid::from_bytes([7; 20]));
+    let anchors = [
+        Anchor::Review,
+        Anchor::File {
+            repo_id: repo_id(),
+            path: nits_protocol::RepoPath::try_from("src/main.rs".to_owned()).unwrap(),
+            blob_oid: blob,
+        },
+        Anchor::Lines {
+            repo_id: repo_id(),
+            path: nits_protocol::RepoPath::try_from("src/main.rs".to_owned()).unwrap(),
+            blob_oid: blob,
+            side: Side::Head,
+            lines: LineRange::new(LineNo::new(2).unwrap(), LineNo::new(3).unwrap()).unwrap(),
+            context_hash: nits_protocol::ContextHash::new(0),
+        },
+    ];
+    for anchor in anchors {
+        for resolved in [false, true] {
+            let mut core = subscribed(1);
+            let (mut snap, reply_id) = referenced_snapshot(id, anchor.clone());
+            if resolved {
+                snap.threads[0].resolution = ThreadResolution::Resolved {
+                    by: config().author,
+                    at: Timestamp::from_millis(1),
+                };
+            }
+            if !matches!(anchor, Anchor::Review) {
+                snap.comments[0].state = CommentState::Outdated {
+                    last_good_anchor: anchor.clone(),
+                };
+            }
+            let reference = reference_for(
+                id,
+                ReferenceTarget::Comment {
+                    comment_id: reply_id,
+                },
+            );
+            let request = request_reference(&mut core, &reference);
+            core.handle(Input::Server(ServerMsg::StreamItem {
+                id: request,
+                item: StreamItem::ReviewSnapshot { snapshot: snap },
+            }))
+            .unwrap();
+            core.handle(Input::Server(ServerMsg::StreamItem {
+                id: request,
+                item: StreamItem::Header {
+                    header: reference_header(),
+                },
+            }))
+            .unwrap();
+            core.handle(Input::Server(ServerMsg::StreamEnd { id: request }))
+                .unwrap();
+            assert!(core.view().diff.is_some());
+            assert_eq!(core.view().tab, nits_client_core::Tab::Conversation);
+            assert_eq!(
+                core.view().focus,
+                nits_client_core::Focus::Thread { index: 0 }
+            );
+            assert_eq!(core.view().focused_comment, Some(reply_id));
+            assert_eq!(core.view().copy_reference, Some(reference.clone()));
+            assert_eq!(
+                core.handle(Input::User(Action::CopyReference { reference }))
+                    .unwrap(),
+                Vec::new()
+            );
+            let effects = core.handle(Input::Key("y".parse().unwrap())).unwrap();
+            assert_eq!(
+                core.view().last_key.unwrap().command,
+                Some(nits_client_core::Command::CopyReference)
+            );
+            assert!(effects.iter().all(|e| matches!(e, Effect::Render(_))));
+            core.handle(Input::Key("[".parse().unwrap())).unwrap();
+            assert_eq!(
+                core.view().focused_comment,
+                Some(core.view().threads[0].root)
+            );
+            core.handle(Input::Key("]".parse().unwrap())).unwrap();
+            assert_eq!(core.view().focused_comment, Some(reply_id));
+        }
+    }
+}
+
+#[test]
+fn reference_open_ignores_superseded_snapshots_streams_and_errors() {
+    use nits_protocol::ReferenceTarget;
+    let mut core = subscribed(1);
+    let a = ReviewId::from_parts(42, 1);
+    let b = ReviewId::from_parts(42, 2);
+    let (snap, reply_id) = referenced_snapshot(b, Anchor::Review);
+    let old = request_reference(&mut core, &reference_for(a, ReferenceTarget::Review));
+    let current = request_reference(
+        &mut core,
+        &reference_for(
+            b,
+            ReferenceTarget::Comment {
+                comment_id: reply_id,
+            },
+        ),
+    );
+    core.handle(Input::Server(ServerMsg::StreamItem {
+        id: current,
+        item: StreamItem::ReviewSnapshot { snapshot: snap },
+    }))
+    .unwrap();
+    assert!(
+        core.handle(Input::Server(ServerMsg::StreamItem {
+            id: old,
+            item: StreamItem::ReviewSnapshot {
+                snapshot: snapshot(a, Seq::new(1))
+            }
+        }))
+        .unwrap()
+        .is_empty()
+    );
+    assert!(
+        core.handle(Input::Server(ServerMsg::Error {
+            id: old,
+            error: RpcError::Cancelled
+        }))
+        .unwrap()
+        .is_empty()
+    );
+    assert_eq!(core.view().open_review, Some(b));
+    assert_eq!(core.view().focused_comment, Some(reply_id));
+    assert_eq!(core.view().last_error, None);
+}
+
+#[test]
+fn reference_reply_event_ahead_of_snapshot_is_not_lost() {
+    let mut core = subscribed(1);
+    let id = ReviewId::from_parts(43, 1);
+    let (mut snap, reply_id) = referenced_snapshot(id, Anchor::Review);
+    let reply = snap.comments.pop().unwrap();
+    snap.threads[0].replies.clear();
+    let req = request_reference(
+        &mut core,
+        &reference_for(
+            id,
+            nits_protocol::ReferenceTarget::Comment {
+                comment_id: reply_id,
+            },
+        ),
+    );
+    core.handle(Input::Server(ServerMsg::Event {
+        event: event(2, EventBody::CommentCreated { comment: reply }),
+    }))
+    .unwrap();
+    core.handle(Input::Server(ServerMsg::StreamItem {
+        id: req,
+        item: StreamItem::ReviewSnapshot { snapshot: snap },
+    }))
+    .unwrap();
+    assert_eq!(core.view().focused_comment, Some(reply_id));
+    assert_eq!(core.view().last_error, None);
+}
+
+#[test]
+fn reference_missing_deleted_wrong_review_and_context_are_explicit() {
+    use nits_protocol::{ReferenceError, ReferenceTarget};
+    let id = ReviewId::from_parts(44, 1);
+    let (mut snap, reply_id) = referenced_snapshot(id, Anchor::Review);
+    let reference = reference_for(
+        id,
+        ReferenceTarget::Comment {
+            comment_id: reply_id,
+        },
+    );
+    let mut wrong = reference.clone();
+    wrong.review_id = ReviewId::from_parts(44, 2);
+    assert_eq!(wrong.resolve(&snap), Err(ReferenceError::WrongReview));
+    snap.comments[1].state = CommentState::Deleted;
+    assert_eq!(reference.resolve(&snap), Err(ReferenceError::Deleted));
+    snap.comments.pop();
+    assert_eq!(reference.resolve(&snap), Err(ReferenceError::Missing));
+    let mut core = subscribed(1);
+    core.handle(Input::User(Action::OpenReference {
+        reference: "<script>".into(),
+    }))
+    .unwrap();
+    assert!(matches!(
+        core.view().last_error,
+        Some(RpcError::Invalid { .. })
+    ));
+    core.handle(Input::User(Action::OpenReference {
+        reference: reference.to_string(),
+    }))
+    .unwrap();
+    assert!(
+        matches!(&core.view().last_error, Some(RpcError::Invalid { reason }) if reason.contains("another daemon context"))
+    );
+    let req = request_reference(&mut core, &reference);
+    core.handle(Input::Server(ServerMsg::StreamItem {
+        id: req,
+        item: StreamItem::ReviewSnapshot { snapshot: snap },
+    }))
+    .unwrap();
+    assert!(
+        matches!(&core.view().last_error, Some(RpcError::Invalid { reason }) if reason.contains("missing"))
+    );
+    assert_eq!(core.view().focused_comment, None);
+}
+
+#[test]
+fn reference_piecewise_snapshot_and_informational_thread_land_on_root() {
+    let mut cfg = config();
+    cfg.cache.disk = nits_client_core::DiskTier::Enabled {
+        budget: nits_client_core::Bytes::mib(1),
+    };
+    let mut core = subscribed_with(1, cfg);
+    let id = ReviewId::from_parts(45, 1);
+    let (mut snap, _) = referenced_snapshot(id, Anchor::Review);
+    snap.comments[0].kind = CommentKind::Informational;
+    snap.threads[0].resolution = nits_protocol::ThreadResolution::Informational;
+    let root = snap.threads[0].root;
+    let reference = reference_for(
+        id,
+        nits_protocol::ReferenceTarget::Thread {
+            thread_id: snap.threads[0].id,
+        },
+    );
+    let old = request_reference(
+        &mut core,
+        &reference_for(id, nits_protocol::ReferenceTarget::Review),
+    );
+    let current = request_reference(&mut core, &reference);
+    let effects = core
+        .handle(Input::Server(ServerMsg::Response {
+            id: current,
+            response: Response::ReviewSnapshot {
+                snapshot: snap.clone(),
+            },
+        }))
+        .unwrap();
+    let files_request = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Send(ClientMsg::Request {
+                id,
+                request: Request::ListFiles { .. },
+            }) => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let header = reference_header();
+    let nits_protocol::RenderTarget::Diff { change } = header.target else {
+        panic!("diff header")
+    };
+    core.handle(Input::Server(ServerMsg::Response {
+        id: files_request,
+        response: Response::Files {
+            resolved: Vec::new(),
+            files: vec![nits_protocol::FileChange {
+                repo_id: header.repo_id,
+                path: header.path,
+                kind: change,
+            }],
+        },
+    }))
+    .unwrap();
+    assert!(
+        core.handle(Input::Server(ServerMsg::Response {
+            id: old,
+            response: Response::ReviewSnapshot {
+                snapshot: snap.clone()
+            }
+        }))
+        .unwrap()
+        .is_empty()
+    );
+    assert_eq!(
+        core.handle(Input::Server(ServerMsg::Response {
+            id: old,
+            response: Response::ReviewSnapshot { snapshot: snap }
+        })),
+        Err(CoreError::UnknownRequest(old))
+    );
+    assert_eq!(core.view().focused_comment, Some(root));
+    assert_eq!(
+        core.view().focus,
+        nits_client_core::Focus::Thread { index: 0 }
+    );
+    assert_eq!(
+        core.view().threads[0].status,
+        nits_client_core::ThreadStatus::Informational
+    );
+    assert_eq!(core.view().tab, nits_client_core::Tab::Conversation);
 }

@@ -81,3 +81,36 @@ the daemon's recorded resolved refs, each containing a `tree` OID and `source`
 ## Licence
 
 MIT.
+
+Share a review, finding, or verification reply with a portable reference:
+
+```sh
+nits --context review-box reference REVIEW_ID --thread THREAD_ID
+nits --context review-box reference REVIEW_ID --comment COMMENT_ID
+nits open 'nits://context/review-box/review/REVIEW_ID/comment/COMMENT_ID'
+nits open 'nits://context/review-box/review/REVIEW_ID/comment/COMMENT_ID' --headless
+```
+
+`reference` validates the target and prints its reference (`--json` prints a JSON
+string). `open` validates it on the selected daemon and serves a browser UI with
+that exact reply expanded and highlighted; `--headless` validates and prints the
+reference without starting a UI. Open the printed HTTP URL in a browser and leave
+the command running. Desktop deep-link opening is not supported yet.
+
+References use stable IDs and survive resolving or moving an anchor. Saved
+context names resolve using the recipient's `config.toml`; a missing name fails
+explicitly. Context/endpoint flags and their environment equivalents override a
+reference's context, which otherwise overrides the persisted default. Ad-hoc
+local sockets and daemon WebSocket URLs are encoded directly. Socket references
+are meaningful on the machine owning that socket; use a matching saved SSH
+context (or an explicit `--context` override) from another machine. A standalone
+SSH host without a saved selection uses its SSH host name as the context name.
+Opening a socket reference requires its daemon to be running: the reference
+cannot guess which data directory to start. Select a saved context explicitly
+when daemon startup is needed. Browser bridge ports are never part of the portable
+reference.
+
+In the UI, use **Copy reference** on a thread or reply. With thread focus, `y`
+copies that thread; `]` / `[` select the next/previous reply and `y` copies that
+reply. Bindings and button tooltips follow `keys.toml`. The original `?review=ID`
+browser route remains supported; `?reference=...` takes precedence.

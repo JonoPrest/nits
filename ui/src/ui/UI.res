@@ -47,11 +47,14 @@ module Panel = {
 
 module Button = {
   type kind = Primary | Secondary | Ghost | Icon
+  /// Chord aliases leave the thread's native Markdown link tab order intact.
+  type navigation = Native | Chord
   @react.component
   let make = (
     ~label: string,
     ~onClick: unit => unit,
     ~kind=Secondary,
+    ~navigation=Native,
     ~title=?,
     ~ariaLabel=?,
     ~ariaControls=?,
@@ -70,6 +73,7 @@ module Button = {
     // from running a focused core command as well as clicking the button.
     <button
       type_="button"
+      tabIndex=?{navigation == Chord ? Some(-1) : None}
       className
       ?title
       ?ariaLabel
@@ -103,6 +107,27 @@ module CopyPath = {
       title=?{Chrome.tip(chrome, CopyPath)}
       onClick={() => dispatch(CopyPath({path: path}))}
     />
+}
+
+/// Shared thread/reply affordance, with the same keymap-derived binding.
+module CopyReference = {
+  @react.component
+  let make = (
+    ~reference: option<string>,
+    ~chrome: array<View.Hint.t>,
+    ~dispatch: Action.t => unit,
+  ) =>
+    switch reference {
+    | Some(reference) =>
+      <Button
+        label="Copy reference"
+        kind=Ghost
+        navigation=Chord
+        title=?{Chrome.tip(chrome, CopyReference)}
+        onClick={() => dispatch(CopyReference({reference: reference}))}
+      />
+    | None => React.null
+    }
 }
 
 module Kbd = {

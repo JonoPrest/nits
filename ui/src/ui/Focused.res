@@ -3,10 +3,19 @@
 
 type element
 @val @scope("document") external querySelector: string => Nullable.t<element> = "querySelector"
-@send external scrollIntoView: (element, {"block": string}) => unit = "scrollIntoView"
+@send external scrollElement: (element, {"block": string}) => unit = "scrollIntoView"
 
 let scrollIntoView = () =>
   switch querySelector("[data-focused]")->Nullable.toOption {
-  | Some(el) => el->scrollIntoView({"block": "nearest"})
+  | Some(el) => el->scrollElement({"block": "nearest"})
+  | None => ()
+  }
+
+@val @scope("document") external getElementById: string => Nullable.t<element> = "getElementById"
+
+/// IDs are opaque strings; avoid building a CSS selector from route input.
+let comment = (id: string) =>
+  switch getElementById("comment-" ++ id)->Nullable.toOption {
+  | Some(el) => el->scrollElement({"block": "center"})
   | None => ()
   }

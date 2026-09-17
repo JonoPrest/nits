@@ -95,7 +95,7 @@ let make = (
   }, [scroll])
   // A viewed file collapses (§4.4); the reader can expand it for this visit.
   let (expanded, setExpanded) = React.useState(() => false)
-  let collapsed = diff.viewed == Viewed && !expanded
+  let collapsed = diff.viewed == Viewed && !expanded && !diff.original
   let key = DiffSeen.fileKey(diff)
   let prevKey = React.useRef("")
   let seen = React.useRef(Dict.make())
@@ -139,7 +139,12 @@ let make = (
     </header>
     {diff.original
       ? <div className="original-banner" role="status">
-          {React.string("Viewing the original content this comment was made on. ")}
+          {React.string(
+            switch diff.target {
+            | Diff(_) => "Viewing the original diff this comment was made on — read-only. "
+            | Blob(_) => "Viewing the pinned original file; comments stay anchored to this source. "
+            },
+          )}
           <UI.Kbd keys="esc" />
           {React.string(" back to the current diff")}
         </div>

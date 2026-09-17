@@ -335,3 +335,15 @@ Everything explicitly asked for, so no shell or rewrite loses them.
   never two vertical scrollbars.
 - ✓ Demo server pinned to `--port 7788`; the URL is posted on every
   restart.
+
+### Shareable references
+
+Thread and reply cards expose **Copy reference**, derived from the Thread
+context's `copy_reference` binding (`y`). `]` / `[` select the next/previous
+comment; `y` then copies that exact reply. Portable references carry a saved
+context name or concrete daemon endpoint, never the browser bridge port.
+`nits open <reference>` opens the correct review, expands its conversation and
+centers the exact comment, including resolved and outdated findings. Stable IDs
+survive anchor movement; original-context controls remain available on the
+finding. Missing/deleted targets and mismatched browser contexts show explicit
+errors. Legacy `?review=ID` URLs remain supported.

@@ -178,14 +178,19 @@ impl HostFactory {
     ) -> (Handle, mpsc::UnboundedReceiver<Vec<ViewPatch>>) {
         let (actions_tx, actions_rx) = mpsc::unbounded_channel();
         let (patches_tx, patches_rx) = mpsc::unbounded_channel();
+        let mut core = ClientCore::new(Config {
+            client_id: session.identity.client_id,
+            client: session.identity.client,
+            author: session.identity.author,
+            id_seed: session.id_seed,
+            cache: self.cache.clone(),
+        });
+        if let Ok(context) = self.endpoint.reference_context() {
+            // Host identity is installed before the first attach/connect.
+            let _ = core.handle(Input::User(Action::SetReferenceContext { context }));
+        }
         let host = Host {
-            core: ClientCore::new(Config {
-                client_id: session.identity.client_id,
-                client: session.identity.client,
-                author: session.identity.author,
-                id_seed: session.id_seed,
-                cache: self.cache.clone(),
-            }),
+            core,
             endpoint: self.endpoint.clone(),
             kv: self.kv.clone(),
             tick: self.tick,

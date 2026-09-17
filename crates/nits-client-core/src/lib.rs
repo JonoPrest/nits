@@ -33,6 +33,7 @@ mod ids;
 mod keymap;
 mod patch;
 mod ref_selector;
+mod reference;
 mod view;
 
 use std::collections::BTreeMap;
@@ -160,6 +161,20 @@ pub enum Action {
     },
     OpenReview {
         review_id: ReviewId,
+    },
+    /// Host-provided identity for references; never a browser bridge URL.
+    SetReferenceContext {
+        context: nits_protocol::ReferenceContext,
+    },
+    /// Raw route input is parsed once by the core's reference boundary.
+    OpenReference {
+        reference: String,
+    },
+    CopyReference {
+        reference: nits_protocol::ReviewReference,
+    },
+    FocusComment {
+        comment_id: nits_protocol::CommentId,
     },
     CloseReview,
     /// Start a review-level informational note, without an actionable lifecycle.
@@ -618,6 +633,9 @@ pub struct ClientCore {
     snapshot_requests: BTreeMap<RequestId, (ReviewId, Vec<nits_protocol::ReviewRequest>)>,
     /// Mutations sent and not yet echoed by the daemon, in send order.
     pending: Vec<Pending>,
+    reference_context: Option<nits_protocol::ReferenceContext>,
+    pending_reference: Option<reference::PendingReference>,
+    latest_open: Option<RequestId>,
     explorer: explorer::ExplorerState,
     stepper: Option<CommitStepper>,
     /// `Effect::Load` for the prefs and keymap issued; answered or not.
@@ -699,6 +717,9 @@ impl ClientCore {
             committed: None,
             snapshot_requests: BTreeMap::new(),
             pending: Vec::new(),
+            reference_context: None,
+            pending_reference: None,
+            latest_open: None,
             explorer: explorer::ExplorerState::default(),
             stepper: None,
             prefs_loaded: false,
@@ -961,7 +982,7 @@ impl ClientCore {
         if self.realign.is_some() {
             self.apply_realign(&mut sections);
         }
-        let (diff, threads) = match &self.view.review {
+        let (diff, mut threads) = match &self.view.review {
             Some(open) => {
                 let pending = self.pending_ids();
                 let threads = diff::threads(&open.snapshot, &pending);
@@ -1043,6 +1064,7 @@ impl ClientCore {
             self.view.requests = requests;
             sections.push(ViewSection::Conversation);
         }
+        self.decorate_references(&mut threads);
         if threads != self.view.threads {
             let conversation = diff::conversation(&threads);
             if conversation != self.view.conversation {
@@ -1082,6 +1104,11 @@ impl ClientCore {
         let copy_target = focus::target_file_of(&self.view, focus).map(|f| f.path);
         if copy_target != self.view.copy_target {
             self.view.copy_target = copy_target;
+            sections.push(ViewSection::Focus);
+        }
+        let copy_reference = self.focused_reference();
+        if copy_reference != self.view.copy_reference {
+            self.view.copy_reference = copy_reference;
             sections.push(ViewSection::Focus);
         }
         // The Visual selection spans the anchor and the focused row.
@@ -1133,13 +1160,21 @@ impl ClientCore {
         } else {
             self.keymap.pending_hints(focus.context(), &self.chords)
         };
-        // Informational conversation has no resolution lifecycle. Its focused
-        // hint bar (including custom prefix continuations) must reflect that.
+        // Informational conversation has no resolution lifecycle, and original
+        // content cannot start file/line comments. The focused hint bar
+        // (including custom prefix continuations) reflects these restrictions.
         hints.retain(|hint| {
-            !matches!(
+            (!matches!(
                 hint.command,
                 Command::ToggleResolved | Command::DeferFinding
-            ) || focus::resolve(self, hint.command).is_ok()
+            ) || focus::resolve(self, hint.command).is_ok())
+                && !(matches!(hint.command, Command::Comment | Command::CommentOnFile)
+                    && self
+                        .view
+                        .review
+                        .as_ref()
+                        .is_some_and(|open| open.original_render().is_some())
+                    && focus::resolve(self, hint.command).is_err())
         });
         if hints != self.view.hints {
             self.view.hints = hints;
@@ -1446,9 +1481,9 @@ impl ClientCore {
         })
     }
 
-    /// Open the render a thread's root comment recorded as its context,
-    /// read-only. The render is not part of the review's file list; the
-    /// content plumbing treats `open.original` as an honorary member.
+    /// Open the source a thread's root comment recorded as its context.
+    /// Historical diffs are read-only; pinned Browse blobs retain their
+    /// captured comment source. Neither joins the current review's file list.
     fn open_original(&mut self, thread_id: ThreadId) -> Result<Vec<Effect>, CoreError> {
         self.require_subscribed()?;
         let Some(open) = &self.view.review else {
@@ -1518,9 +1553,10 @@ impl ClientCore {
                 Anchor::Review | Anchor::File { .. } | Anchor::Lines { .. },
             ) => 0,
         };
-        if matches!(context, nits_protocol::CommentContext::Browse { .. }) {
-            self.view.tab = Tab::Browse;
-        }
+        self.view.tab = match &context {
+            nits_protocol::CommentContext::Browse { .. } => Tab::Browse,
+            nits_protocol::CommentContext::Diff { .. } => Tab::FilesChanged,
+        };
         if let Some(open) = &mut self.view.review {
             open.original = Some(key.clone());
             open.open_file = Some(crate::view::OpenFile {
@@ -1549,14 +1585,18 @@ impl ClientCore {
             return Err(CoreError::NoOpenReview);
         };
         let review_id = open.snapshot.review.id;
-        let Some(i) = open
-            .files
-            .iter()
-            .position(|k| k.repo_id == file.repo_id && k.path == file.path)
+        let Some(old) = open
+            .original_render()
+            .filter(|k| k.repo_id == file.repo_id && k.path == file.path)
+            .or_else(|| {
+                open.files
+                    .iter()
+                    .find(|k| k.repo_id == file.repo_id && k.path == file.path)
+            })
+            .cloned()
         else {
             return Err(CoreError::UnknownFile(file.clone()));
         };
-        let old = open.files[i].clone();
         let key = RenderKey {
             opts: opts(&old.opts),
             ..old.clone()
@@ -1582,7 +1622,13 @@ impl ClientCore {
         let Some(open) = &mut self.view.review else {
             return Err(CoreError::NoOpenReview);
         };
-        open.files[i] = key.clone();
+        if open.original_render() == Some(&old) {
+            // The historical pane owns its render options. Re-keying it
+            // must not replace the current review's change at this path.
+            open.original = Some(key.clone());
+        } else if let Some(render) = open.files.iter_mut().find(|render| **render == old) {
+            *render = key.clone();
+        }
         // Keep viewing the file over the same rows; the render's row count
         // grows, so the window is re-evaluated when the header lands.
         if let Some(f) = &mut open.open_file
@@ -1628,6 +1674,17 @@ impl ClientCore {
             expanded: opts.expanded.opened(gap, dir, EXPAND_STEP),
             ..opts.clone()
         })
+    }
+
+    /// Historical diff panes cannot open line/file composers. Pinned Browse
+    /// blobs keep their captured source; direct mouse/host actions follow the
+    /// same rule as keyboard commands.
+    fn require_commentable_context(&self) -> Result<(), CoreError> {
+        let open = self.view.review.as_ref().ok_or(CoreError::NoOpenReview)?;
+        if open.original_is_read_only() {
+            return Err(NoTarget::ReadOnlyOriginal.into());
+        }
+        Ok(())
     }
 
     /// The line the cursor is on in `render`, if that is the open file.
@@ -1786,6 +1843,12 @@ impl ClientCore {
                     InFlight::Mutate { client_seq },
                 )])
             }
+            Action::SetReferenceContext { context } => {
+                self.reference_context = Some(context);
+                Ok(vec![render(&[ViewSection::Focus, ViewSection::Threads])])
+            }
+            Action::OpenReference { reference } => self.open_reference(&reference),
+            Action::FocusComment { comment_id } => self.focus_comment(comment_id),
             Action::OpenReview { review_id } => {
                 self.require_subscribed()?;
                 let opts = self.content.config.render_opts.clone();
@@ -1799,12 +1862,16 @@ impl ClientCore {
                         InFlight::ReviewSnapshot { review_id },
                     ),
                 };
-                Ok(vec![self.request(request, waiting)])
+                self.pending_reference = None;
+                let effect = self.request(request, waiting);
+                Ok(vec![effect])
             }
             Action::CloseReview => {
                 if self.view.review.is_none() {
                     return Err(CoreError::NoOpenReview);
                 }
+                self.pending_reference = None;
+                self.latest_open = None;
                 let mut effects = Vec::new();
                 self.close_review(&mut effects);
                 // Diff, threads, tree, progress: derived after this returns.
@@ -1888,6 +1955,7 @@ impl ClientCore {
                 start_line,
                 end_line,
             } => {
+                self.require_commentable_context()?;
                 let Some(open) = &self.view.review else {
                     return Err(CoreError::NoOpenReview);
                 };
@@ -1954,6 +2022,7 @@ impl ClientCore {
                 Ok(vec![render(&[ViewSection::Draft, ViewSection::Focus])])
             }
             Action::CommentFile { file } => {
+                self.require_commentable_context()?;
                 if self.view.review.is_none() {
                     return Err(CoreError::NoOpenReview);
                 }
@@ -2146,7 +2215,7 @@ impl ClientCore {
             // which is this same decision made here. The action stays so
             // the command is binding-reachable and other hosts can send
             // it; there is nothing left for the core to do with it.
-            Action::CopyPath { path: _ } => Ok(Vec::new()),
+            Action::CopyPath { path: _ } | Action::CopyReference { reference: _ } => Ok(Vec::new()),
             Action::ScrollView { align } => {
                 let Focus::Diff { row, .. } = self.view.focus else {
                     return Err(CoreError::NoTarget(focus::NoTarget::Nothing(
@@ -2520,6 +2589,12 @@ impl ClientCore {
                 if self.view.review.is_none() {
                     return Err(CoreError::NoOpenReview);
                 }
+                match &anchor {
+                    Anchor::File { .. } | Anchor::Lines { .. } => {
+                        self.require_commentable_context()?;
+                    }
+                    Anchor::Review => {}
+                }
                 if self.view.draft.is_some() {
                     return Err(CoreError::DraftAlreadyOpen);
                 }
@@ -2565,6 +2640,7 @@ impl ClientCore {
                 if matches!(focus, Focus::ReviewRequest { .. }) {
                     self.view.tab = Tab::Conversation;
                 }
+                self.view.focused_comment = None;
                 let mut effects = Vec::new();
                 // A focused row outside the viewport scrolls the viewport.
                 if let Focus::Diff { row, .. } = focus
@@ -2979,6 +3055,7 @@ impl ClientCore {
     /// Drop the open review and everything content-side it pinned.
     fn close_review(&mut self, effects: &mut Vec<Effect>) {
         self.view.review = None;
+        self.view.focused_comment = None;
         self.view.open_review = None;
         self.view.resolved_targets.clear();
         self.view.draft = None;
@@ -3069,6 +3146,12 @@ impl ClientCore {
     pub(crate) fn request(&mut self, request: Request, waiting: InFlight) -> Effect {
         let id = RequestId::new(self.next_request);
         self.next_request += 1;
+        if matches!(
+            waiting,
+            InFlight::OpenReview { .. } | InFlight::ReviewSnapshot { .. }
+        ) {
+            self.latest_open = Some(id);
+        }
         if matches!(waiting, InFlight::Search) {
             self.latest_search = Some(id);
         }
@@ -3183,7 +3266,7 @@ impl ClientCore {
                 match waiting {
                     InFlight::OpenReview { .. } => {
                         self.snapshot_requests.remove(&id);
-                        if self.view.review.is_some() {
+                        if self.latest_open == Some(id) && self.view.review.is_some() {
                             // The streamed open carries the file list; land
                             // on the first diff (UI-DESIGN §Layout).
                             self.auto_open_first(&mut effects);
@@ -3223,6 +3306,15 @@ impl ClientCore {
                 let Some(waiting) = self.in_flight.remove(&id) else {
                     return Err(CoreError::UnknownRequest(id));
                 };
+                if matches!(
+                    waiting,
+                    InFlight::OpenReview { .. } | InFlight::ReviewSnapshot { .. }
+                ) {
+                    if self.latest_open != Some(id) {
+                        return Ok(Vec::new());
+                    }
+                    self.pending_reference = None;
+                }
                 self.view.last_error = Some(error.clone());
                 let mut effects = Vec::new();
                 let mut sections = vec![ViewSection::Connection];
@@ -3318,6 +3410,8 @@ impl ClientCore {
 
     fn clear_in_flight(&mut self) {
         self.snapshot_requests.clear();
+        self.pending_reference = None;
+        self.latest_open = None;
         let keys: Vec<CacheKey> = self.in_flight.values().filter_map(InFlight::key).collect();
         for k in &keys {
             self.content_failed(k);
@@ -3335,6 +3429,9 @@ impl ClientCore {
         let Some(waiting) = self.in_flight.get(&id).cloned() else {
             return Err(CoreError::UnknownRequest(id));
         };
+        if matches!(waiting, InFlight::OpenReview { .. }) && self.latest_open != Some(id) {
+            return Ok(Vec::new());
+        }
         let got = stream_item_name(&item);
         let unexpected = |expected| CoreError::UnexpectedResponse { id, expected, got };
         let mut effects = Vec::new();
@@ -3344,6 +3441,7 @@ impl ClientCore {
                     return Err(unexpected("ReviewSnapshot for the requested review"));
                 }
                 self.install_snapshot(id, snapshot, &mut effects);
+                self.land_reference(&mut effects);
                 self.expect_streamed_trees(&mut effects);
                 effects.push(render(&[
                     ViewSection::ReviewList,
@@ -3468,6 +3566,11 @@ impl ClientCore {
         let Some(waiting) = self.in_flight.get(&id).cloned() else {
             return Err(CoreError::UnknownRequest(id));
         };
+        if matches!(waiting, InFlight::ReviewSnapshot { .. }) && self.latest_open != Some(id) {
+            self.in_flight.remove(&id);
+            self.snapshot_requests.remove(&id);
+            return Ok(Vec::new());
+        }
         let got = response_name(&response);
         let effects = match (waiting, response) {
             (InFlight::Subscribe, Response::Subscribed { seq }) => {
@@ -3540,6 +3643,7 @@ impl ClientCore {
                 }
                 let mut effects = Vec::new();
                 self.install_snapshot(id, snapshot, &mut effects);
+                self.land_reference(&mut effects);
                 self.review_opened_piecewise(review_id, &mut effects);
                 effects.push(render(&[
                     ViewSection::ReviewList,
@@ -3749,6 +3853,11 @@ impl ClientCore {
                     requests.push(request.clone());
                 }
             }
+        }
+        if let Some(pending) = &mut self.pending_reference
+            && event.body.review_id() == Some(pending.reference.review_id)
+        {
+            pending.events.push(event.clone());
         }
         let mut sections = Vec::new();
         let mut effects = Vec::new();

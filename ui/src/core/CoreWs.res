@@ -107,3 +107,7 @@ let defaultUrl = () => {
 /// here).
 let reviewParam = (): option<string> =>
   %raw(`new URLSearchParams(window.location.search).get("review")`)->Nullable.toOption
+
+/// The portable route takes precedence over the legacy review-only parameter.
+let referenceParam = (): option<string> =>
+  %raw(`new URLSearchParams(window.location.search).get("reference")`)->Nullable.toOption

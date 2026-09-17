@@ -2340,7 +2340,9 @@ fn jump_to_original_diff_renders_the_recorded_change_read_only() {
     let mut comment = comment_at(
         1,
         lines_anchor("a.rs", nits_protocol::Side::Head, 4, 2, 2),
-        nits_protocol::CommentState::Live,
+        nits_protocol::CommentState::Outdated {
+            last_good_anchor: lines_anchor("a.rs", nits_protocol::Side::Head, 4, 2, 2),
+        },
     );
     comment.context = Some(nits_protocol::CommentContext::Diff {
         change: old_change.clone(),
@@ -2357,6 +2359,41 @@ fn jump_to_original_diff_renders_the_recorded_change_read_only() {
             change: old_change.clone()
         }),
         "the thread view carries the recorded context"
+    );
+    // Opening a portable link lands on this outdated finding in Conversation.
+    let context = nits_protocol::ReferenceContext::named("review-box").unwrap();
+    core.handle(Input::User(Action::SetReferenceContext {
+        context: context.clone(),
+    }))
+    .unwrap();
+    let reference = nits_protocol::ReviewReference {
+        context,
+        review_id: review_id(),
+        target: nits_protocol::ReferenceTarget::Thread { thread_id },
+    };
+    let snapshot = core.view().review.as_ref().unwrap().snapshot.clone();
+    let effects = core
+        .handle(Input::User(Action::OpenReference {
+            reference: reference.to_string(),
+        }))
+        .unwrap();
+    let request = requests(&effects)[0].0;
+    item(&mut core, request, StreamItem::ReviewSnapshot { snapshot });
+    for (name, chunks) in [("a.rs", 10), ("b.rs", 1)] {
+        item(
+            &mut core,
+            request,
+            StreamItem::Header {
+                header: header(name, 100, chunks),
+            },
+        );
+    }
+    core.handle(Input::Server(ServerMsg::StreamEnd { id: request }))
+        .unwrap();
+    assert_eq!(core.view().tab, nits_client_core::Tab::Conversation);
+    assert_eq!(
+        core.view().focused_comment,
+        Some(core.view().threads[0].root)
     );
     // Jump: the daemon is asked to render the recorded change directly.
     let effects = core
@@ -2380,6 +2417,11 @@ fn jump_to_original_diff_renders_the_recorded_change_read_only() {
         core.view().focus,
         nits_client_core::Focus::Diff { row: 0, .. }
     ));
+    assert_eq!(
+        core.view().tab,
+        nits_client_core::Tab::FilesChanged,
+        "original diff must leave Conversation so the host can show it"
+    );
     // The stream answers with the original render's header and rows.
     let original_header = FileRenderHeader {
         target: RenderTarget::Diff {
@@ -2423,6 +2465,458 @@ fn jump_to_original_diff_renders_the_recorded_change_read_only() {
     .unwrap();
     let diff = core.view().diff.as_ref().unwrap();
     assert!(!diff.original);
+}
+
+// A retained source can share a current path or have disappeared from the
+// current change list. Both cases must keep all pane actions on that source.
+fn historical_diff(p: &str) -> (ClientCore, ChangeKind) {
+    let mut core = subscribed(local());
+    open_streamed(&mut core);
+    let change = ChangeKind::Modified {
+        old: blob_oid(3),
+        new: blob_oid(4),
+    };
+    let anchor = lines_anchor(p, Side::Head, 4, 2, 2);
+    let mut comment = comment_at(
+        1,
+        anchor.clone(),
+        nits_protocol::CommentState::Outdated {
+            last_good_anchor: anchor,
+        },
+    );
+    comment.context = Some(nits_protocol::CommentContext::Diff {
+        change: change.clone(),
+    });
+    let thread_id = comment.thread_id;
+    core.handle(Input::Server(foreign_event(
+        2,
+        EventBody::CommentCreated { comment },
+    )))
+    .unwrap();
+    let effects = core
+        .handle(Input::User(Action::OpenOriginalDiff { thread_id }))
+        .unwrap();
+    let (id, _) = requests(&effects)
+        .into_iter()
+        .find(|(_, request)| matches!(request, Request::ChangeRender { .. }))
+        .unwrap();
+    let mut original_header = FileRenderHeader {
+        target: RenderTarget::Diff {
+            change: change.clone(),
+        },
+        ..header(p, 100, 1)
+    };
+    let RenderContent::Text { gaps, .. } = &mut original_header.content else {
+        panic!("text")
+    };
+    *gaps = nits_protocol::GapTable::try_from(vec![nits_protocol::GapRow {
+        gap: nits_protocol::Gap::new(1),
+        row: 10,
+    }])
+    .unwrap();
+    item(
+        &mut core,
+        id,
+        StreamItem::Header {
+            header: original_header,
+        },
+    );
+    let mut chunk = numbered_chunk(0);
+    chunk.rows[10] = Row::Expander {
+        hidden: 40,
+        dir: nits_protocol::ExpandDir::Both,
+        gap: nits_protocol::Gap::new(1),
+    };
+    item(
+        &mut core,
+        id,
+        StreamItem::Chunk {
+            repo_id: repo_id(),
+            path: path(p),
+            chunk,
+        },
+    );
+    core.handle(Input::Server(ServerMsg::StreamEnd { id }))
+        .unwrap();
+    (core, change)
+}
+
+#[test]
+fn original_motions_ignore_current_folds_and_viewed_state() {
+    for current_state in [
+        Action::ToggleFileCollapse {
+            file: file_ref("a.rs"),
+        },
+        Action::MarkViewed {
+            file: file_ref("a.rs"),
+        },
+    ] {
+        let (mut core, _) = historical_diff("a.rs");
+        core.handle(Input::User(current_state)).unwrap();
+        assert!(
+            core.view()
+                .diffs
+                .iter()
+                .find(|diff| diff.file.path == path("a.rs"))
+                .unwrap()
+                .collapsed
+        );
+        core.handle(Input::Key("j".parse().unwrap())).unwrap();
+        assert_eq!(
+            core.view().focus,
+            Focus::Diff {
+                row: 1,
+                side: Side::Head
+            }
+        );
+        core.handle(Input::Key("k".parse().unwrap())).unwrap();
+        assert_eq!(
+            core.view().focus,
+            Focus::Diff {
+                row: 0,
+                side: Side::Head
+            }
+        );
+        assert_eq!(
+            resolve_command(&core, nits_client_core::Command::MoveUp),
+            Err(nits_client_core::NoTarget::AtEdge)
+        );
+        core.handle(Input::User(Action::SetFocus {
+            focus: Focus::Diff {
+                row: 99,
+                side: Side::Head,
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            resolve_command(&core, nits_client_core::Command::MoveDown),
+            Err(nits_client_core::NoTarget::AtEdge)
+        );
+        assert!(core.view().diff.as_ref().unwrap().original);
+    }
+}
+
+#[test]
+fn original_enter_opens_threads_and_gaps_without_unfolding_current_file() {
+    for current_state in [
+        Action::ToggleFileCollapse {
+            file: file_ref("a.rs"),
+        },
+        Action::MarkViewed {
+            file: file_ref("a.rs"),
+        },
+    ] {
+        let (mut core, change) = historical_diff("a.rs");
+        core.handle(Input::User(current_state)).unwrap();
+        core.handle(Input::User(Action::RunCommand {
+            command: nits_client_core::Command::NextComment,
+        }))
+        .unwrap();
+        assert_eq!(
+            core.view().focus,
+            Focus::Diff {
+                row: 1,
+                side: Side::Head
+            }
+        );
+        // Enter reaches the original row's inline thread, even though today's
+        // file with the same path is folded or marked viewed.
+        core.handle(Input::Key(KeyChord::named(NamedKey::Enter)))
+            .unwrap();
+        assert_eq!(core.view().focus, Focus::Thread { index: 0 });
+        core.handle(Input::User(Action::SetFocus {
+            focus: Focus::Diff {
+                row: 10,
+                side: Side::Head,
+            },
+        }))
+        .unwrap();
+        let effects = core
+            .handle(Input::Key(KeyChord::named(NamedKey::Enter)))
+            .unwrap();
+        let requested = requests(&effects);
+        assert_eq!(requested.len(), 1);
+        assert_eq!(
+            requested[0].1,
+            Request::ChangeRender {
+                repo_id: repo_id(),
+                path: path("a.rs"),
+                change,
+                opts: RenderOpts {
+                    expanded: nits_protocol::Expansions::default().opened(
+                        nits_protocol::Gap::new(1),
+                        nits_protocol::ExpandDir::Both,
+                        nits_client_core::EXPAND_STEP,
+                    ),
+                    ..RenderOpts::default()
+                },
+                first_chunk: ChunkIndex::FIRST,
+            }
+        );
+        assert!(
+            core.view()
+                .diffs
+                .iter()
+                .find(|diff| diff.file.path == path("a.rs"))
+                .unwrap()
+                .collapsed
+        );
+        assert_eq!(
+            core.view().review.as_ref().unwrap().original.as_ref(),
+            Some(&open_render(&core))
+        );
+    }
+}
+
+#[test]
+fn original_expansions_keep_historical_blobs_current_keys_and_logical_cursor() {
+    for p in ["a.rs", "removed.rs"] {
+        let (mut core, change) = historical_diff(p);
+        let current = core.view().review.as_ref().unwrap().files.clone();
+        core.handle(Input::User(Action::SetFocus {
+            focus: Focus::Diff {
+                row: 49,
+                side: Side::Head,
+            },
+        }))
+        .unwrap();
+        let gap = nits_protocol::Gap::new(1);
+        let effects = core
+            .handle(Input::User(Action::ExpandGap {
+                file: file_ref(p),
+                gap,
+                dir: nits_protocol::ExpandDir::Up,
+            }))
+            .unwrap();
+        let gap_opts = RenderOpts {
+            expanded: nits_protocol::Expansions::default().opened(
+                gap,
+                nits_protocol::ExpandDir::Up,
+                nits_client_core::EXPAND_STEP,
+            ),
+            ..RenderOpts::default()
+        };
+        let gap_requests = requests(&effects);
+        assert_eq!(gap_requests.len(), 1);
+        let gap_id = gap_requests[0].0;
+        assert_eq!(
+            gap_requests[0].1,
+            Request::ChangeRender {
+                repo_id: repo_id(),
+                path: path(p),
+                change: change.clone(),
+                opts: gap_opts.clone(),
+                first_chunk: ChunkIndex::FIRST,
+            }
+        );
+        assert_eq!(open_render(&core).opts, gap_opts);
+        assert_eq!(
+            core.view().review.as_ref().unwrap().original.as_ref(),
+            Some(&open_render(&core))
+        );
+        // Expand again before the first answer. Its recorded line must survive
+        // until the latest source arrives, without touching today's file list.
+        let effects = core
+            .handle(Input::User(Action::ExpandContext {
+                file: file_ref(p),
+                full: true,
+            }))
+            .unwrap();
+        let full_opts = RenderOpts {
+            context_lines: nits_client_core::FULL_CONTEXT,
+            ..RenderOpts::default()
+        };
+        let full_requests = requests(&effects);
+        assert_eq!(full_requests.len(), 1);
+        let full_id = full_requests[0].0;
+        assert_eq!(
+            full_requests[0].1,
+            Request::ChangeRender {
+                repo_id: repo_id(),
+                path: path(p),
+                change: change.clone(),
+                opts: full_opts.clone(),
+                first_chunk: ChunkIndex::FIRST,
+            }
+        );
+        let historical_header = |opts| FileRenderHeader {
+            target: RenderTarget::Diff {
+                change: change.clone(),
+            },
+            opts,
+            ..header(p, 100, 1)
+        };
+        item(
+            &mut core,
+            gap_id,
+            StreamItem::Header {
+                header: historical_header(gap_opts),
+            },
+        );
+        item(
+            &mut core,
+            gap_id,
+            StreamItem::Chunk {
+                repo_id: repo_id(),
+                path: path(p),
+                chunk: numbered_chunk(0),
+            },
+        );
+        core.handle(Input::Server(ServerMsg::StreamEnd { id: gap_id }))
+            .unwrap();
+        assert_eq!(open_render(&core).opts, full_opts);
+        item(
+            &mut core,
+            full_id,
+            StreamItem::Header {
+                header: historical_header(full_opts),
+            },
+        );
+        let mut chunk = numbered_chunk(0);
+        chunk.rows.insert(
+            0,
+            Row::HunkHeader {
+                text: "@@ expanded context @@".into(),
+            },
+        );
+        chunk.rows.pop();
+        item(
+            &mut core,
+            full_id,
+            StreamItem::Chunk {
+                repo_id: repo_id(),
+                path: path(p),
+                chunk,
+            },
+        );
+        core.handle(Input::Server(ServerMsg::StreamEnd { id: full_id }))
+            .unwrap();
+        assert_eq!(
+            core.view().focus,
+            Focus::Diff {
+                row: 50,
+                side: Side::Head
+            }
+        );
+        let open = core.view().review.as_ref().unwrap();
+        assert_eq!(open.original.as_ref(), Some(&open_render(&core)));
+        assert_eq!(open.files, current);
+        assert!(core.view().diff.as_ref().unwrap().original);
+        assert_eq!(core.view().progress.total, 2);
+    }
+}
+
+#[test]
+fn original_context_rejects_keyboard_visual_and_direct_anchored_drafts() {
+    let (mut core, _) = historical_diff("a.rs");
+    let rejected = CoreError::NoTarget(nits_client_core::NoTarget::ReadOnlyOriginal);
+    assert_eq!(
+        core.handle(Input::Key("c".parse().unwrap())),
+        Err(rejected.clone())
+    );
+    assert!(core.view().draft.is_none());
+    assert_eq!(
+        core.view().focus,
+        Focus::Diff {
+            row: 0,
+            side: Side::Head
+        }
+    );
+    assert!(
+        !core
+            .view()
+            .hints
+            .iter()
+            .any(|hint| hint.command == nits_client_core::Command::Comment)
+    );
+    core.handle(Input::User(Action::EnterVisual)).unwrap();
+    core.handle(Input::Key("j".parse().unwrap())).unwrap();
+    assert_eq!(
+        core.handle(Input::Key("c".parse().unwrap())),
+        Err(rejected.clone())
+    );
+    assert!(core.view().draft.is_none());
+    assert!(core.visual_anchor().is_some());
+    core.handle(Input::User(Action::LeaveVisual)).unwrap();
+    for action in [
+        Action::CommentLines {
+            file: file_ref("a.rs"),
+            side: Side::Head,
+            start_line: 1,
+            end_line: 2,
+        },
+        Action::CommentFile {
+            file: file_ref("a.rs"),
+        },
+        Action::DraftOpened {
+            anchor: lines_anchor("a.rs", Side::Head, 4, 1, 2),
+        },
+        Action::DraftOpened {
+            anchor: nits_protocol::Anchor::File {
+                repo_id: repo_id(),
+                path: path("a.rs"),
+                blob_oid: blob_oid(4),
+            },
+        },
+    ] {
+        let before = core.view().clone();
+        assert_eq!(core.handle(Input::User(action)), Err(rejected.clone()));
+        assert_eq!(core.view(), &before);
+    }
+    // Returning to the current source enables a visible composer on its blob.
+    core.handle(Input::User(Action::CloseFile)).unwrap();
+    core.handle(Input::User(Action::Viewport {
+        file: file_ref("a.rs"),
+        first_row: 0,
+        last_row: 59,
+    }))
+    .unwrap();
+    // Current-source line composition validates loaded source rows. Fetch
+    // real rows instead of the generic hunk-header-only cache fixture.
+    let effects = core
+        .handle(Input::User(Action::ExpandContext {
+            file: file_ref("a.rs"),
+            full: false,
+        }))
+        .unwrap();
+    let (id, Request::FileRender { opts, .. }) = requests(&effects)[0].clone() else {
+        panic!("current file render")
+    };
+    item(
+        &mut core,
+        id,
+        StreamItem::Header {
+            header: FileRenderHeader {
+                opts,
+                ..header("a.rs", 100, 1)
+            },
+        },
+    );
+    item(
+        &mut core,
+        id,
+        StreamItem::Chunk {
+            repo_id: repo_id(),
+            path: path("a.rs"),
+            chunk: numbered_chunk(0),
+        },
+    );
+    core.handle(Input::Server(ServerMsg::StreamEnd { id }))
+        .unwrap();
+    core.handle(Input::User(Action::CommentLines {
+        file: file_ref("a.rs"),
+        side: Side::Head,
+        start_line: 1,
+        end_line: 2,
+    }))
+    .unwrap();
+    let mut expected = lines_anchor("a.rs", Side::Head, 11, 1, 2);
+    let nits_protocol::Anchor::Lines { context_hash, .. } = &mut expected else {
+        panic!("line anchor")
+    };
+    *context_hash = nits_protocol::ContextHash::new(0);
+    assert_eq!(core.view().draft.as_ref().unwrap().anchor, expected);
+    assert_eq!(core.view().focus, Focus::Composer);
 }
 
 #[test]
@@ -3403,5 +3897,218 @@ fn superseded_browse_headers_cannot_change_review_files_totals_or_tree() {
             .unwrap();
             assert_eq!(core.view().tree, changed_tree);
         }
+    }
+}
+
+#[test]
+fn portable_reply_link_preserves_deferred_browse_source_and_inflight_review_requests() {
+    use nits_protocol::{
+        CommentContext, CommentState, ReferenceContext, ReferenceTarget, ReviewReference,
+    };
+    for cache in [local(), remote(Bytes::mib(8), Bytes::mib(16))] {
+        let mut core = subscribed(cache);
+        let source = CommentContext::Browse {
+            reference: RefSpec::Tag { name: "v1".into() },
+        };
+        let anchor = lines_anchor("unchanged.rs", Side::Head, 1, 2, 2);
+        let mut root = comment_at(
+            1,
+            anchor.clone(),
+            CommentState::Outdated {
+                last_good_anchor: anchor.clone(),
+            },
+        );
+        root.context = Some(source.clone());
+        let thread_id = root.thread_id;
+        let mut reply = comment_at(2, anchor, CommentState::Live);
+        reply.thread_id = thread_id;
+        reply.context = Some(source.clone());
+        reply.body = "Verified the retained source".into();
+        let reply_id = reply.id;
+        let mut snap = snapshot(1, 2);
+        snap.threads.push(nits_protocol::Thread {
+            id: thread_id,
+            review_id: review_id(),
+            root: root.id,
+            replies: Vec::new(),
+            resolution: nits_protocol::ThreadResolution::Open,
+        });
+        snap.comments.push(root);
+        let context = ReferenceContext::named("review-box").unwrap();
+        core.handle(Input::User(Action::SetReferenceContext {
+            context: context.clone(),
+        }))
+        .unwrap();
+        let reference = ReviewReference {
+            context,
+            review_id: review_id(),
+            target: ReferenceTarget::Comment {
+                comment_id: reply_id,
+            },
+        };
+        let effects = core
+            .handle(Input::User(Action::OpenReference {
+                reference: reference.to_string(),
+            }))
+            .unwrap();
+        let (id, request) = requests(&effects)[0].clone();
+        // A verification reply, deferral, and review request all arrive ahead
+        // of the older snapshot that the link is opening.
+        core.handle(Input::Server(foreign_event(
+            2,
+            EventBody::CommentCreated { comment: reply },
+        )))
+        .unwrap();
+        core.handle(Input::Server(foreign_event(
+            3,
+            EventBody::ThreadDeferred {
+                review_id: review_id(),
+                thread_id,
+                reason: "Follow up outside this review"
+                    .to_owned()
+                    .try_into()
+                    .unwrap(),
+                tracking_url: Some(
+                    "https://example.com/issues/288"
+                        .to_owned()
+                        .try_into()
+                        .unwrap(),
+                ),
+            },
+        )))
+        .unwrap();
+        core.handle(Input::Server(foreign_event(
+            4,
+            EventBody::ReviewRequested {
+                review_id: review_id(),
+                agent: "review-agent".into(),
+                note: "Check this retained source".into(),
+            },
+        )))
+        .unwrap();
+        match request {
+            Request::OpenReview { .. } => {
+                item(&mut core, id, StreamItem::ReviewSnapshot { snapshot: snap });
+                core.handle(Input::Server(ServerMsg::StreamEnd { id }))
+                    .unwrap();
+            }
+            Request::ReviewSnapshot { .. } => {
+                core.handle(Input::Server(ServerMsg::Response {
+                    id,
+                    response: Response::ReviewSnapshot { snapshot: snap },
+                }))
+                .unwrap();
+            }
+            _ => panic!("review-open request"),
+        }
+        assert_eq!(core.view().tab, nits_client_core::Tab::Conversation);
+        assert_eq!(core.view().focus, Focus::Thread { index: 0 });
+        assert_eq!(core.view().focused_comment, Some(reply_id));
+        assert_eq!(core.view().copy_reference, Some(reference));
+        assert!(matches!(
+            core.view().threads[0].status,
+            nits_protocol::ThreadResolution::Deferred { .. }
+        ));
+        assert_eq!(core.view().requests.len(), 1);
+        assert_eq!(core.view().requests[0].note, "Check this retained source");
+        assert_eq!(
+            core.view().review.as_ref().unwrap().snapshot.seq,
+            Seq::new(4)
+        );
+        // A different picker selection must not replace the comment's pinned
+        // source, including when its newly selected tree has not arrived.
+        core.handle(Input::User(Action::SetBrowseRef {
+            repo_id: repo_id(),
+            ref_spec: Some(RefSpec::Head),
+        }))
+        .unwrap();
+        let effects = core
+            .handle(Input::User(Action::OpenOriginalDiff { thread_id }))
+            .unwrap();
+        let effects = Kv::default().drive(&mut core, effects);
+        let (render_id, request) = requests(&effects)
+            .into_iter()
+            .find(|(_, r)| matches!(r, Request::BlobRender { .. }))
+            .unwrap();
+        assert_eq!(
+            request,
+            Request::BlobRender {
+                repo_id: repo_id(),
+                path: path("unchanged.rs"),
+                blob_oid: blob_oid(1),
+                first_chunk: ChunkIndex::FIRST
+            }
+        );
+        assert_eq!(core.view().tab, nits_client_core::Tab::Browse);
+        item(
+            &mut core,
+            render_id,
+            StreamItem::Header {
+                header: FileRenderHeader {
+                    target: RenderTarget::Blob { oid: blob_oid(1) },
+                    ..header("unchanged.rs", 100, 1)
+                },
+            },
+        );
+        item(
+            &mut core,
+            render_id,
+            StreamItem::Chunk {
+                repo_id: repo_id(),
+                path: path("unchanged.rs"),
+                chunk: numbered_chunk(0),
+            },
+        );
+        core.handle(Input::Server(ServerMsg::StreamEnd { id: render_id }))
+            .unwrap();
+        assert!(core.view().diff.as_ref().unwrap().original);
+        assert_eq!(
+            core.view().focus,
+            Focus::Diff {
+                row: 1,
+                side: Side::Head
+            }
+        );
+        core.handle(Input::Key(KeyChord::char('c'))).unwrap();
+        let draft = core.view().draft.as_ref().unwrap();
+        assert_eq!(
+            draft.purpose,
+            nits_client_core::DraftPurpose::Comment {
+                intent: nits_protocol::CommentIntent::Finding,
+                context: Some(source.clone())
+            }
+        );
+        let nits_protocol::Anchor::Lines {
+            blob_oid: anchored_blob,
+            lines,
+            ..
+        } = &draft.anchor
+        else {
+            panic!("line draft")
+        };
+        assert_eq!(*anchored_blob, blob_oid(1));
+        assert_eq!(lines.start().get(), 2);
+        let expected_anchor = draft.anchor.clone();
+        let effects = core
+            .handle(Input::User(Action::DraftSubmitted {
+                body: "Follow-up on the pinned source".into(),
+            }))
+            .unwrap();
+        let (
+            _,
+            Request::Mutate {
+                mutation:
+                    nits_protocol::Mutation::AddComment {
+                        anchor, context, ..
+                    },
+                ..
+            },
+        ) = &requests(&effects)[0]
+        else {
+            panic!("comment mutation")
+        };
+        assert_eq!(*anchor, expected_anchor);
+        assert_eq!(*context, Some(source));
+        assert_eq!(core.view().requests.len(), 1);
     }
 }

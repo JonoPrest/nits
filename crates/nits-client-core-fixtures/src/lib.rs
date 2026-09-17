@@ -40,6 +40,14 @@ pub trait Fixtures: Sized + Serialize + DeserializeOwned {
     }
 }
 
+fn reference(target: ReferenceTarget) -> Result<ReviewReference, FixtureError> {
+    Ok(ReviewReference {
+        context: ReferenceContext::named("review-box")?,
+        review_id: review_id()?,
+        target,
+    })
+}
+
 /// Round-trip a fixture through the type it belongs to.
 pub fn roundtrip<T: Fixtures>(value: &Value) -> Result<Value, serde_json::Error> {
     let t: T = serde_json::from_value(value.clone())?;
@@ -552,6 +560,9 @@ struct_fixture!(
     ThreadView,
     "ThreadView",
     ThreadView {
+        reference: Some(reference(ReferenceTarget::Thread {
+            thread_id: thread_id()?
+        })?),
         id: thread_id()?,
         root: comment_id()?,
         author: proto_named::<Author>("Human")?,
@@ -570,6 +581,9 @@ struct_fixture!(
 struct_fixture!(CommentView, "CommentView", {
     let c = proto::<Comment>()?;
     CommentView {
+        reference: Some(reference(ReferenceTarget::Comment {
+            comment_id: comment_id()?,
+        })?),
         id: c.id,
         author: c.author,
         created: c.created,
@@ -705,6 +719,20 @@ enum_fixture!(
         },
         Action::OpenReview {
             review_id: review_id()?,
+        },
+        Action::SetReferenceContext {
+            context: ReferenceContext::named("review-box")?
+        },
+        Action::OpenReference {
+            reference: reference(ReferenceTarget::Review)?.to_string()
+        },
+        Action::CopyReference {
+            reference: reference(ReferenceTarget::Comment {
+                comment_id: comment_id()?
+            })?
+        },
+        Action::FocusComment {
+            comment_id: comment_id()?
         },
         Action::CloseReview,
         Action::InformationalNoteOpened,
@@ -974,6 +1002,8 @@ enum_fixture!(
             tab: Tab::FilesChanged,
             scroll: Some(local::<ScrollIntent>()?),
             copy_target: Some(path("src/lib.rs")?),
+            copy_reference: Some(reference(ReferenceTarget::Review)?),
+            focused_comment: Some(comment_id()?),
         },
         ViewPatch::Hints {
             hints: vec![local::<Hint>()?],
@@ -1049,6 +1079,8 @@ struct_fixture!(
         }),
         help: None,
         copy_target: Some(path("src/lib.rs")?),
+        copy_reference: Some(reference(ReferenceTarget::Review)?),
+        focused_comment: Some(comment_id()?),
         connection: ConnectionView::Subscribed,
         last_error: None,
         workspaces: vec![proto::<Workspace>()?],

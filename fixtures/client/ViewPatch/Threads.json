@@ -16,7 +16,8 @@
           "body": "This should be a newtype.",
           "created": 1700000002000,
           "id": "01HF7YAVYG0000000000000005",
-          "pending": false
+          "pending": false,
+          "reference": "nits://context/review-box/review/01HF7YATZ80000000000000004/comment/01HF7YAVYG0000000000000005"
         }
       ],
       "context": {
@@ -41,6 +42,7 @@
         "start": 10,
         "type": "Lines"
       },
+      "reference": "nits://context/review-box/review/01HF7YATZ80000000000000004/thread/01HF7YAVYG0000000000000005",
       "replies": 1,
       "root": "01HF7YAVYG0000000000000005",
       "status": {
