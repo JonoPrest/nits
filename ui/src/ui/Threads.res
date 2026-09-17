@@ -58,7 +58,9 @@ module Item = {
                       ? <span className="thread-pending"> {React.string("…")} </span>
                       : React.null}
                   </div>
-                  <div className="thread-body"> {React.string(c.body)} </div>
+                  <div className="thread-body">
+                    <UI.Markdown source=c.body />
+                  </div>
                 </li>
               )
               ->React.array}
