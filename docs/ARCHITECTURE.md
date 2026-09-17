@@ -397,7 +397,9 @@ Tailwind v4 via `@tailwindcss/vite`; no CSS-in-JS, no runtime style computation.
 ## 7. Agent integration
 
 - Agents connect via MCP (or `nits` CLI) with `Author::Agent{...}` provenance. Provenance is a structured field, not a tag.
+- MCP `get_session_identity` returns this session's current `author`; `set_session_identity` takes a name and model for future events. The adapter negotiates a replacement daemon connection, preserving the session ID, invoking human and `Agent`/`Mcp` provenance. A fresh client ID accompanies the fresh mutation counter. Only after a successful handshake does the new identity become active; failure leaves the previous identity and connection intact. Reads need no live daemon. These are session-local connection settings, not core mutations or event-log entries, and cannot change another MCP session or historical authors. See [MCP identity usage](MCP-IDENTITY.md).
 - `ReviewRequested` events show as a card in human clients; agents can subscribe to events addressed to them (`awaiting_agent`).
+- The exact `author.name` returned by the identity tools is the routing key for `request_review.agent` and `subscribe_events.awaiting_agent`. Choose distinct names for collaborating agents and keep them stable; changing a name does not rename already addressed requests or saved subscription cursors. A model update can keep the same name. Names are labels, not unique session IDs or authentication credentials.
 - **Suggestions**: a comment kind carrying a unified diff against a specific `blob_oid`. The UI renders "apply", which writes to the working tree and records `SuggestionApplied`.
 - Threads keep agent `session_id`, so a human reply to an agent comment can be routed back to that session.
 

@@ -1,9 +1,11 @@
 //! MCP server for Nits (plan 2.5). Speaks JSON-RPC 2.0 over newline-delimited
-//! stdio (the MCP stdio transport) and proxies every tool call to a `nitsd`
-//! daemon over its unix socket or WebSocket.
+//! stdio (the MCP stdio transport) and proxies review operations to a `nitsd`
+//! daemon over its unix socket or WebSocket. Session identity tools configure
+//! the author presented by this adapter's daemon connection.
 //!
 //! Every mutation is attributed to [`nits_protocol::Author::Agent`], built
-//! from the MCP client's `initialize` info, so provenance is structural.
+//! from the MCP client's `initialize` info and subsequent session identity
+//! updates, so provenance is structural.
 
 pub mod jsonrpc;
 pub mod server;

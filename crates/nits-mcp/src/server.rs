@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use strum::EnumString;
 
 use crate::jsonrpc::{self, Incoming, Outgoing};
-use crate::tools::{self, Call, MutatingCall, QueryCall, ToolCall, ToolName};
+use crate::tools::{self, Call, MutatingCall, QueryCall, SessionCall, ToolCall, ToolName};
 
 /// JSON-RPC methods this server answers. Anything else is
 /// `METHOD_NOT_FOUND`.
@@ -269,7 +269,11 @@ impl Server {
             "serverInfo": { "name": self.build.name, "version": self.build.version },
             "instructions": format!(
                 "Nits code review. Connected to {} {}. Start with list_workspaces, then get_review; \
-                 anchor comments with add_comment/suggest; wait for work with subscribe_events.",
+                 anchor comments with add_comment/suggest; wait for work with subscribe_events. \
+                 Use get_session_identity to see your author; set_session_identity with name and \
+                 model before posting to identify this agent. Share the returned author.name as \
+                 the exact request_review.agent / subscribe_events.awaiting_agent routing key \
+                 and keep it stable while collaborating. Identity changes affect only future events.",
                 daemon.name, daemon.version
             ),
         }))
@@ -323,11 +327,43 @@ impl Server {
 
     /// Run a decoded tool call. Public so tests can bypass JSON-RPC.
     pub async fn call(&mut self, call: ToolCall) -> Result<Value, ToolError> {
-        self.ensure_connected().await?;
         match call.classify() {
-            Call::Query(q) => self.call_query(q).await,
-            Call::Mutating(m) => self.call_mutating(m).await,
+            Call::Query(q) => {
+                self.ensure_connected().await?;
+                self.call_query(q).await
+            }
+            Call::Mutating(m) => {
+                self.ensure_connected().await?;
+                self.call_mutating(m).await
+            }
+            Call::Session(s) => self.call_session(s).await,
         }
+    }
+
+    async fn call_session(&mut self, call: SessionCall) -> Result<Value, ToolError> {
+        let session = self.session.as_ref().ok_or(ToolError::NotInitialized)?;
+        let author = match call {
+            SessionCall::GetIdentity => session.author.clone(),
+            SessionCall::SetIdentity(p) => {
+                let author = Author::Agent {
+                    name: p.name,
+                    model: p.model,
+                    session_id: self.agent.session_id.clone(),
+                    invoked_by: self.agent.invoked_by.clone(),
+                    via: AgentVia::Mcp,
+                };
+                // The daemon binds authorship at Hello. Complete negotiation
+                // before replacing either author or Ops, so failure is atomic.
+                // A fresh client ID also keeps reset client_seq values distinct.
+                let client = self.connect(author.clone()).await?;
+                self.session = Some(Session {
+                    author: author.clone(),
+                    ops: Ops::new(client),
+                });
+                author
+            }
+        };
+        ok(tools::SessionIdentity { author })
     }
 
     async fn call_query(&self, call: QueryCall) -> Result<Value, ToolError> {
