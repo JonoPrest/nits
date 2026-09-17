@@ -45,6 +45,7 @@ module Draft = {
   type t = {
     intent: Domain.CommentIntent.t,
     anchor: Domain.Anchor.t,
+    context: @s.null option<Domain.CommentContext.t>,
     @as("reply_to") replyTo: @s.null option<threadId>,
   }
 
@@ -299,6 +300,7 @@ module DiffRow = {
 module DiffView = {
   @schema
   type t = {
+    target: Render.RenderTarget.t,
     file: FileRef.t,
     lang: @s.null option<string>,
     content: Render.RenderContent.t,
@@ -354,7 +356,7 @@ module ThreadView = {
     pending: bool,
     suggestion: bool,
     comments: array<CommentView.t>,
-    context: @s.null option<Domain.ChangeKind.t>,
+    context: @s.null option<Domain.CommentContext.t>,
   }
 }
 

@@ -228,6 +228,13 @@ module ChangeKind = {
     | @as("Renamed") Renamed({from: string, old: blobOid, new: blobOid})
 }
 
+module CommentContext = {
+  @schema @tag("type")
+  type t =
+    | @as("Diff") Diff({change: ChangeKind.t})
+    | @as("Browse") Browse({reference: RefSpec.t})
+}
+
 module CommentState = {
   @@warning("-27")
   @schema @tag("type")
@@ -251,7 +258,7 @@ module Comment = {
     created: timestamp,
     edited: @s.null option<timestamp>,
     state: CommentState.t,
-    context: @s.null option<ChangeKind.t>,
+    context: @s.null option<CommentContext.t>,
   }
 }
 

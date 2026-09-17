@@ -650,6 +650,7 @@ pub struct ClientCore {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Browse {
     repo_id: RepoId,
+    request_id: RequestId,
     ref_spec: nits_protocol::RefSpec,
     /// Root of the snapshot once it arrived.
     root: Option<nits_protocol::TreeOid>,
@@ -1328,6 +1329,86 @@ impl ClientCore {
         })
     }
 
+    /// Capture the visible content when composing, before any picker moves.
+    fn comment_context(&self, anchor: &Anchor) -> Option<nits_protocol::CommentContext> {
+        use nits_protocol::CommentContext;
+        let (repo_id, path) = match anchor {
+            Anchor::Review => return None,
+            Anchor::File { repo_id, path, .. } | Anchor::Lines { repo_id, path, .. } => {
+                (*repo_id, path)
+            }
+        };
+        let open = self.view.review.as_ref()?;
+        let render = open
+            .open_file
+            .as_ref()
+            .map(|f| &f.render)
+            .filter(|r| r.repo_id == repo_id && r.path == *path)
+            .or_else(|| {
+                open.files
+                    .iter()
+                    .find(|r| r.repo_id == repo_id && r.path == *path)
+            })?;
+        if open.original.as_ref() == Some(render) {
+            let original = open
+                .snapshot
+                .comments
+                .iter()
+                .filter(|comment| {
+                    matches!(
+                        comment.context,
+                        Some(nits_protocol::CommentContext::Browse { .. })
+                    )
+                })
+                .find(|comment| match &comment.anchor {
+                    Anchor::File {
+                        repo_id: id,
+                        path: p,
+                        blob_oid,
+                    }
+                    | Anchor::Lines {
+                        repo_id: id,
+                        path: p,
+                        blob_oid,
+                        ..
+                    } => {
+                        *id == repo_id
+                            && *p == *path
+                            && render.target == (RenderTarget::Blob { oid: *blob_oid })
+                    }
+                    Anchor::Review => false,
+                });
+            if let Some(comment) = original {
+                return comment.context.clone();
+            }
+        }
+        Some(match &render.target {
+            RenderTarget::Diff { change } => CommentContext::Diff {
+                change: change.clone(),
+            },
+            RenderTarget::Blob { .. } => CommentContext::Browse {
+                reference: self
+                    .browse
+                    .as_ref()
+                    .filter(|b| b.repo_id == repo_id)
+                    .map(|b| b.ref_spec.clone())
+                    .or_else(|| {
+                        open.current_targets()
+                            .into_iter()
+                            .find(|t| t.repo_id == repo_id)
+                            .map(|t| match t.head.source {
+                                ResolvedSource::Commit { oid } => {
+                                    nits_protocol::RefSpec::Commit { oid }
+                                }
+                                ResolvedSource::WorkingTree { .. } => {
+                                    nits_protocol::RefSpec::WorkingTree
+                                }
+                            })
+                    })?,
+            },
+        })
+    }
+
     /// Open the render a thread's root comment recorded as its context,
     /// read-only. The render is not part of the review's file list; the
     /// content plumbing treats `open.original` as an honorary member.
@@ -1344,14 +1425,22 @@ impl ClientCore {
             .find(|t| t.id == thread_id)
             .and_then(|t| open.snapshot.comments.iter().find(|c| c.id == t.root))
             .ok_or(CoreError::UnknownThread(thread_id))?;
-        let change = root
+        let context = root
             .context
             .clone()
             .ok_or(CoreError::NoOriginalDiff(thread_id))?;
-        let (repo_id, path) = match &root.anchor {
-            Anchor::File { repo_id, path, .. } | Anchor::Lines { repo_id, path, .. } => {
-                (*repo_id, path.clone())
+        let (repo_id, path, blob_oid) = match &root.anchor {
+            Anchor::File {
+                repo_id,
+                path,
+                blob_oid,
             }
+            | Anchor::Lines {
+                repo_id,
+                path,
+                blob_oid,
+                ..
+            } => (*repo_id, path.clone(), *blob_oid),
             Anchor::Review => return Err(CoreError::NoOriginalDiff(thread_id)),
         };
         // A comment's original diff opens on the side it was made on.
@@ -1362,18 +1451,48 @@ impl ClientCore {
         let key = RenderKey {
             repo_id,
             path,
-            target: RenderTarget::Diff { change },
-            opts: self.content.config.render_opts.clone(),
+            target: match &context {
+                nits_protocol::CommentContext::Diff { change } => RenderTarget::Diff {
+                    change: change.clone(),
+                },
+                nits_protocol::CommentContext::Browse { .. } => {
+                    RenderTarget::Blob { oid: blob_oid }
+                }
+            },
+            opts: match context {
+                nits_protocol::CommentContext::Browse { .. } => {
+                    nits_protocol::RenderOpts::default()
+                }
+                nits_protocol::CommentContext::Diff { .. } => {
+                    self.content.config.render_opts.clone()
+                }
+            },
         };
+        let row = match (&context, &root.anchor) {
+            (nits_protocol::CommentContext::Browse { .. }, Anchor::Lines { lines, .. }) => {
+                lines.end().index()
+            }
+            (
+                nits_protocol::CommentContext::Browse { .. },
+                Anchor::File { .. } | Anchor::Review,
+            )
+            | (
+                nits_protocol::CommentContext::Diff { .. },
+                Anchor::Review | Anchor::File { .. } | Anchor::Lines { .. },
+            ) => 0,
+        };
+        if matches!(context, nits_protocol::CommentContext::Browse { .. }) {
+            self.view.tab = Tab::Browse;
+        }
         if let Some(open) = &mut self.view.review {
             open.original = Some(key.clone());
             open.open_file = Some(crate::view::OpenFile {
                 render: key.clone(),
-                first_row: 0,
-                last_row: PAGE_ROWS - 1,
+                first_row: row.saturating_sub(PAGE_ROWS / 2),
+                last_row: row.saturating_add(PAGE_ROWS / 2),
             });
         }
-        self.view.focus = Focus::Diff { row: 0, side };
+        self.view.focus = Focus::Diff { row, side };
         let mut effects = Vec::new();
         self.want_open_render(review_id, &key, &mut effects);
         effects.push(render(&[ViewSection::Focus, ViewSection::Diff]));
@@ -1746,30 +1865,38 @@ impl ClientCore {
                 if self.view.draft.is_some() {
                     return Err(CoreError::DraftAlreadyOpen);
                 }
-                let target = open
-                    .files
-                    .iter()
-                    .find(|k| k.repo_id == file.repo_id && k.path == file.path)
-                    .map(|k| &k.target)
+                let render_key = open
+                    .open_file
+                    .as_ref()
+                    .map(|f| &f.render)
+                    .filter(|r| r.repo_id == file.repo_id && r.path == file.path)
+                    .or_else(|| {
+                        if self.view.tab == Tab::Browse {
+                            return None;
+                        }
+                        open.files
+                            .iter()
+                            .find(|r| r.repo_id == file.repo_id && r.path == file.path)
+                    })
                     .ok_or_else(|| CoreError::UnknownFile(file.clone()))?;
-                let blob = match (target, side) {
-                    (nits_protocol::RenderTarget::Diff { change }, nits_protocol::Side::Head) => {
-                        change.new_blob()
-                    }
-                    (nits_protocol::RenderTarget::Diff { change }, nits_protocol::Side::Base) => {
-                        change.old_blob()
-                    }
-                    (nits_protocol::RenderTarget::Blob { oid }, _) => Some(*oid),
+                let blob = match (&render_key.target, side) {
+                    (RenderTarget::Diff { change }, nits_protocol::Side::Head) => change.new_blob(),
+                    (RenderTarget::Diff { change }, nits_protocol::Side::Base) => change.old_blob(),
+                    (RenderTarget::Blob { oid }, nits_protocol::Side::Head) => Some(*oid),
+                    (RenderTarget::Blob { .. }, nits_protocol::Side::Base) => None,
                 }
                 .ok_or_else(|| CoreError::UnknownFile(file.clone()))?;
-                let (lo, hi) = if start_line <= end_line {
-                    (start_line, end_line)
-                } else {
-                    (end_line, start_line)
-                };
+                let rows = diff::all_rows(self.cache(), &open.snapshot, render_key);
+                let (lo, hi) = (start_line.min(end_line), start_line.max(end_line));
+                if ![lo, hi].iter().all(|line| {
+                    rows.iter()
+                        .any(|row| diff::line_on(&row.row, side) == Some(*line))
+                }) {
+                    return Err(CoreError::UnknownFile(file));
+                }
                 let (Some(lo), Some(hi)) = (
-                    nits_protocol::LineNo::new(lo.max(1)),
-                    nits_protocol::LineNo::new(hi.max(1)),
+                    nits_protocol::LineNo::new(lo),
+                    nits_protocol::LineNo::new(hi),
                 ) else {
                     return Err(CoreError::UnknownFile(file));
                 };
@@ -1788,6 +1915,7 @@ impl ClientCore {
                 self.visual_anchor = None;
                 self.view.draft = Some(Draft {
                     intent: nits_protocol::CommentIntent::Finding,
+                    context: self.comment_context(&anchor),
                     anchor,
                     reply_to: None,
                 });
@@ -1818,6 +1946,7 @@ impl ClientCore {
                 self.visual_anchor = None;
                 self.view.draft = Some(Draft {
                     intent: nits_protocol::CommentIntent::Finding,
+                    context: self.comment_context(&anchor),
                     anchor,
                     reply_to: None,
                 });
@@ -1839,6 +1968,32 @@ impl ClientCore {
                             side: nits_protocol::Side::Head,
                         },
                     );
+                }
+                if tab == Tab::Conversation {
+                    return Ok(vec![render(&[ViewSection::Focus])]);
+                }
+                if let Some(file) = self
+                    .view
+                    .review
+                    .as_ref()
+                    .and_then(|open| open.open_file.as_ref())
+                    .map(|f| FileRef {
+                        repo_id: f.render.repo_id,
+                        path: f.render.path.clone(),
+                    })
+                {
+                    self.visual_anchor = None;
+                    if let Some(open) = &mut self.view.review {
+                        open.original = None;
+                    }
+                    return match self.viewport(file, 0, PAGE_ROWS - 1) {
+                        Ok(mut effects) => {
+                            effects.push(render(&[ViewSection::Focus]));
+                            Ok(effects)
+                        }
+                        Err(CoreError::UnknownFile(_)) => self.close_file(),
+                        Err(error) => Err(error),
+                    };
                 }
                 Ok(vec![render(&[ViewSection::Focus])])
             }
@@ -2279,6 +2434,14 @@ impl ClientCore {
                 Ok(vec![render(&[ViewSection::RefSelector])])
             }
             Action::SetBrowseRef { repo_id, ref_spec } => {
+                if self.view.draft.is_some() {
+                    return Err(CoreError::DraftAlreadyOpen);
+                }
+                self.visual_anchor = None;
+                if let Some(open) = &mut self.view.review {
+                    open.open_file = None;
+                    open.original = None;
+                }
                 if self.view.review.is_none() {
                     return Err(CoreError::NoOpenReview);
                 }
@@ -2292,12 +2455,16 @@ impl ClientCore {
                         self.require_subscribed()?;
                         self.browse = Some(Browse {
                             repo_id,
+                            request_id: RequestId::new(self.next_request),
                             ref_spec: ref_spec.clone(),
                             root: None,
                         });
                         Ok(vec![
                             self.request(
-                                Request::TreeSnapshot { repo_id, ref_spec },
+                                Request::TreeSnapshot {
+                                    repo_id,
+                                    ref_spec: ref_spec.clone(),
+                                },
                                 InFlight::BrowseTree { repo_id },
                             ),
                             render(&[ViewSection::ReviewList]),
@@ -2324,6 +2491,7 @@ impl ClientCore {
                 self.visual_anchor = None;
                 self.view.draft = Some(Draft {
                     intent: nits_protocol::CommentIntent::Finding,
+                    context: self.comment_context(&anchor),
                     anchor,
                     reply_to: None,
                 });
@@ -2347,6 +2515,7 @@ impl ClientCore {
                 self.view.draft = Some(Draft {
                     intent: nits_protocol::CommentIntent::Finding,
                     anchor: root.anchor.clone(),
+                    context: root.context.clone(),
                     reply_to: Some(thread_id),
                 });
                 self.enter(Focus::Composer);
@@ -2408,29 +2577,7 @@ impl ClientCore {
                         body,
                     }
                 } else {
-                    // Record the exact file diff on screen so readers can
-                    // reopen this rendering later. A blob view (Browse)
-                    // records nothing: the comment is off-diff.
-                    let context = match &anchor {
-                        Anchor::Review => None,
-                        Anchor::File { repo_id, path, .. }
-                        | Anchor::Lines { repo_id, path, .. } => review
-                            .open_file
-                            .as_ref()
-                            .filter(|f| f.render.repo_id == *repo_id && f.render.path == *path)
-                            .map(|f| &f.render.target)
-                            .or_else(|| {
-                                review
-                                    .files
-                                    .iter()
-                                    .find(|k| k.repo_id == *repo_id && k.path == *path)
-                                    .map(|k| &k.target)
-                            })
-                            .and_then(|t| match t {
-                                RenderTarget::Diff { change } => Some(change.clone()),
-                                RenderTarget::Blob { .. } => None,
-                            }),
-                    };
+                    let context = draft.context.clone();
                     Mutation::AddComment {
                         review_id,
                         comment_id,
@@ -3377,6 +3524,7 @@ impl ClientCore {
                 if snapshot.repo_id == repo_id
                     && let Some(browse) = &mut self.browse
                     && browse.repo_id == repo_id
+                    && browse.request_id == id
                 {
                     browse.root = Some(root);
                     if let Some(open) = &mut self.view.review

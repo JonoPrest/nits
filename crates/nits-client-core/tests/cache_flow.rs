@@ -2342,7 +2342,9 @@ fn jump_to_original_diff_renders_the_recorded_change_read_only() {
         lines_anchor("a.rs", nits_protocol::Side::Head, 4, 2, 2),
         nits_protocol::CommentState::Live,
     );
-    comment.context = Some(old_change.clone());
+    comment.context = Some(nits_protocol::CommentContext::Diff {
+        change: old_change.clone(),
+    });
     let thread_id = comment.thread_id;
     core.handle(Input::Server(foreign_event(
         2,
@@ -2351,7 +2353,9 @@ fn jump_to_original_diff_renders_the_recorded_change_read_only() {
     .unwrap();
     assert_eq!(
         core.view().threads[0].context,
-        Some(old_change.clone()),
+        Some(nits_protocol::CommentContext::Diff {
+            change: old_change.clone()
+        }),
         "the thread view carries the recorded context"
     );
     // Jump: the daemon is asked to render the recorded change directly.
@@ -2614,4 +2618,450 @@ fn visible_files(view: &nits_client_core::ViewModel) -> Vec<String> {
             | nits_client_core::TreeNode::File { name, .. } => name.clone(),
         })
         .collect()
+}
+
+/// A full text blob absent from Files changed, at an independently picked ref.
+fn browse_ready(reference: RefSpec) -> ClientCore {
+    let mut core = subscribed(local());
+    open_streamed(&mut core);
+    let effects = core
+        .handle(Input::User(Action::SetBrowseRef {
+            repo_id: repo_id(),
+            ref_spec: Some(reference),
+        }))
+        .unwrap();
+    let id = requests(&effects)[0].0;
+    core.handle(Input::Server(ServerMsg::Response {
+        id,
+        response: Response::TreeSnapshot {
+            snapshot: tree(7, &["unchanged.rs"]),
+        },
+    }))
+    .unwrap();
+    core.handle(Input::User(Action::SetTab {
+        tab: nits_client_core::Tab::Browse,
+    }))
+    .unwrap();
+    let effects = core
+        .handle(Input::User(Action::Viewport {
+            file: file_ref("unchanged.rs"),
+            first_row: 0,
+            last_row: 59,
+        }))
+        .unwrap();
+    let (id, request) = requests(&effects)
+        .into_iter()
+        .find(|(_, r)| matches!(r, Request::BlobRender { .. }))
+        .unwrap();
+    assert_eq!(
+        request,
+        Request::BlobRender {
+            repo_id: repo_id(),
+            path: path("unchanged.rs"),
+            blob_oid: blob_oid(1),
+            first_chunk: ChunkIndex::FIRST
+        }
+    );
+    item(
+        &mut core,
+        id,
+        StreamItem::Header {
+            header: FileRenderHeader {
+                target: RenderTarget::Blob { oid: blob_oid(1) },
+                ..header("unchanged.rs", 100, 1)
+            },
+        },
+    );
+    // Every row is a real source line, including blank ones.
+    let rows = (1..=100)
+        .map(|n| {
+            let cell = nits_protocol::Cell {
+                line_no: nits_protocol::LineNo::new(n).unwrap(),
+                text: if n == 2 {
+                    String::new()
+                } else {
+                    format!("line {n}")
+                },
+                spans: vec![],
+                changed: vec![],
+            };
+            Row::Context {
+                left: cell.clone(),
+                right: cell,
+            }
+        })
+        .collect();
+    item(
+        &mut core,
+        id,
+        StreamItem::Chunk {
+            repo_id: repo_id(),
+            path: path("unchanged.rs"),
+            chunk: RenderChunk {
+                index: ChunkIndex::FIRST,
+                rows,
+            },
+        },
+    );
+    core
+}
+
+#[test]
+fn browse_single_lines_use_visible_blob_and_capture_every_ref_kind() {
+    use nits_client_core::{Command, RowPlace, ViewDelta};
+    use nits_protocol::{Anchor, CommentContext};
+    for reference in [
+        RefSpec::Branch {
+            name: "other".into(),
+        },
+        RefSpec::Tag { name: "v1".into() },
+        RefSpec::Commit {
+            oid: CommitOid::from_bytes([7; 20]),
+        },
+        RefSpec::WorkingTree,
+    ] {
+        let mut core = browse_ready(reference.clone());
+        core.handle(Input::User(Action::SetFocus {
+            focus: Focus::Diff {
+                row: 1,
+                side: Side::Head,
+            },
+        }))
+        .unwrap();
+        let action = Action::CommentLines {
+            file: file_ref("unchanged.rs"),
+            side: Side::Head,
+            start_line: 2,
+            end_line: 2,
+        };
+        assert_eq!(
+            resolve_command(&core, Command::Comment).unwrap(),
+            action,
+            "keyboard and mouse share CommentLines"
+        );
+        let effects = core.handle(Input::User(action)).unwrap();
+        assert_eq!(
+            effects,
+            vec![Effect::Render(ViewDelta::new(&[
+                ViewSection::Draft,
+                ViewSection::Focus,
+                ViewSection::Diff,
+                ViewSection::Hints
+            ]))]
+        );
+        let draft = core.view().draft.clone().unwrap();
+        assert_eq!(
+            draft.context,
+            Some(CommentContext::Browse {
+                reference: reference.clone()
+            })
+        );
+        let Anchor::Lines {
+            blob_oid,
+            side,
+            lines,
+            ..
+        } = draft.anchor
+        else {
+            panic!("line anchor")
+        };
+        assert_eq!(blob_oid, self::blob_oid(1));
+        assert_eq!(side, Side::Head);
+        assert_eq!((lines.start().get(), lines.end().get()), (2, 2));
+        assert_eq!(
+            core.view().diff.as_ref().unwrap().rows[1].drafted,
+            Some((RowPlace::Anchor, Side::Head))
+        );
+        assert_eq!(
+            core.handle(Input::User(Action::SetBrowseRef {
+                repo_id: repo_id(),
+                ref_spec: Some(RefSpec::Head)
+            })),
+            Err(CoreError::DraftAlreadyOpen)
+        );
+        let anchor = draft.anchor.clone();
+        let effects = core
+            .handle(Input::User(Action::DraftSubmitted {
+                body: "blank line too".into(),
+            }))
+            .unwrap();
+        let request = requests(&effects);
+        assert_eq!(request.len(), 1);
+        let Request::Mutate {
+            mutation:
+                nits_protocol::Mutation::AddComment {
+                    anchor: sent,
+                    context,
+                    ..
+                },
+            ..
+        } = &request[0].1
+        else {
+            panic!("comment mutation")
+        };
+        assert_eq!(*sent, anchor);
+        assert_eq!(*context, Some(CommentContext::Browse { reference }));
+        let thread = &core.view().threads[0];
+        assert!(thread.pending);
+        let id = thread.id;
+        assert_eq!(
+            core.view().diff.as_ref().unwrap().rows[1].threads[0].thread,
+            id
+        );
+        // Changing ref cannot display this thread over the same path's different blob.
+        core.handle(Input::User(Action::SetBrowseRef {
+            repo_id: repo_id(),
+            ref_spec: Some(RefSpec::Head),
+        }))
+        .unwrap();
+        assert!(core.view().diff.is_none());
+        core.handle(Input::User(Action::SetTab {
+            tab: nits_client_core::Tab::Conversation,
+        }))
+        .unwrap();
+        core.handle(Input::User(Action::SetFocus {
+            focus: Focus::Thread { index: 0 },
+        }))
+        .unwrap();
+        assert_eq!(
+            resolve_command(&core, Command::Open).unwrap(),
+            Action::OpenOriginalDiff { thread_id: id }
+        );
+        core.handle(Input::User(Action::OpenOriginalDiff { thread_id: id }))
+            .unwrap();
+        assert_eq!(core.view().tab, nits_client_core::Tab::Browse);
+        assert_eq!(
+            open_render(&core).target,
+            RenderTarget::Blob {
+                oid: self::blob_oid(1)
+            }
+        );
+        assert_eq!(
+            core.view().focus,
+            Focus::Diff {
+                row: 1,
+                side: Side::Head
+            }
+        );
+    }
+}
+
+#[test]
+fn browse_visual_range_and_invalid_targets() {
+    use nits_client_core::{Command, RowPlace};
+    let mut core = browse_ready(RefSpec::WorkingTree);
+    core.handle(Input::User(Action::SetFocus {
+        focus: Focus::Diff {
+            row: 4,
+            side: Side::Head,
+        },
+    }))
+    .unwrap();
+    for command in [
+        Command::VisualMode,
+        Command::MoveUp,
+        Command::MoveUp,
+        Command::Comment,
+    ] {
+        core.handle(Input::User(Action::RunCommand { command }))
+            .unwrap();
+    }
+    let nits_protocol::Anchor::Lines {
+        side,
+        lines,
+        blob_oid,
+        ..
+    } = core.view().draft.as_ref().unwrap().anchor
+    else {
+        panic!()
+    };
+    assert_eq!(
+        (side, lines.start().get(), lines.end().get(), blob_oid),
+        (Side::Head, 3, 5, self::blob_oid(1))
+    );
+    let marked: Vec<_> = core
+        .view()
+        .diff
+        .as_ref()
+        .unwrap()
+        .rows
+        .iter()
+        .filter_map(|r| r.drafted.map(|p| (r.index, p)))
+        .collect();
+    assert_eq!(
+        marked,
+        vec![
+            (2, (RowPlace::Inside, Side::Head)),
+            (3, (RowPlace::Inside, Side::Head)),
+            (4, (RowPlace::Anchor, Side::Head))
+        ]
+    );
+    core.handle(Input::User(Action::DraftDiscarded)).unwrap();
+    assert!(
+        core.view()
+            .diff
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .all(|r| r.drafted.is_none())
+    );
+    for (side, start_line, end_line) in
+        [(Side::Base, 1, 1), (Side::Head, 0, 1), (Side::Head, 1, 101)]
+    {
+        assert_eq!(
+            core.handle(Input::User(Action::CommentLines {
+                file: file_ref("unchanged.rs"),
+                side,
+                start_line,
+                end_line
+            })),
+            Err(CoreError::UnknownFile(file_ref("unchanged.rs")))
+        );
+    }
+}
+
+#[test]
+fn browse_superseded_tree_response_cannot_retarget_content() {
+    let mut core = browse_ready(RefSpec::WorkingTree);
+    let first = core
+        .handle(Input::User(Action::SetBrowseRef {
+            repo_id: repo_id(),
+            ref_spec: Some(RefSpec::Tag { name: "old".into() }),
+        }))
+        .unwrap();
+    let second = core
+        .handle(Input::User(Action::SetBrowseRef {
+            repo_id: repo_id(),
+            ref_spec: Some(RefSpec::Tag { name: "new".into() }),
+        }))
+        .unwrap();
+    assert!(
+        core.handle(Input::User(Action::Viewport {
+            file: file_ref("a.rs"),
+            first_row: 0,
+            last_row: 10
+        }))
+        .is_err()
+    );
+    for (effects, root) in [(second, 9), (first, 8)] {
+        core.handle(Input::Server(ServerMsg::Response {
+            id: requests(&effects)[0].0,
+            response: Response::TreeSnapshot {
+                snapshot: tree(root, &["unchanged.rs"]),
+            },
+        }))
+        .unwrap();
+    }
+    core.handle(Input::User(Action::ToggleDir {
+        repo_id: repo_id(),
+        path: None,
+    }))
+    .unwrap();
+    assert_eq!(
+        core.view().browse_ref,
+        Some(RefSpec::Tag { name: "new".into() })
+    );
+}
+
+#[test]
+fn default_browse_opens_changed_files_as_plain_blobs_with_blob_render_options() {
+    let mut core = subscribed(local());
+    open_streamed(&mut core);
+    core.handle(Input::User(Action::Viewport {
+        file: file_ref("a.rs"),
+        first_row: 0,
+        last_row: 59,
+    }))
+    .unwrap();
+    let effects = core
+        .handle(Input::User(Action::SetTab {
+            tab: nits_client_core::Tab::Browse,
+        }))
+        .unwrap();
+    assert_eq!(
+        open_render(&core).target,
+        RenderTarget::Blob { oid: blob_oid(1) }
+    );
+    assert_eq!(open_render(&core).opts, RenderOpts::default());
+    assert_eq!(requests(&effects).iter().filter(|(_, request)| matches!(request, Request::BlobRender { blob_oid: oid, .. } if *oid == blob_oid(1))).count(), 1);
+    // A newly selected ref is not allowed to fall back to a same-path review diff.
+    let effects = core
+        .handle(Input::User(Action::SetBrowseRef {
+            repo_id: repo_id(),
+            ref_spec: Some(RefSpec::Tag {
+                name: "empty".into(),
+            }),
+        }))
+        .unwrap();
+    core.handle(Input::Server(ServerMsg::Response {
+        id: requests(&effects)[0].0,
+        response: Response::TreeSnapshot {
+            snapshot: tree(8, &[]),
+        },
+    }))
+    .unwrap();
+    assert_eq!(
+        core.handle(Input::User(Action::Viewport {
+            file: file_ref("a.rs"),
+            first_row: 0,
+            last_row: 59
+        })),
+        Err(CoreError::UnknownFile(file_ref("a.rs")))
+    );
+    assert_eq!(
+        core.handle(Input::User(Action::CommentLines {
+            file: file_ref("a.rs"),
+            side: Side::Head,
+            start_line: 2,
+            end_line: 2
+        })),
+        Err(CoreError::UnknownFile(file_ref("a.rs")))
+    );
+    // Diff-only preferences do not become BlobRender cache keys.
+    let mut core = browse_ready(RefSpec::WorkingTree);
+    core.handle(Input::User(Action::SetRenderOpts {
+        ignore_whitespace: true,
+        context_lines: 20,
+    }))
+    .unwrap();
+    core.handle(Input::User(Action::Viewport {
+        file: file_ref("unchanged.rs"),
+        first_row: 0,
+        last_row: 59,
+    }))
+    .unwrap();
+    assert_eq!(open_render(&core).opts, RenderOpts::default());
+}
+
+#[test]
+fn browse_refresh_of_same_ref_ignores_the_older_snapshot() {
+    let mut core = browse_ready(RefSpec::WorkingTree);
+    let mut ids = vec![];
+    for _ in 0..2 {
+        let effects = core
+            .handle(Input::User(Action::SetBrowseRef {
+                repo_id: repo_id(),
+                ref_spec: Some(RefSpec::WorkingTree),
+            }))
+            .unwrap();
+        ids.push(requests(&effects)[0].0);
+    }
+    for (id, root, files) in [(ids[1], 9, &["new.rs"][..]), (ids[0], 8, &["old.rs"][..])] {
+        core.handle(Input::Server(ServerMsg::Response {
+            id,
+            response: Response::TreeSnapshot {
+                snapshot: tree(root, files),
+            },
+        }))
+        .unwrap();
+    }
+    core.handle(Input::User(Action::ToggleDir {
+        repo_id: repo_id(),
+        path: None,
+    }))
+    .unwrap();
+    let files = visible_files(core.view());
+    assert!(files.contains(&"new.rs".into()), "{files:?}");
+    assert!(!files.contains(&"old.rs".into()), "{files:?}");
 }

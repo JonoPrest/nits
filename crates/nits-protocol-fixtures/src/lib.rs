@@ -173,6 +173,7 @@ registry!(
     CommentKind,
     CommentIntent,
     CommentState,
+    CommentContext,
     Comment,
     ThreadResolution,
     Thread,
@@ -531,9 +532,11 @@ fn comment() -> Result<Comment, FixtureError> {
         created: ts(2),
         edited: None,
         state: CommentState::Live,
-        context: Some(ChangeKind::Modified {
-            old: blob(30),
-            new: blob(31),
+        context: Some(CommentContext::Diff {
+            change: ChangeKind::Modified {
+                old: blob(30),
+                new: blob(31),
+            },
         }),
     })
 }
@@ -842,6 +845,17 @@ enum_fixture!(
             patch: "@@ -1 +1 @@\n-a\n+b\n".into()
         },
         CommentKind::Request,
+    ]
+);
+enum_fixture!(
+    CommentContext,
+    CommentContextKind,
+    "CommentContext",
+    [
+        CommentContext::Diff { change: modified() },
+        CommentContext::Browse {
+            reference: RefSpec::WorkingTree
+        }
     ]
 );
 enum_fixture!(

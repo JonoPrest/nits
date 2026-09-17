@@ -296,6 +296,7 @@ struct_fixture!(
     "Draft",
     Draft {
         intent: nits_protocol::CommentIntent::Finding,
+        context: None,
         anchor: proto_named::<Anchor>("Lines")?,
         reply_to: Some(thread_id()?),
     }
@@ -500,6 +501,7 @@ struct_fixture!(
     DiffView,
     "DiffView",
     DiffView {
+        target: proto_named::<RenderTarget>("Diff")?,
         file: file_ref()?,
         lang: Some("Rust".into()),
         content: proto_named::<RenderContent>("Text")?,

@@ -27,6 +27,7 @@ let schemas: dict<S.t<unknown>> = Dict.fromArray([
   ("CommitInfo", erase(Domain.CommitInfo.schema)),
   ("Side", erase(Domain.Side.schema)),
   ("Anchor", erase(Domain.Anchor.schema)),
+  ("CommentContext", erase(Domain.CommentContext.schema)),
   ("CommentKind", erase(Domain.CommentKind.schema)),
   ("CommentIntent", erase(Domain.CommentIntent.schema)),
   ("CommentState", erase(Domain.CommentState.schema)),

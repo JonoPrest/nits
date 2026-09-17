@@ -839,3 +839,75 @@ fn snapshot_requests_and_cursor_share_one_read_transaction() {
         100
     );
 }
+
+#[test]
+fn legacy_diff_context_migrates_without_reinterpreting_null_contexts() {
+    use redb::{ReadableTable, TableDefinition};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.redb");
+    let expected = {
+        let store = Store::open(&path).unwrap();
+        store
+            .append(new_event(EventBody::WorkspaceCreated {
+                workspace: workspace(),
+            }))
+            .unwrap();
+        store
+            .append(new_event(EventBody::ReviewCreated { review: review(1) }))
+            .unwrap();
+        let mut first = comment(1, 1, 1, 3);
+        first.context = Some(nits_protocol::CommentContext::Diff {
+            change: nits_protocol::ChangeKind::Modified {
+                old: blob(2),
+                new: blob(3),
+            },
+        });
+        for comment in [first, comment(1, 2, 2, 3)] {
+            store
+                .append(new_event(EventBody::CommentCreated { comment }))
+                .unwrap();
+        }
+        store.events_after(None).unwrap()
+    };
+    // Write exactly the old persisted representation, including its schema stamp.
+    {
+        let db = redb::Database::open(&path).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut events = txn
+                .open_table(TableDefinition::<u64, &[u8]>::new("events"))
+                .unwrap();
+            let old: Vec<_> = events
+                .iter()
+                .unwrap()
+                .map(|row| {
+                    let (key, value) = row.unwrap();
+                    let mut value: serde_json::Value =
+                        serde_json::from_slice(value.value()).unwrap();
+                    value["schema"] = 1.into();
+                    if let Some(context) = value.pointer_mut("/event/body/comment/context")
+                        && !context.is_null()
+                    {
+                        *context = context["change"].take();
+                    }
+                    (key.value(), serde_json::to_vec(&value).unwrap())
+                })
+                .collect();
+            for (key, value) in old {
+                events.insert(key, value.as_slice()).unwrap();
+            }
+        }
+        txn.commit().unwrap();
+    }
+    stamp_schema(&path, 1);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), SchemaVersion::CURRENT);
+    assert_eq!(store.events_after(None).unwrap(), expected);
+    let views = store.dump_views().unwrap();
+    store.rebuild_views().unwrap();
+    assert_eq!(store.dump_views().unwrap(), views);
+    drop(store);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(reopened.events_after(None).unwrap(), expected);
+    assert_eq!(reopened.dump_views().unwrap(), views);
+}

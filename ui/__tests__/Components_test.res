@@ -491,7 +491,11 @@ describe("Jump to original diff", () => {
       ...thread,
       outdated: true,
       suggestion: false,
-      context: Some(Fixtures.parse(Domain.ChangeKind.schema, "protocol", "ChangeKind", "Modified")),
+      context: Some(
+        Diff({
+          change: Fixtures.parse(Domain.ChangeKind.schema, "protocol", "ChangeKind", "Modified"),
+        }),
+      ),
     }
     let _ = render(
       <Threads
@@ -2137,6 +2141,7 @@ describe("Commented lines and the inline composer", () => {
         contextHash: "0",
       }),
       intent: Finding,
+      context: None,
       replyTo: None,
     }
     expect(View.Draft.isDocked(draft))->toBe(false)
@@ -2153,7 +2158,7 @@ describe("Commented lines and the inline composer", () => {
   })
 
   test("a review-level draft still docks", () => {
-    let draft: View.Draft.t = {anchor: Review({}), intent: Finding, replyTo: None}
+    let draft: View.Draft.t = {anchor: Review({}), intent: Finding, context: None, replyTo: None}
     expect(View.Draft.isDocked(draft))->toBe(true)
   })
 })
@@ -2185,6 +2190,7 @@ describe("The shell's composer placement", () => {
       contextHash: "0",
     }),
     intent: Finding,
+    context: None,
     replyTo: None,
   }
 
@@ -2226,7 +2232,7 @@ describe("The shell's composer placement", () => {
   })
 
   test("a review-level draft still docks, in both tabs", () => {
-    let review: View.Draft.t = {anchor: Review({}), intent: Finding, replyTo: None}
+    let review: View.Draft.t = {anchor: Review({}), intent: Finding, context: None, replyTo: None}
     [View.Tab.FilesChanged, Browse]->Array.forEach(
       tab => {
         let {container} = shell(withDraft(~tab, ~draft=Some(review)))

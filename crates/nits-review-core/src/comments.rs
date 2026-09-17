@@ -108,7 +108,7 @@ impl Core {
         kind: CommentKind,
         anchor: Anchor,
         body: String,
-        context: Option<ChangeKind>,
+        context: Option<nits_protocol::CommentContext>,
     ) -> Result<Comment, CoreError> {
         if self.store.comment(review, id)?.is_some() {
             return Err(CoreError::invalid(format!("comment {id} already exists")));
@@ -116,6 +116,20 @@ impl Core {
         if matches!(kind, CommentKind::Informational) && !matches!(anchor, Anchor::Review) {
             return Err(CoreError::invalid(
                 "informational notes require a review-level anchor",
+            ));
+        }
+        if matches!(context, Some(nits_protocol::CommentContext::Browse { .. }))
+            && matches!(
+                anchor,
+                Anchor::Review
+                    | Anchor::Lines {
+                        side: Side::Base,
+                        ..
+                    }
+            )
+        {
+            return Err(CoreError::invalid(
+                "Browse comments require a file or head-side line anchor",
             ));
         }
         let anchor = self.validate_anchor(review, anchor)?;
@@ -370,6 +384,12 @@ impl Core {
         let mut fates: HashMap<(RepoId, Side), HashMap<RepoPath, PathFate>> = HashMap::new();
         let mut moved = Vec::new();
         for c in self.store.comments(review)? {
+            if matches!(
+                c.context,
+                Some(nits_protocol::CommentContext::Browse { .. })
+            ) {
+                continue;
+            }
             let base = effective_anchor(&c.anchor, &c.state);
             let Some(side) = side_of(base) else { continue };
             let (repo_id, path) = match base {

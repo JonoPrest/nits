@@ -3,7 +3,7 @@
 //! one step per transaction.
 
 use nits_protocol::SchemaVersion;
-use redb::{Database, WriteTransaction};
+use redb::{Database, ReadableTable, WriteTransaction};
 
 use super::{StoreError, tables};
 
@@ -28,7 +28,12 @@ type Migration = fn(&WriteTransaction) -> Result<(), String>;
 ///
 /// Schema 0 is "a store created before versioning existed" (no `meta` stamp);
 /// upgrading it to 1 is a no-op because the tables are identical.
-const MIGRATIONS: &[Migration] = &[migrate_0_to_1, migrate_1_to_2, migrate_2_to_3];
+const MIGRATIONS: &[Migration] = &[
+    migrate_0_to_1,
+    migrate_1_to_2,
+    migrate_2_to_3,
+    migrate_3_to_4,
+];
 
 /// Schema 3 materializes every historical `ReviewRequested`. The event format is
 /// unchanged; rebuilding assigns each request its original event identity.
@@ -47,9 +52,17 @@ fn migrate_2_to_3(txn: &WriteTransaction) -> Result<(), String> {
 fn migrate_1_to_2(txn: &WriteTransaction) -> Result<(), String> {
     fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
         let mut tables = tables::Write::open(txn)?;
-        for (_, mut stored) in tables.all_events()? {
-            stored.schema = SchemaVersion::new(2);
-            tables.put_event(&stored)?;
+        // Later migrations may change event payloads. Stamp the old envelope
+        // without decoding it as the current domain before those steps run.
+        let mut events = Vec::new();
+        for entry in tables.events.iter()? {
+            let (seq, bytes) = entry?;
+            let mut value: serde_json::Value = serde_json::from_slice(bytes.value())?;
+            value["schema"] = serde_json::to_value(SchemaVersion::new(2))?;
+            events.push((seq.value(), serde_json::to_vec(&value)?));
+        }
+        for (seq, bytes) in events {
+            tables.events.insert(seq, bytes.as_slice())?;
         }
         tables.clear_views()?;
         tables.clear_view_seq()?;
@@ -60,6 +73,40 @@ fn migrate_1_to_2(txn: &WriteTransaction) -> Result<(), String> {
 
 #[allow(clippy::unnecessary_wraps)] // must match the `Migration` fn-pointer type
 fn migrate_0_to_1(_txn: &WriteTransaction) -> Result<(), String> {
+    Ok(())
+}
+
+/// Preserve legacy diff provenance while distinguishing future Browse anchors.
+/// Only `CommentCreated` carries `Comment.context`; other events retain their data.
+fn migrate_3_to_4(txn: &WriteTransaction) -> Result<(), String> {
+    let mut tables = tables::Write::open(txn).map_err(|e| e.to_string())?;
+    let mut events = Vec::new();
+    for entry in tables.events.iter().map_err(|e| e.to_string())? {
+        let (seq, bytes) = entry.map_err(|e| e.to_string())?;
+        let mut value: serde_json::Value =
+            serde_json::from_slice(bytes.value()).map_err(|e| e.to_string())?;
+        if let Some(context) = value.pointer_mut("/event/body/comment/context")
+            && !context.is_null()
+        {
+            let change: nits_protocol::ChangeKind =
+                serde_json::from_value(context.clone()).map_err(|e| e.to_string())?;
+            *context = serde_json::to_value(nits_protocol::CommentContext::Diff { change })
+                .map_err(|e| e.to_string())?;
+        }
+        value["schema"] = serde_json::to_value(SchemaVersion::new(4)).map_err(|e| e.to_string())?;
+        events.push((
+            seq.value(),
+            serde_json::to_vec(&value).map_err(|e| e.to_string())?,
+        ));
+    }
+    for (seq, bytes) in events {
+        tables
+            .events
+            .insert(seq, bytes.as_slice())
+            .map_err(|e| e.to_string())?;
+    }
+    tables.clear_views().map_err(|e| e.to_string())?;
+    tables.clear_view_seq().map_err(|e| e.to_string())?;
     Ok(())
 }
 

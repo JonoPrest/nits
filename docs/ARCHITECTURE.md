@@ -172,6 +172,13 @@ When a review's resolved head/base changes:
 
 `File` anchors follow the path, including detected renames; they become `Outdated` only if the
 file disappears. `Lines` anchors follow renames the same way. `Review` anchors never change.
+Browse comments record `CommentContext::Browse { reference }` and stay pinned to their
+original blob; review-target refresh does not reanchor them through an unrelated tree.
+Their reference is provenance, not a moving content pointer. Thread navigation reopens
+the anchor blob, including persisted working-tree snapshots. Diff comments record
+`CommentContext::Diff { change }`; schema 2 wraps legacy diff contexts in this variant
+and leaves absent contexts absent.
+
 Comments are never dropped by ref movement, and an `Outdated` comment is re-tried from its last
 good anchor on every resolution, so it returns to `Live` when the content does.
 

@@ -31,6 +31,7 @@ let make = (
         dispatch(SetFocus({focus: Focus.Thread({index: index})}))
       }}
     >
+      <Threads.Context context=thread.context />
       {thread.comments
       ->Array.map(c =>
         <div key=c.id className={"inline-comment" ++ (c.pending ? " pending" : "")}>

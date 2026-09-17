@@ -617,3 +617,128 @@ fn requests_reach_live_clients_and_fresh_disconnected_recipients() {
     );
     assert_eq!(sim.client(B).view().requests.len(), 2);
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // Keep content setup and the two-client delivery scenario together.
+fn browse_comment_arrives_remotely_inline_and_converges() {
+    use nits_client_core::{FileRef, Tab};
+    use nits_protocol::{
+        BlobOid, Cell, ChunkIndex, CommentContext, FileRender, FileRenderHeader, GapTable, LineNo,
+        RenderChunk, RenderContent, RenderOpts, RenderTarget, RepoPath, Row, Side, TreeEntry,
+        TreeEntryKind, TreeOid, TreeSnapshot,
+    };
+    let snapshot = snapshot();
+    let repo_id = snapshot.review.targets.iter().next().unwrap().repo_id;
+    let path = RepoPath::new("unchanged.rs").unwrap();
+    let oid = BlobOid::from_bytes([11; 20]);
+    let reference = RefSpec::Tag { name: "v1".into() };
+    let mut sim = Sim::new(snapshot, vec![human("ada"), human("bob")]);
+    let cell = Cell {
+        line_no: LineNo::new(1).unwrap(),
+        text: "source".into(),
+        spans: vec![],
+        changed: vec![],
+    };
+    sim.browse_content(
+        reference.clone(),
+        TreeSnapshot {
+            repo_id,
+            root_oid: TreeOid::from_bytes([12; 20]),
+            entries: vec![TreeEntry {
+                path: path.clone(),
+                kind: TreeEntryKind::File {
+                    oid,
+                    size: 7,
+                    executable: false,
+                },
+            }],
+        },
+        FileRender {
+            header: FileRenderHeader {
+                repo_id,
+                path: path.clone(),
+                target: RenderTarget::Blob { oid },
+                opts: RenderOpts::default(),
+                lang: None,
+                content: RenderContent::Text {
+                    total_rows: 1,
+                    chunk_rows: 100,
+                    chunk_count: 1,
+                    highlighted: false,
+                    additions: 0,
+                    deletions: 0,
+                    gaps: GapTable::default(),
+                },
+            },
+            chunks: vec![RenderChunk {
+                index: ChunkIndex::FIRST,
+                rows: vec![Row::Context {
+                    left: cell.clone(),
+                    right: cell,
+                }],
+            }],
+        },
+    );
+    for peer in [A, B] {
+        sim.connect_and_open(peer).unwrap();
+        sim.act(
+            peer,
+            Action::SetBrowseRef {
+                repo_id,
+                ref_spec: Some(reference.clone()),
+            },
+        )
+        .unwrap();
+        sim.settle();
+        sim.act(peer, Action::SetTab { tab: Tab::Browse }).unwrap();
+        sim.act(
+            peer,
+            Action::Viewport {
+                file: FileRef {
+                    repo_id,
+                    path: path.clone(),
+                },
+                first_row: 0,
+                last_row: 59,
+            },
+        )
+        .unwrap();
+        sim.settle();
+    }
+    sim.act(
+        A,
+        Action::CommentLines {
+            file: FileRef { repo_id, path },
+            side: Side::Head,
+            start_line: 1,
+            end_line: 1,
+        },
+    )
+    .unwrap();
+    sim.act(
+        A,
+        Action::DraftSubmitted {
+            body: "from browse".into(),
+        },
+    )
+    .unwrap();
+    assert!(sim.client(A).view().threads[0].pending);
+    assert!(sim.client(B).view().threads.is_empty());
+    sim.settle();
+    sim.converged().unwrap();
+    for peer in [A, B] {
+        let view = sim.client(peer).view();
+        assert_eq!(
+            view.threads[0].context,
+            Some(CommentContext::Browse {
+                reference: reference.clone()
+            })
+        );
+        assert!(!view.threads[0].pending);
+        assert_eq!(
+            view.diff.as_ref().unwrap().rows[0].threads[0].thread,
+            view.threads[0].id
+        );
+        assert_eq!(view.threads[0].summary, "from browse");
+    }
+}

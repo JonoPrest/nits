@@ -71,6 +71,14 @@ expression: core.view()
     "deletions": 2
   },
   "diff": {
+    "target": {
+      "type": "Diff",
+      "change": {
+        "type": "Modified",
+        "old": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "new": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+      }
+    },
     "file": {
       "repo_id": "00000000020000000000000002",
       "path": "src/lib.rs"
@@ -237,6 +245,14 @@ expression: core.view()
   },
   "diffs": [
     {
+      "target": {
+        "type": "Diff",
+        "change": {
+          "type": "Modified",
+          "old": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+          "new": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+        }
+      },
       "file": {
         "repo_id": "00000000020000000000000002",
         "path": "src/lib.rs"
@@ -402,6 +418,13 @@ expression: core.view()
       "original": false
     },
     {
+      "target": {
+        "type": "Diff",
+        "change": {
+          "type": "Added",
+          "new": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+        }
+      },
       "file": {
         "repo_id": "00000000020000000000000002",
         "path": "src/parser.rs"

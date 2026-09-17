@@ -20,6 +20,7 @@ let make = (
   ~diff: DiffView.t,
   ~layout: Layout.t,
   ~focus: Focus.t,
+  ~visual: option<VisualView.t>=?,
   ~scroll: option<ScrollIntent.t>=?,
   ~chrome: array<View.Hint.t>=[],
   ~threads: array<ThreadView.t>=[],
@@ -27,7 +28,13 @@ let make = (
   ~pendingRefresh: bool=false,
   ~dispatch: Action.t => unit,
 ) => {
+  // Plain blobs have one semantic side even when the saved diff layout is split.
+  let layout = switch diff.target {
+  | Blob(_) => View.Layout.Unified
+  | Diff(_) => layout
+  }
   let scrollRef = React.useRef(Nullable.null)
+  let (drag, setDrag) = React.useState(() => None)
   let total = switch diff.content {
   | Text({totalRows}) => totalRows
   | Binary(_) => 0
@@ -119,16 +126,20 @@ let make = (
       <span className="file-path mono"> {React.string(title)} </span>
       <UI.CopyPath path={diff.file.path} chrome dispatch />
       stats
-      <UI.Button
-        label="expand file"
-        kind=Ghost
-        title="show the whole file as context"
-        onClick={() => dispatch(ExpandContext({file: diff.file, full: true}))}
-      />
+      {switch diff.target {
+      | Diff(_) =>
+        <UI.Button
+          label="expand file"
+          kind=Ghost
+          title="show the whole file as context"
+          onClick={() => dispatch(ExpandContext({file: diff.file, full: true}))}
+        />
+      | Blob(_) => React.null
+      }}
     </header>
     {diff.original
       ? <div className="original-banner" role="status">
-          {React.string("Viewing the diff this comment was made on — read-only. ")}
+          {React.string("Viewing the original content this comment was made on. ")}
           <UI.Kbd keys="esc" />
           {React.string(" back to the current diff")}
         </div>
@@ -146,7 +157,19 @@ let make = (
         </div>
       : React.null}
     <div
-      className={"diff-scroll" ++ (collapsed ? " hidden" : "")} ref={ReactDOM.Ref.domRef(scrollRef)}
+      className={"diff-scroll" ++ (collapsed ? " hidden" : "")}
+      ref={ReactDOM.Ref.domRef(scrollRef)}
+      onMouseLeave={_ => setDrag(_ => None)}
+      onMouseUp={_ =>
+        switch drag {
+        | Some((start, end_)) => {
+            setDrag(_ => None)
+            if start != end_ {
+              dispatch(CommentLines({file: diff.file, side: Head, startLine: start, endLine: end_}))
+            }
+          }
+        | None => ()
+        }}
     >
       <div
         className="diff-rows"
@@ -182,7 +205,32 @@ let make = (
                 ?scrollAnchor
                 drafted=?r.drafted
                 threads=r.threads
-                onClick={side => dispatch(SetFocus({focus: Focus.Diff({row: item.index, side})}))}
+                selectedSide=?{switch (visual, drag, Row.lineOn(r.row, Head)) {
+                | (Some({start, end_}), _, Some(_)) if item.index >= start && item.index <= end_ =>
+                  Some(Domain.Side.Head)
+                | (_, Some((start, end_)), Some(line))
+                  if line >= Math.Int.min(start, end_) && line <= Math.Int.max(start, end_) =>
+                  Some(Domain.Side.Head)
+                | _ => None
+                }}
+                onComment=?{Row.lineOn(r.row, Head)->Option.map(line =>
+                  _ =>
+                    dispatch(
+                      CommentLines({file: diff.file, side: Head, startLine: line, endLine: line}),
+                    )
+                )}
+                onClick={_ =>
+                  dispatch(SetFocus({focus: Focus.Diff({row: item.index, side: Head})}))}
+                onMouseDown={_ =>
+                  switch Row.lineOn(r.row, Head) {
+                  | Some(line) => setDrag(_ => Some((line, line)))
+                  | None => ()
+                  }}
+                onMouseEnter={_ =>
+                  switch (drag, Row.lineOn(r.row, Head)) {
+                  | (Some((start, _)), Some(line)) => setDrag(_ => Some((start, line)))
+                  | _ => ()
+                  }}
                 chrome
                 onExpand={(gap, dir) => dispatch(ExpandGap({file: diff.file, gap, dir}))}
               />

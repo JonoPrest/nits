@@ -58,6 +58,7 @@ pub enum ConnectionView {
 pub struct Draft {
     pub intent: nits_protocol::CommentIntent,
     pub anchor: Anchor,
+    pub context: Option<nits_protocol::CommentContext>,
     pub reply_to: Option<ThreadId>,
 }
 

@@ -852,7 +852,7 @@ impl ClientCore {
             repo_id: file.repo_id,
             path: file.path.clone(),
             target: RenderTarget::Blob { oid },
-            opts: self.content.config.render_opts.clone(),
+            opts: RenderOpts::default(),
         })
     }
 
@@ -879,24 +879,27 @@ impl ClientCore {
             .cloned();
         // In Browse at a picked ref, every file opens as that ref's blob —
         // even ones the review's diff also touches.
-        let browsing =
-            self.view.tab == crate::Tab::Browse && self.browse_root(file.repo_id).is_some();
-        let Some(render) = original
-            .or_else(|| {
-                if browsing {
-                    self.blob_render_of(&file)
-                } else {
-                    None
-                }
-            })
-            .or_else(|| {
+        let browsing = self.view.tab == crate::Tab::Browse;
+        if original.is_none()
+            && browsing
+            && self
+                .browse
+                .as_ref()
+                .is_some_and(|b| b.repo_id == file.repo_id && b.root.is_none())
+        {
+            return Err(CoreError::UnknownFile(file));
+        }
+        let Some(render) = original.or_else(|| {
+            if browsing {
+                self.blob_render_of(&file)
+            } else {
                 open.files
                     .iter()
                     .find(|r| r.repo_id == file.repo_id && r.path == file.path)
                     .cloned()
-            })
-            .or_else(|| self.blob_render_of(&file))
-        else {
+                    .or_else(|| self.blob_render_of(&file))
+            }
+        }) else {
             return Err(CoreError::UnknownFile(file));
         };
         let (first_row, last_row) = (first_row.min(last_row), first_row.max(last_row));

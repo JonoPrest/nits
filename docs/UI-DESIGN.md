@@ -113,7 +113,7 @@ light both):
   their diff lines with a "jump to diff" link, resolved threads collapsed
   to one line, a hide-resolved filter, and a review-level composer.
 - **Every comment records the diff it was made on**
-  (`Comment::context: Option<ChangeKind>`, wired end to end). Threads
+  (`Comment::context: Option<CommentContext>`, wired end to end). Threads
   show a context chip (`main → worktree @<oid>` or `browse @<ref>`).
   Jumping to a comment whose diff has moved on opens the **original
   diff** read-only, with a banner ("Viewing the diff this comment was

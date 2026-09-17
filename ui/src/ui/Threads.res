@@ -27,6 +27,27 @@ let placeText = (p: ThreadPlace.t) =>
     file.path ++ ":" ++ Int.toString(start) ++ (end_ > start ? "-" ++ Int.toString(end_) : "")
   }
 
+let contextText = (context: Domain.CommentContext.t): string =>
+  switch context {
+  | Browse({reference}) => "browse @" ++ RefSpecText.print(reference)
+  | Diff({change}) =>
+    let short = oid => String.slice(oid, ~start=0, ~end=7)
+    switch change {
+    | Added({new}) => "added @" ++ short(new)
+    | Deleted({old}) => "deleted @" ++ short(old)
+    | Modified({old, new}) | Renamed({old, new}) => short(old) ++ " → " ++ short(new)
+    }
+  }
+
+module Context = {
+  @react.component
+  let make = (~context: option<Domain.CommentContext.t>) =>
+    switch context {
+    | Some(context) => <UI.Badge text={contextText(context)} />
+    | None => React.null
+    }
+}
+
 module Item = {
   @react.component
   let make = (
@@ -59,6 +80,7 @@ module Item = {
           <span className="thread-author"> {React.string(authorName(thread.author))} </span>
           <UI.Badge text={statusText(thread.status)} />
           <span className="thread-place"> {React.string(placeText(thread.place))} </span>
+          <Context context=thread.context />
           {thread.replies > 0
             ? <UI.Badge text={Int.toString(thread.replies) ++ " replies"} />
             : React.null}
@@ -144,7 +166,8 @@ let make = (
               onSelect={() => {
                 dispatch(SetFocus({focus: Focus.Thread({index: indexOffset + i})}))
                 switch (t.outdated, t.context, t.place) {
-                | (true, Some(_), _) => dispatch(OpenOriginalDiff({threadId: t.id}))
+                | (_, Some(Browse(_)), _) | (true, Some(Diff(_)), _) =>
+                  dispatch(OpenOriginalDiff({threadId: t.id}))
                 | (_, _, Lines({file, start})) =>
                   dispatch(
                     Viewport({
