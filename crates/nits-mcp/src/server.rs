@@ -416,42 +416,7 @@ impl Server {
 
     async fn call_mutating(&mut self, call: MutatingCall) -> Result<Value, ToolError> {
         match call {
-            MutatingCall::CreateReview(p) => {
-                let ops = self.ops_mut()?;
-                let implicit =
-                    p.workspace_id.is_none() || p.targets.iter().any(|t| t.repo_id.is_none());
-                let here = if implicit {
-                    Some(ops.locate(Path::new(".")).await?)
-                } else {
-                    None
-                };
-                let workspace_id = p
-                    .workspace_id
-                    .or_else(|| here.as_ref().map(|h| h.workspace.id))
-                    .ok_or_else(|| ToolError::Invalid("workspace_id".into()))?;
-                let targets = NonEmpty::new(
-                    p.targets
-                        .into_iter()
-                        .map(|t| {
-                            Ok(ReviewTarget {
-                                repo_id: t
-                                    .repo_id
-                                    .or_else(|| here.as_ref().map(|h| h.repo.id))
-                                    .ok_or_else(|| ToolError::Invalid("repo_id".into()))?,
-                                base: t.base,
-                                head: t.head,
-                            })
-                        })
-                        .collect::<Result<Vec<_>, ToolError>>()?,
-                )?;
-                let (review_id, event) = ops.create_review(workspace_id, p.title, targets).await?;
-                let snap = ops.snapshot(review_id).await?;
-                ok(tools::Created {
-                    review: snap.review,
-                    resolved: snap.resolved,
-                    event,
-                })
-            }
+            MutatingCall::CreateReview(p) => self.create_review(p).await,
             MutatingCall::UpdateReview(p) => {
                 let event = self
                     .ops_mut()?
@@ -461,7 +426,11 @@ impl Server {
                         status: p.status,
                     })
                     .await?;
-                ok(tools::Committed { event })
+                ok(tools::Updated {
+                    review_id: p.review_id,
+                    status: p.status,
+                    seq: event.seq,
+                })
             }
             MutatingCall::AddComment(p) => self.add_comment(p).await,
             MutatingCall::Suggest(p) => self.suggest(p).await,
@@ -470,35 +439,86 @@ impl Server {
                     .ops_mut()?
                     .reply(p.review_id, p.thread_id, p.body)
                     .await?;
-                ok(tools::Replied { comment_id, event })
+                ok(tools::Replied {
+                    comment_id,
+                    thread_id: p.thread_id,
+                    seq: event.seq,
+                })
             }
             MutatingCall::Resolve(p) => {
-                let m = if p.resolved {
-                    Mutation::ResolveThread {
-                        review_id: p.review_id,
-                        thread_id: p.thread_id,
-                    }
+                let resolution = if p.resolved {
+                    tools::Resolution::Resolved
                 } else {
-                    Mutation::UnresolveThread {
+                    tools::Resolution::Open
+                };
+                let m = match resolution {
+                    tools::Resolution::Resolved => Mutation::ResolveThread {
                         review_id: p.review_id,
                         thread_id: p.thread_id,
-                    }
+                    },
+                    tools::Resolution::Open => Mutation::UnresolveThread {
+                        review_id: p.review_id,
+                        thread_id: p.thread_id,
+                    },
                 };
                 let event = self.ops_mut()?.mutate(m).await?;
-                ok(tools::Committed { event })
+                ok(tools::Resolved {
+                    review_id: p.review_id,
+                    thread_id: p.thread_id,
+                    resolution,
+                    seq: event.seq,
+                })
             }
             MutatingCall::RequestReview(p) => {
                 let event = self
                     .ops_mut()?
                     .mutate(Mutation::RequestReview {
                         review_id: p.review_id,
-                        agent: p.agent,
+                        agent: p.agent.clone(),
                         note: p.note,
                     })
                     .await?;
-                ok(tools::Committed { event })
+                ok(tools::Requested {
+                    review_id: p.review_id,
+                    agent: p.agent,
+                    seq: event.seq,
+                })
             }
         }
+    }
+
+    async fn create_review(&mut self, p: tools::CreateReview) -> Result<Value, ToolError> {
+        let ops = self.ops_mut()?;
+        let implicit = p.workspace_id.is_none() || p.targets.iter().any(|t| t.repo_id.is_none());
+        let here = if implicit {
+            Some(ops.locate(Path::new(".")).await?)
+        } else {
+            None
+        };
+        let workspace_id = p
+            .workspace_id
+            .or_else(|| here.as_ref().map(|h| h.workspace.id))
+            .ok_or_else(|| ToolError::Invalid("workspace_id".into()))?;
+        let targets = NonEmpty::new(
+            p.targets
+                .into_iter()
+                .map(|t| {
+                    Ok(ReviewTarget {
+                        repo_id: t
+                            .repo_id
+                            .or_else(|| here.as_ref().map(|h| h.repo.id))
+                            .ok_or_else(|| ToolError::Invalid("repo_id".into()))?,
+                        base: t.base,
+                        head: t.head,
+                    })
+                })
+                .collect::<Result<Vec<_>, ToolError>>()?,
+        )?;
+        let (review_id, event) = ops.create_review(workspace_id, p.title, targets).await?;
+        ok(tools::Created {
+            review_id,
+            seq: event.seq,
+        })
     }
 
     async fn add_comment(&mut self, p: tools::AddComment) -> Result<Value, ToolError> {
@@ -523,7 +543,7 @@ impl Server {
         let (t, event) = ops
             .new_thread(p.review_id, CommentKind::Note, anchor, p.body)
             .await?;
-        thread_json(t, event)
+        thread_json(t, event.seq)
     }
 
     async fn suggest(&mut self, p: tools::Suggest) -> Result<Value, ToolError> {
@@ -546,15 +566,15 @@ impl Server {
                 p.body,
             )
             .await?;
-        thread_json(t, event)
+        thread_json(t, event.seq)
     }
 }
 
-fn thread_json(t: nitsd::ops::NewThread, event: nits_protocol::Event) -> Result<Value, ToolError> {
+fn thread_json(t: nitsd::ops::NewThread, seq: nits_protocol::Seq) -> Result<Value, ToolError> {
     ok(tools::NewThread {
         comment_id: t.comment_id,
         thread_id: t.thread_id,
-        event,
+        seq,
     })
 }
 
