@@ -165,6 +165,16 @@ impl Core {
         }
     }
 
+    /// The workspace retained in a stored review, including its tombstone.
+    /// Event replay needs this association after deletion; live review APIs
+    /// continue to reject deleted reviews through [`Self::review`].
+    pub fn stored_review_workspace(&self, id: ReviewId) -> Result<WorkspaceId, CoreError> {
+        self.store
+            .review(id)?
+            .map(|record| record.review.workspace_id)
+            .ok_or_else(|| CoreError::not_found(EntityKind::Review, &id))
+    }
+
     /// Create a review and resolve its targets immediately.
     pub fn create_review(
         &self,
