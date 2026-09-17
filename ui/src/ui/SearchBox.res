@@ -1,56 +1,62 @@
-// Fuzzy file search (§5.5): typing dispatches `FileSearch`, Down/Up step
-// the highlighted hit (core state), Enter opens it, Esc closes. All hits
-// come from the core; nothing is fetched.
-
+// File search owns the query and selection in the core; the shared
+// navigation model owns the input/result focus zones.
 open View
-
-// jsdom has no scrollIntoView; guard so component tests can mount this.
-let scrollNearest: Dom.element => unit = %raw(`el => el.scrollIntoView && el.scrollIntoView({block: "nearest"})`)
 
 @react.component
 let make = (~search: SearchView.t, ~dispatch: Action.t => unit) => {
-  let onKey = key =>
-    switch key {
-    | "Escape" => dispatch(FileSearch({query: None}))
-    | "ArrowDown" => dispatch(SearchStep({delta: 1}))
-    | "ArrowUp" => dispatch(SearchStep({delta: -1}))
-    | "Enter" =>
-      switch search.hits[search.selected] {
-      | Some(hit) => dispatch(Viewport({file: hit.file, firstRow: 0, lastRow: 59}))
-      | None => ()
-      }
-    | _ => ()
-    }
+  let (
+    selected,
+    inputRef,
+    resultsRef,
+    toInput,
+    onResultsFocus,
+    onChange,
+    onInputKey,
+    onResultsKey,
+  ) = SearchNavigation.useNavigation(
+    ~count=Array.length(search.hits),
+    ~selected=search.selected,
+    ~step=delta => dispatch(SearchStep({search: Files, delta})),
+    ~query=search.query,
+    ~change=query => dispatch(FileSearch({query: Some(query)})),
+    ~submit=() => dispatch(OpenSearchResult({search: Files, query: search.query})),
+    ~close=() => dispatch(FileSearch({query: None})),
+  )
+  let id = React.useId()
+  let hitId = i => id ++ "-" ++ Int.toString(i)
   <div className="search-box panel" role="search">
     <UI.TextInput
       autoFocus=true
       placeholder="file…"
       value=search.query
-      onChange={q => dispatch(FileSearch({query: Some(q)}))}
-      onKey
-      preventKeys=["ArrowDown", "ArrowUp"]
+      onChange
+      inputRef={ReactDOM.Ref.domRef(inputRef)}
+      onFocus=toInput
+      onKeyEvent=onInputKey
     />
-    <ul className="search-hits">
+    <UI.SearchResults
+      kind=Files
+      label="files"
+      listRef={ReactDOM.Ref.domRef(resultsRef)}
+      onKey=onResultsKey
+      onFocus=onResultsFocus
+      activeId={selected->Option.map(hitId)}
+    >
       {search.hits
       ->Array.mapWithIndex((h, i) =>
-        <li
+        <div
           key={h.file.path ++ Int.toString(i)}
-          className={"search-hit" ++ (i == search.selected ? " selected" : "")}
-          ref={ReactDOM.Ref.callbackDomRef(el => {
-            if i == search.selected {
-              switch el->Nullable.toOption {
-              | Some(el) => el->scrollNearest
-              | None => ()
-              }
-            }
-            None
-          })}
+          id={hitId(i)}
+          role="option"
+          ariaSelected={selected == Some(i)}
+          className={"search-hit" ++ (selected == Some(i) ? " selected" : "")}
           onClick={_ => dispatch(Viewport({file: h.file, firstRow: 0, lastRow: 59}))}
         >
           {React.string(h.file.path)}
-        </li>
+        </div>
       )
       ->React.array}
-    </ul>
+      {Array.length(search.hits) == 0 ? <UI.Empty text="no files match" /> : React.null}
+    </UI.SearchResults>
   </div>
 }

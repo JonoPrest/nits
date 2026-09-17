@@ -126,6 +126,13 @@ pub enum TransportEvent {
     Disconnected,
 }
 
+/// Which core-owned search supplies the result being activated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SearchKind {
+    Files,
+    Content,
+}
+
 /// A user intent, already resolved from keys or clicks by the host. Crosses
 /// the host ↔ UI boundary (Tauri `dispatch`), hence serde.
 #[derive(Debug, Clone, PartialEq, Eq, EnumDiscriminants, Serialize, Deserialize)]
@@ -332,10 +339,16 @@ pub enum Action {
     EnterVisual,
     /// Leave Visual mode without commenting (`esc`, `V` again).
     LeaveVisual,
-    /// Step the highlighted result of the open search (file find, content
-    /// search) while the input keeps focus; the shell forwards Down/Up.
+    /// Step the highlighted result while the search result list owns focus.
     SearchStep {
+        search: SearchKind,
         delta: i32,
+    },
+    /// Activate the core's current selection after preceding navigation,
+    /// only if the visible query still matches the current results.
+    OpenSearchResult {
+        search: SearchKind,
+        query: String,
     },
     /// Open the git-backed selector for one side of one repo target.
     OpenRefSelector {
@@ -618,6 +631,9 @@ pub struct ClientCore {
     /// content rather than the row index (§6.5).
     realign: Option<Realign>,
     ref_selector: Option<ref_selector::RefSelector>,
+    /// Only this request may replace content-search results. Closing or
+    /// replacing the query invalidates earlier responses, even for equal text.
+    latest_search: Option<RequestId>,
 }
 
 /// Browsing one repo at an arbitrary ref.
@@ -673,6 +689,7 @@ impl ClientCore {
             visual_anchor: None,
             realign: None,
             ref_selector: None,
+            latest_search: None,
             keys_handled: 0,
             last_key: None,
         }
@@ -1997,6 +2014,7 @@ impl ClientCore {
                 let scope = open.scope;
                 match query {
                     None => {
+                        self.latest_search = None;
                         self.view.content_search = None;
                         Ok(vec![render(&[ViewSection::Search])])
                     }
@@ -2005,6 +2023,7 @@ impl ClientCore {
                         if ask {
                             self.require_subscribed()?;
                         }
+                        self.latest_search = None;
                         self.view.content_search = Some(ContentSearchView {
                             query: query.clone(),
                             all_files,
@@ -2062,7 +2081,7 @@ impl ClientCore {
                 }
                 Ok(Vec::new())
             }
-            Action::SearchStep { delta } => {
+            Action::SearchStep { search, delta } => {
                 let step = |sel: usize, len: usize| -> usize {
                     if len == 0 {
                         return 0;
@@ -2071,20 +2090,68 @@ impl ClientCore {
                     let cur = i64::try_from(sel).unwrap_or(i64::MAX).min(max);
                     usize::try_from((cur + i64::from(delta)).clamp(0, max)).unwrap_or(0)
                 };
-                if self.explorer.search.is_some() {
-                    let len = self.view.tree.search.as_ref().map_or(0, |s| s.hits.len());
-                    self.explorer.search_selected = step(self.explorer.search_selected, len);
-                    // The tree (and its search view) is derived after this
-                    // returns.
-                    Ok(Vec::new())
-                } else if let Some(cs) = &mut self.view.content_search {
-                    cs.selected = step(cs.selected, cs.hits.len());
-                    Ok(vec![render(&[ViewSection::Search])])
-                } else {
-                    Err(CoreError::NoTarget(focus::NoTarget::Nothing(
-                        Command::MoveDown,
-                    )))
+                match search {
+                    SearchKind::Files => {
+                        let Some(search) = &self.view.tree.search else {
+                            return Err(CoreError::NoTarget(focus::NoTarget::Nothing(
+                                Command::MoveDown,
+                            )));
+                        };
+                        self.explorer.search_selected = step(search.selected, search.hits.len());
+                        Ok(Vec::new())
+                    }
+                    SearchKind::Content => {
+                        let Some(search) = &mut self.view.content_search else {
+                            return Err(CoreError::NoTarget(focus::NoTarget::Nothing(
+                                Command::MoveDown,
+                            )));
+                        };
+                        search.selected = step(search.selected, search.hits.len());
+                        Ok(vec![render(&[ViewSection::Search])])
+                    }
                 }
+            }
+            Action::OpenSearchResult { search, query } => {
+                let target = match search {
+                    SearchKind::Files => self
+                        .view
+                        .tree
+                        .search
+                        .as_ref()
+                        .filter(|s| s.query == query)
+                        .and_then(|s| s.hits.get(s.selected))
+                        .map(|hit| (hit.file.clone(), 0, 59)),
+                    SearchKind::Content => self
+                        .view
+                        .content_search
+                        .as_ref()
+                        .filter(|s| s.query == query && !s.pending)
+                        .and_then(|s| s.hits.get(s.selected))
+                        .map(|hit| {
+                            (
+                                FileRef {
+                                    repo_id: hit.repo_id,
+                                    path: hit.path.clone(),
+                                },
+                                hit.line.get().saturating_sub(30),
+                                hit.line.get().saturating_add(30),
+                            )
+                        }),
+                };
+                let Some((file, first_row, last_row)) = target else {
+                    return Ok(Vec::new());
+                };
+                let mut effects = self.user(Action::Viewport {
+                    file,
+                    first_row,
+                    last_row,
+                })?;
+                if search == SearchKind::Content {
+                    self.view.content_search = None;
+                    self.latest_search = None;
+                    effects.push(render(&[ViewSection::Search]));
+                }
+                Ok(effects)
             }
             Action::OpenRefSelector { repo_id, side } => {
                 self.require_subscribed()?;
@@ -2609,6 +2676,7 @@ impl ClientCore {
         self.browse = None;
         self.visual_anchor = None;
         self.view.content_search = None;
+        self.latest_search = None;
         self.view.action_palette = false;
         self.ref_selector = None;
         self.review_closed(effects);
@@ -2669,6 +2737,9 @@ impl ClientCore {
     pub(crate) fn request(&mut self, request: Request, waiting: InFlight) -> Effect {
         let id = RequestId::new(self.next_request);
         self.next_request += 1;
+        if matches!(waiting, InFlight::Search) {
+            self.latest_search = Some(id);
+        }
         self.in_flight.insert(id, waiting);
         Effect::Send(ClientMsg::Request { id, request })
     }
@@ -3192,8 +3263,12 @@ impl ClientCore {
                 }
             }
             (InFlight::Search, Response::Search { hits, truncated }) => {
-                if let Some(cs) = &mut self.view.content_search {
+                if self.latest_search == Some(id)
+                    && let Some(cs) = &mut self.view.content_search
+                {
+                    self.latest_search = None;
                     cs.hits = hits;
+                    cs.selected = cs.selected.min(cs.hits.len().saturating_sub(1));
                     cs.truncated = truncated;
                     cs.pending = false;
                     vec![render(&[ViewSection::Search])]

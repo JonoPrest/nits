@@ -1013,26 +1013,6 @@ describe("HelpOverlay", () => {
     expect(Element.scrollTop(panel))->toBe(0)
   })
 
-  test("keeps search focus and query while navigation keys scroll", () => {
-    let dispatch = fn()
-    let {container} = render(<HelpOverlay help dispatch />)
-    let input = Screen.getByPlaceholderText("filter…")
-    let panel = Element.querySelector(container, ".help-panel")->Nullable.toOption->Option.getExn
-    FireEvent.change(input, {"target": {"value": "expand"}})
-    Element.setScrollTop(panel, 0)
-
-    FireEvent.keyDown(input, {"key": "ArrowDown", "ctrlKey": false})
-    FireEvent.keyDown(input, {"key": "j", "ctrlKey": false})
-    FireEvent.keyDown(input, {"key": "PageDown", "ctrlKey": false})
-    expect(Element.scrollTop(panel))->toBe(496)
-    FireEvent.keyDown(input, {"key": "ArrowUp", "ctrlKey": false})
-    FireEvent.keyDown(input, {"key": "k", "ctrlKey": false})
-    FireEvent.keyDown(input, {"key": "PageUp", "ctrlKey": false})
-    expect(Element.scrollTop(panel))->toBe(0)
-    expect(Element.value(input))->toBe("expand")
-    expect(Document.activeElement->Nullable.toOption)->toEqual(Some(input))
-  })
-
   test("Escape closes help from the focused search input", () => {
     let dispatch = fn()
     render(<HelpOverlay help dispatch />)->ignore

@@ -1,14 +1,11 @@
 // The palette (UI-DESIGN §Search): one overlay, `F` opens content
-// search, `:` opens actions; `tab` cycles between them. Content results
+// search, `:` opens actions; Tab enters results. Content results
 // come from the daemon (`ViewModel.contentSearch`); actions are the
 // keymap chrome — never hand-written.
 
 open View
 
 type mode = Content | Actions
-
-// jsdom has no scrollIntoView; guard so component tests can mount this.
-let scrollNearest: Dom.element => unit = %raw(`el => el.scrollIntoView && el.scrollIntoView({block: "nearest"})`)
 
 @react.component
 let make = (
@@ -18,7 +15,7 @@ let make = (
   ~dispatch: Action.t => unit,
 ) => {
   let mode = actionPalette ? Actions : Content
-  let (text, setText) = React.useState(() => "")
+  let (text, setText) = React.useState(() => contentSearch->Option.mapOr("", c => c.query))
   // Actions-mode selection is UI state: the filtered list lives here.
   let (actionSel, setActionSel) = React.useState(() => 0)
   let close = () =>
@@ -100,14 +97,11 @@ let make = (
       // one; otherwise it (re)runs the search.
       switch contentSearch {
       | Some(c) if c.query == text && !c.pending =>
-        switch c.hits[c.selected] {
-        | Some(h) => openHit(h)
-        | None => dispatch(ContentSearch({query: Some(text), allFiles}))
-        }
+        dispatch(OpenSearchResult({search: Content, query: text}))
       | _ => dispatch(ContentSearch({query: Some(text), allFiles}))
       }
     | Actions =>
-      switch actions->Array.get(actionSel)->Option.orElse(actions->Array.get(0)) {
+      switch actions->Array.get(Math.Int.min(actionSel, Array.length(actions) - 1)) {
       | Some(h) => {
           dispatch(ActionPalette({open_: false}))
           dispatch(RunCommand({command: h.command}))
@@ -117,22 +111,52 @@ let make = (
     }
   let step = delta =>
     switch mode {
-    | Content => dispatch(SearchStep({delta: delta}))
+    | Content => dispatch(SearchStep({search: Content, delta}))
     | Actions => {
         let n = Array.length(actions)
-        setActionSel(sel => n == 0 ? 0 : Math.Int.min(Math.Int.max(sel + delta, 0), n - 1))
+        setActionSel(sel =>
+          n == 0 ? 0 : Math.Int.min(Math.Int.max(Math.Int.min(sel, n - 1) + delta, 0), n - 1)
+        )
       }
     }
-  let onKey = k =>
-    switch k {
-    | "Escape" => close()
-    | "Enter" => submit()
-    | "Tab" => switchMode()
-    | "ArrowDown" => step(1)
-    | "ArrowUp" => step(-1)
-    | _ => ()
-    }
-  <div className="palette-overlay" role="dialog" ariaLabel="palette">
+  let count = switch mode {
+  | Content =>
+    contentSearch->Option.mapOr(0, c => c.pending || c.query != text ? 0 : Array.length(c.hits))
+  | Actions => Array.length(actions)
+  }
+  let current = switch mode {
+  | Content => contentSearch->Option.mapOr(0, c => c.selected)
+  | Actions => actionSel
+  }
+  let (
+    selected,
+    inputRef,
+    resultsRef,
+    toInput,
+    onResultsFocus,
+    onChange,
+    onInputKey,
+    onResultsKey,
+  ) = SearchNavigation.useNavigation(
+    ~count,
+    ~selected=current,
+    ~step,
+    ~query=text,
+    ~change=value => {
+      setText(_ => value)
+      setActionSel(_ => 0)
+    },
+    ~submit,
+    ~close,
+  )
+  let id = React.useId()
+  let hitId = i => id ++ "-" ++ Int.toString(i)
+  <div
+    className="palette-overlay"
+    role="dialog"
+    ariaLabel="palette"
+    onKeyDown={ev => SearchNavigation.closeOnEscape(close, ev)}
+  >
     <div className="palette">
       <div className="palette-tabs">
         <span className={"palette-tab" ++ (mode == Content ? " active" : "")}>
@@ -141,97 +165,93 @@ let make = (
         <span className={"palette-tab" ++ (mode == Actions ? " active" : "")}>
           {React.string("Actions")}
         </span>
-        <span className="palette-hint">
-          <UI.Kbd keys="tab" />
-          {React.string(" switch · ")}
-          <UI.Kbd keys="esc" />
-          {React.string(" close")}
-        </span>
       </div>
       <UI.TextInput
         value=text
         autoFocus=true
         placeholder={mode == Content ? "search file contents (enter)" : "run a command"}
-        onChange={v => {
-          setText(_ => v)
-          setActionSel(_ => 0)
-        }}
-        onKey
-        preventKeys=["Tab", "ArrowDown", "ArrowUp"]
+        onChange
+        inputRef={ReactDOM.Ref.domRef(inputRef)}
+        onFocus=toInput
+        onKeyEvent=onInputKey
       />
       {switch mode {
       | Content => {
           let cs = contentSearch
           <div className="palette-results">
-            <label className="palette-scope">
-              <input
-                type_="checkbox"
-                checked=allFiles
-                onChange={_ =>
-                  dispatch(
-                    ContentSearch({
-                      query: Some(cs->Option.mapOr("", c => c.query)),
-                      allFiles: !allFiles,
-                    }),
-                  )}
-              />
-              {React.string(" all files (not just changed)")}
-            </label>
             {switch cs {
+            | Some(c) if c.query != text => <UI.Empty text="press Enter to search" />
             | Some(c) if c.pending => <UI.Empty text="searching…" />
             | Some(c) if c.query != "" && Array.length(c.hits) == 0 =>
               <UI.Empty text="no matches" />
             | Some(c) =>
-              <ul role="list">
+              <UI.SearchResults
+                kind=Palette
+                label="content matches"
+                listRef={ReactDOM.Ref.domRef(resultsRef)}
+                onKey=onResultsKey
+                onFocus=onResultsFocus
+                activeId={selected->Option.map(hitId)}
+              >
                 {c.hits
                 ->Array.mapWithIndex((h, i) =>
-                  <li
+                  <div
                     key={Int.toString(i)}
-                    className={"search-hit" ++ (i == c.selected ? " selected" : "")}
-                    ref={ReactDOM.Ref.callbackDomRef(el => {
-                      if i == c.selected {
-                        switch el->Nullable.toOption {
-                        | Some(el) => el->scrollNearest
-                        | None => ()
-                        }
-                      }
-                      None
-                    })}
+                    id={hitId(i)}
+                    role="option"
+                    ariaSelected={selected == Some(i)}
+                    className={"search-hit" ++ (selected == Some(i) ? " selected" : "")}
                     onClick={_ => openHit(h)}
                   >
                     <span className="hit-path">
                       {React.string(h.path ++ ":" ++ Int.toString(h.line))}
                     </span>
                     <span className="hit-text"> {React.string(h.text)} </span>
-                  </li>
+                  </div>
                 )
                 ->React.array}
                 {c.truncated
-                  ? <li className="palette-truncated">
+                  ? <div className="palette-truncated">
                       {React.string("more matches not shown")}
-                    </li>
+                    </div>
                   : React.null}
-              </ul>
+              </UI.SearchResults>
             | None => React.null
             }}
+            <label className="palette-scope">
+              <input
+                type_="checkbox"
+                checked=allFiles
+                onKeyDown={ev => ReactEvent.Keyboard.stopPropagation(ev)}
+                onChange={_ =>
+                  dispatch(
+                    ContentSearch({
+                      query: Some(text),
+                      allFiles: !allFiles,
+                    }),
+                  )}
+              />
+              {React.string(" all files (not just changed)")}
+            </label>
           </div>
         }
       | Actions =>
-        <ul className="palette-results" role="list">
+        <UI.SearchResults
+          kind=Palette
+          label="actions"
+          listRef={ReactDOM.Ref.domRef(resultsRef)}
+          onKey=onResultsKey
+          onFocus=onResultsFocus
+          activeId={selected->Option.map(hitId)}
+        >
           {actions
           ->Array.mapWithIndex((h, i) =>
-            <li
+            <div
               key={h.keys ++ h.label}
-              className={"search-hit" ++ (i == actionSel ? " selected" : "")}
-              ref={ReactDOM.Ref.callbackDomRef(el => {
-                if i == actionSel {
-                  switch el->Nullable.toOption {
-                  | Some(el) => el->scrollNearest
-                  | None => ()
-                  }
-                }
-                None
-              })}
+              id={hitId(i)}
+              role="option"
+              ariaSelected={selected == Some(i)}
+              className={"search-hit" ++ (selected == Some(i) ? " selected" : "")}
               onClick={_ => {
                 dispatch(ActionPalette({open_: false}))
                 dispatch(RunCommand({command: h.command}))
@@ -239,11 +259,21 @@ let make = (
             >
               <span className="hit-text"> {React.string(h.label)} </span>
               <UI.Kbd keys=h.keys />
-            </li>
+            </div>
           )
           ->React.array}
-        </ul>
+        </UI.SearchResults>
       }}
+      <UI.Button
+        label={mode == Content ? "Actions" : "Content"}
+        kind=Ghost
+        title=?{Chrome.tip(chrome, mode == Content ? ActionPalette : ContentSearch)}
+        onClick={() => {
+          toInput()
+          switchMode()
+        }}
+      />
+      <UI.Button label="close ⎋" kind=Ghost onClick=close />
     </div>
   </div>
 }

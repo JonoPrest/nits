@@ -803,7 +803,14 @@ enum_fixture!(
         },
         Action::EnterVisual,
         Action::LeaveVisual,
-        Action::SearchStep { delta: 1 },
+        Action::SearchStep {
+            search: nits_client_core::SearchKind::Files,
+            delta: 1
+        },
+        Action::OpenSearchResult {
+            search: nits_client_core::SearchKind::Content,
+            query: "todo".into()
+        },
         Action::OpenRefSelector {
             repo_id: repo_id()?,
             side: RefSelectorSide::Base,
