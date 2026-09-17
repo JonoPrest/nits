@@ -250,3 +250,50 @@ module TextInput = {
       }}
     />
 }
+
+/// CommonMark comment bodies are presentation only: the original source
+/// stays in the view model and the composer. Raw HTML is rendered as text
+/// by react-markdown; do not add a raw-HTML plugin or override its safe URL
+/// transform. Links with a rejected URL retain their readable label.
+module Markdown = {
+  module Link = {
+    @react.component
+    let make = (~href: option<string>=?, ~title: option<string>=?, ~children) =>
+      switch href {
+      | None | Some("") => <span> children </span>
+      | Some(href) =>
+        <a
+          href
+          ?title
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-accent underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-accent"
+          onClick={ev => ReactEvent.Mouse.stopPropagation(ev)}
+          onKeyDown={ev => {
+            // Native Enter activation must not also run the app keymap's
+            // command for the focused thread.
+            if ReactEvent.Keyboard.key(ev) == "Enter" {
+              ReactEvent.Keyboard.stopPropagation(ev)
+            }
+          }}
+        >
+          children
+        </a>
+      }
+  }
+
+  module Render = {
+    type components = {a: React.component<Link.props<string, string, React.element>>}
+
+    @module("react-markdown") @react.component
+    external make: (~children: string, ~components: components) => React.element = "default"
+  }
+
+  @react.component
+  let make = (~source: string) =>
+    <div
+      className="min-w-0 break-words text-sm [&>*+*]:mt-2 [&_p]:whitespace-pre-wrap [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li>ul]:mt-1 [&_li>ol]:mt-1 [&_code]:rounded [&_code]:bg-panel [&_code]:px-1 [&_code]:font-mono [&_code]:text-xs [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-panel [&_pre]:p-2 [&_pre]:whitespace-pre [&_pre_code]:p-0 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_h4]:font-semibold [&_h5]:font-semibold [&_h6]:font-semibold [&_img]:max-w-full"
+    >
+      <Render components={a: Link.make}> source </Render>
+    </div>
+}

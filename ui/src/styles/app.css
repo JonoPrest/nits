@@ -556,7 +556,7 @@
     @apply opacity-60;
   }
   .thread-body {
-    @apply whitespace-pre-wrap text-sm;
+    @apply min-w-0;
   }
   .thread-item.resolved .thread-summary {
     @apply line-through text-muted;

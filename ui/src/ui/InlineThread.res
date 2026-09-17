@@ -12,6 +12,7 @@ let make = (
   ~composer: React.element,
   ~dispatch: Action.t => unit,
 ) => {
+  let (focusRef, onKeyDown) = ThreadFocus.use(~focused)
   let flags =
     [
       thread.resolved ? "resolved" : "",
@@ -22,6 +23,9 @@ let make = (
     <div
       className={["inline-thread", ...flags]->Array.join(" ")}
       role="note"
+      ref={ReactDOM.Ref.domRef(focusRef)}
+      tabIndex={focused ? 0 : -1}
+      onKeyDown
       onClick={ev => {
         ReactEvent.Mouse.stopPropagation(ev)
         dispatch(SetFocus({focus: Focus.Thread({index: index})}))
@@ -39,7 +43,9 @@ let make = (
               ? <span className="thread-pending"> {React.string("…")} </span>
               : React.null}
           </div>
-          <div className="thread-body"> {React.string(c.body)} </div>
+          <div className="thread-body">
+            <UI.Markdown source=c.body />
+          </div>
         </div>
       )
       ->React.array}
