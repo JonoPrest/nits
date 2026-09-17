@@ -59,12 +59,34 @@ impl LocalBranch {
         &self.0
     }
 
+    fn from_qualified(reference: &str) -> Option<Self> {
+        reference.strip_prefix("refs/heads/").and_then(Self::new)
+    }
+
     fn qualified(&self) -> String {
         format!("refs/heads/{}", self.0)
     }
 
     fn into_ref_spec(self) -> RefSpec {
         RefSpec::Branch { name: self.0 }
+    }
+}
+
+/// A fully qualified remote-tracking branch from git's ref database or a
+/// local branch's configured upstream. It may be absent in an unfetched repo.
+#[derive(Debug)]
+struct RemoteBranch(String);
+
+impl RemoteBranch {
+    fn from_qualified(reference: &str) -> Option<Self> {
+        reference
+            .strip_prefix("refs/remotes/")
+            .filter(|name| !name.is_empty())
+            .map(|_| Self(reference.to_owned()))
+    }
+
+    fn origin_counterpart(branch: &LocalBranch) -> Self {
+        Self(format!("refs/remotes/origin/{}", branch.as_str()))
     }
 }
 
@@ -157,13 +179,17 @@ impl Repo {
 
     // ---- refs -------------------------------------------------------------
 
-    /// Choose the branch a working-tree review should be based on.
+    /// Choose the revision a working-tree review should be based on.
     ///
     /// Git does not retain a durable parent-branch relationship, so this
     /// follows a deterministic ladder: a named reflog creation source, the
     /// closest local branch by merge-base distance, then a detected trunk.
     /// The checked-out trunk is handled before ancestor ranking so a feature
     /// branch created from it cannot be mistaken for its parent.
+    /// Trunk is ranked at its remote-tracking merge-base with HEAD if that
+    /// advances the local trunk, so unrelated sibling branches cannot beat
+    /// a stale trunk. This reads existing refs; it never fetches or moves
+    /// them, or overrides a named stack parent.
     pub fn default_base(&self) -> Result<RefSpec, GitError> {
         let branches = self.local_branches()?;
         let current = self.current_branch()?;
@@ -178,32 +204,79 @@ impl Repo {
         if let Some(branch) = current.as_ref()
             && let Some(parent) = self.reflog_parent(branch, &branches)?
         {
-            return Ok(parent.into_ref_spec());
+            return self.parent_base(parent, trunk.as_ref());
         }
 
         if let Some(parent) = self.closest_branch(current.as_ref(), trunk.as_ref(), &branches)? {
-            return Ok(parent.into_ref_spec());
+            return self.parent_base(parent, trunk.as_ref());
         }
 
-        trunk
-            .map(LocalBranch::into_ref_spec)
-            .ok_or_else(|| GitError::DefaultBase {
-                path: self.workdir.clone(),
-            })
+        let parent = trunk.clone().ok_or_else(|| GitError::DefaultBase {
+            path: self.workdir.clone(),
+        })?;
+        self.parent_base(parent, trunk.as_ref())
+    }
+
+    fn parent_base(
+        &self,
+        parent: LocalBranch,
+        trunk: Option<&LocalBranch>,
+    ) -> Result<RefSpec, GitError> {
+        if trunk == Some(&parent)
+            && let Some(oid) = self.advanced_remote_trunk_base(&parent)?
+        {
+            return Ok(RefSpec::Commit { oid });
+        }
+        Ok(parent.into_ref_spec())
+    }
+
+    /// A remote trunk can advance independently after the feature's last
+    /// rebase. Pin the shared ancestor, never the remote tip: reviewing
+    /// against the tip would include changes the feature has not incorporated.
+    /// Require the shared ancestor to descend from local trunk so a diverged
+    /// local branch's commits cannot silently disappear from the base.
+    fn advanced_remote_trunk_base(
+        &self,
+        trunk: &LocalBranch,
+    ) -> Result<Option<CommitOid>, GitError> {
+        let trunk_ref = trunk.qualified();
+        let upstream = self.git(&["for-each-ref", "--format=%(upstream)", &trunk_ref], &[])?;
+        let remote = RemoteBranch::from_qualified(String::from_utf8_lossy(&upstream).trim())
+            .unwrap_or_else(|| RemoteBranch::origin_counterpart(trunk));
+        let Some(out) = self.git_probe(&["merge-base", &remote.0, "HEAD"])? else {
+            return Ok(None);
+        };
+        let merge_base = String::from_utf8_lossy(&out)
+            .trim()
+            .parse::<CommitOid>()
+            .map_err(|error| GitError::Parse(format!("merge-base oid: {error}")))?;
+        let local_tip = self.rev_parse_commit(&trunk_ref)?;
+        if local_tip == merge_base
+            || self
+                .git_probe(&[
+                    "merge-base",
+                    "--is-ancestor",
+                    &local_tip.to_string(),
+                    &merge_base.to_string(),
+                ])?
+                .is_none()
+        {
+            return Ok(None);
+        }
+        Ok(Some(merge_base))
     }
 
     fn current_branch(&self) -> Result<Option<LocalBranch>, GitError> {
         Ok(self
-            .git_probe(&["symbolic-ref", "--quiet", "--short", "HEAD"])?
-            .and_then(|out| LocalBranch::new(String::from_utf8_lossy(&out).trim().to_owned())))
+            .git_probe(&["symbolic-ref", "--quiet", "HEAD"])?
+            .and_then(|out| LocalBranch::from_qualified(String::from_utf8_lossy(&out).trim())))
     }
 
     fn local_branches(&self) -> Result<Vec<LocalBranch>, GitError> {
         let out = self.git(&["for-each-ref", "--format=%(refname)", "refs/heads/"], &[])?;
         let mut branches: Vec<LocalBranch> = String::from_utf8_lossy(&out)
             .lines()
-            .filter_map(|line| line.trim().strip_prefix("refs/heads/"))
-            .filter_map(|name| LocalBranch::new(name.to_owned()))
+            .filter_map(|line| LocalBranch::from_qualified(line.trim()))
             .collect();
         branches.sort();
         Ok(branches)
@@ -276,8 +349,17 @@ impl Repo {
         let Some(source) = source else {
             return Ok(None);
         };
+        // A local branch may itself be called `origin/parent`. Prefer the
+        // literal local name before interpreting a remote shorthand.
+        if let Some(branch) = branches
+            .iter()
+            .find(|branch| branch.as_str() == source && *branch != current)
+        {
+            return Ok(Some(branch.clone()));
+        }
         let source = source
             .strip_prefix("refs/heads/")
+            .or_else(|| source.strip_prefix("refs/remotes/origin/"))
             .or_else(|| source.strip_prefix("origin/"))
             .unwrap_or(&source);
         Ok(branches
@@ -302,8 +384,17 @@ impl Repo {
             if current == Some(branch) {
                 continue;
             }
-            let branch_ref = branch.qualified();
-            let branch_tip = self.rev_parse_commit(&branch_ref)?;
+            let local_tip = self.rev_parse_commit(&branch.qualified())?;
+            // Rank the effective trunk base alongside local parent branches.
+            // Correcting trunk only after ranking would let a sibling from
+            // the newer remote trunk beat the stale local trunk first.
+            let branch_tip = if trunk == Some(branch) {
+                self.advanced_remote_trunk_base(branch)?
+                    .unwrap_or(local_tip)
+            } else {
+                local_tip
+            };
+            let branch_ref = branch_tip.to_string();
             // A descendant of HEAD is not an ancestor candidate. A second
             // branch at the exact same commit is retained: that is common
             // immediately after cutting a stacked branch.
@@ -341,14 +432,15 @@ impl Repo {
                 .find(|branch| branch.as_str() == name)
                 .cloned()
         };
-        if let Some(out) = self.git_probe(&[
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "refs/remotes/origin/HEAD",
-        ])? {
+        if let Some(out) =
+            self.git_probe(&["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])?
+        {
             let target = String::from_utf8_lossy(&out);
-            if let Some(branch) = target.trim().strip_prefix("origin/").and_then(&find) {
+            if let Some(branch) = target
+                .trim()
+                .strip_prefix("refs/remotes/origin/")
+                .and_then(&find)
+            {
                 return Ok(Some(branch));
             }
         }

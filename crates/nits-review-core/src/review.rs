@@ -144,7 +144,7 @@ impl Core {
             .collect())
     }
 
-    /// Detect the base branch for a working-tree review in `repo_id`.
+    /// Detect the base revision for a working-tree review in `repo_id`.
     pub fn default_base(&self, repo_id: RepoId) -> Result<RefSpec, CoreError> {
         Ok(self.repo(repo_id)?.default_base()?)
     }
