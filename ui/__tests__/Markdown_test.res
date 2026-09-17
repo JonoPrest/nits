@@ -13,16 +13,51 @@ let threadWithBody = (body: string): View.ThreadView.t => {
   }
 }
 
-let commentView = (surface, thread, dispatch) =>
+let commentView = (surface, thread, dispatch, ~focused=true) =>
   switch surface {
-  | Inline => <InlineThread thread focused=true index=0 composer=React.null dispatch />
+  | Inline => <InlineThread thread focused index=0 composer=React.null dispatch />
   | Conversation =>
     <Threads
-      title="Conversation" threads=[thread] focus={Thread({index: 0})} indexOffset=0 dispatch
+      title="Conversation"
+      threads=[thread]
+      focus={focused ? Thread({index: 0}) : Tree({index: 0})}
+      indexOffset=0
+      dispatch
     />
   }
 
 let select = (container, selector) => Element.querySelector(container, selector)->Nullable.getExn
+
+module User = {
+  type t
+  type tabOptions = {shift: bool}
+  @module("@testing-library/user-event") @scope("default") external setup: unit => t = "setup"
+  @send external keyboard: (t, string) => promise<unit> = "keyboard"
+  @send external tab: (t, tabOptions) => promise<unit> = "tab"
+}
+
+// Install the shell's actual window handler. Core responses are delivered
+// by rerendering with their focus, without focusing a card/link in the test.
+module ShellKeys = {
+  @react.component
+  let make = (~core: Core.t, ~children) => {
+    React.useEffect0(() => {
+      let handler = event => App.onKeyDown(core, ~onChord=_ => (), event)
+      App.KeyEvent.listen("keydown", handler)
+      Some(() => App.KeyEvent.unlisten("keydown", handler))
+    })
+    children
+  }
+}
+
+let keyboardCore = (~key, ~dispatch): Core.t => {
+  key,
+  dispatch,
+  subscribe: _ => () => (),
+  attach: () => (),
+}
+
+let sentKeys = key => mock(key).calls->Array.map(args => App.chordText(args->Array.getUnsafe(0)))
 
 describe("comment Markdown", () => {
   let snippet = "{\n\t\"engine\": \"example\",  \n\n  \"ready\": true\n}\n"
@@ -167,5 +202,100 @@ describe("comment Markdown", () => {
         expect(dispatch)->not_->toHaveBeenCalled
       },
     )
+
+    testAsync(
+      `${name}: core focus enters the card, native Tab visits links, boundaries reach the shell`,
+      async () => {
+        let key = fn()
+        let dispatch = fn()
+        let core = keyboardCore(~key, ~dispatch)
+        let thread = threadWithBody(
+          "[first](https://example.com/one) [second](https://example.com/two)",
+        )
+        let view = focused =>
+          <ShellKeys core> {commentView(surface, thread, dispatch, ~focused)} </ShellKeys>
+        let {container, rerender} = render(view(false))
+        let user = User.setup()
+        expect(Document.activeElement)->toEqual(Nullable.make(Document.body))
+        await User.keyboard(user, "gt")
+        expect(sentKeys(key))->toEqual(["g", "t"])
+
+        // The core answers g t with Thread focus; the card, not its first
+        // link, receives DOM focus so Enter keeps its Open meaning.
+        rerender(view(true))
+        let card = select(container, "[data-focused]")
+        expect(Document.activeElement)->toEqual(Nullable.make(card))
+        await User.keyboard(user, "{Enter}")
+        expect(sentKeys(key))->toEqual(["g", "t", "enter"])
+
+        let first = select(container, "a[href='https://example.com/one']")
+        let second = select(container, "a[href='https://example.com/two']")
+        await User.tab(user, {shift: false})
+        expect(Document.activeElement)->toEqual(Nullable.make(first))
+        await User.tab(user, {shift: false})
+        expect(Document.activeElement)->toEqual(Nullable.make(second))
+        await User.tab(user, {shift: true})
+        expect(Document.activeElement)->toEqual(Nullable.make(first))
+        await User.tab(user, {shift: true})
+        expect(Document.activeElement)->toEqual(Nullable.make(card))
+        expect(sentKeys(key))->toEqual(["g", "t", "enter"])
+
+        await User.tab(user, {shift: true})
+        expect(sentKeys(key))->toEqual(["g", "t", "enter", "shift+tab"])
+        await User.tab(user, {shift: false})
+        expect(Document.activeElement)->toEqual(Nullable.make(first))
+        await User.keyboard(user, "{Enter}")
+        // Native activation is kept local to the link, without opening
+        // the thread's original diff or sending Enter to the keymap.
+        expect(sentKeys(key))->toEqual(["g", "t", "enter", "shift+tab"])
+        expect(dispatch)->not_->toHaveBeenCalled
+        await User.tab(user, {shift: false})
+        expect(Document.activeElement)->toEqual(Nullable.make(second))
+        await User.tab(user, {shift: false})
+        expect(sentKeys(key))->toEqual(["g", "t", "enter", "shift+tab", "tab"])
+        // The core's NextPanel response retires the link's native focus.
+        rerender(view(false))
+        expect(Document.activeElement)->toEqual(Nullable.make(Document.body))
+        await User.keyboard(user, "{Enter}")
+        expect(sentKeys(key))->toEqual(["g", "t", "enter", "shift+tab", "tab", "enter"])
+      },
+    )
+
+    testAsync(
+      `${name}: linkless thread cards keep Tab as a pane command`,
+      async () => {
+        let key = fn()
+        let dispatch = fn()
+        let core = keyboardCore(~key, ~dispatch)
+        let thread = threadWithBody("Plain text, without any links.")
+        let view = focused =>
+          <ShellKeys core> {commentView(surface, thread, dispatch, ~focused)} </ShellKeys>
+        let {container, rerender} = render(view(false))
+        let user = User.setup()
+        await User.keyboard(user, "gt")
+        rerender(view(true))
+        expect(Document.activeElement)->toEqual(Nullable.make(select(container, "[data-focused]")))
+        await User.tab(user, {shift: false})
+        expect(sentKeys(key))->toEqual(["g", "t", "tab"])
+        rerender(view(false))
+        expect(Document.activeElement)->toEqual(Nullable.make(Document.body))
+      },
+    )
+  })
+
+  testAsync("moving from thread focus to an inline composer preserves its autofocus", async () => {
+    let thread = threadWithBody("[issue](https://example.com/issue)")
+    let dispatch = fn()
+    let {rerender} = render(
+      <InlineThread thread focused=true index=0 composer=React.null dispatch />,
+    )
+    let user = User.setup()
+    await User.tab(user, {shift: false})
+    rerender(
+      <InlineThread
+        thread focused=false index=0 composer={<input autoFocus=true ariaLabel="reply" />} dispatch
+      />,
+    )
+    expect(Document.activeElement)->toEqual(Nullable.make(Screen.getByLabelText("reply")))
   })
 })

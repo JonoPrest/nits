@@ -26,6 +26,7 @@ module Item = {
     ~onApply: unit => unit,
     ~onOriginal: unit => unit,
   ) => {
+    let (focusRef, onKeyDown) = ThreadFocus.use(~focused)
     let flags =
       [
         thread.resolved ? "resolved" : "",
@@ -33,7 +34,13 @@ module Item = {
         thread.pending ? "pending" : "",
       ]->Array.filter(s => s != "")
     Attrs.focused(
-      <li className={"thread-item " ++ flags->Array.join(" ")} onClick={_ => onSelect()}>
+      <li
+        className={"thread-item " ++ flags->Array.join(" ")}
+        ref={ReactDOM.Ref.domRef(focusRef)}
+        tabIndex={focused ? 0 : -1}
+        onKeyDown
+        onClick={_ => onSelect()}
+      >
         <div className="thread-meta">
           <span className="thread-author"> {React.string(authorName(thread.author))} </span>
           <span className="thread-place"> {React.string(placeText(thread.place))} </span>
