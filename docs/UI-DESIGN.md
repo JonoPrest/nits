@@ -1,10 +1,16 @@
 # UI design (settled 2026-08-31)
 
-The product design for nits's review UI, agreed on the design canvas
-(<https://claude.ai/code/artifact/f9e63a11-b6cd-4b8e-8ece-8a2d95f8c623>;
-working artboards in `design/`). This is the reference the web UI is built
-to and the TUI will follow. PLAN 4.4–4.6 items are superseded by this
-where they differ.
+The editable Figma design lives in
+[Nits — Product Design](https://www.figma.com/design/tDSRazGd8iMqMqHtHjQwLl).
+It contains the repo-derived foundations and reusable UI components; the
+checked-in working artboards remain in `design/`. The original design canvas is
+also preserved at
+<https://claude.ai/code/artifact/f9e63a11-b6cd-4b8e-8ece-8a2d95f8c623>.
+
+This document and the checked-in UI tokens are authoritative when an exploratory
+design artifact differs from the implementation. The web UI is built to this
+design and the TUI will follow. PLAN 4.4–4.6 items are superseded by this where
+they differ.
 
 ## Principles
 
