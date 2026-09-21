@@ -448,18 +448,24 @@ impl Core {
             DiffScope::Worktree { repo_id } => {
                 let target = Self::target(&resolved, *repo_id)?;
                 let repo = self.repo(*repo_id)?;
-                let ResolvedSource::WorkingTree {
-                    head: Some(oid), ..
-                } = target.head.source
-                else {
-                    return Err(CoreError::invalid(
-                        "snapshot has no captured working-tree HEAD commit",
-                    ));
+                let (base, head) = match target.head.source {
+                    ResolvedSource::WorkingTree { head, .. } => {
+                        let oid = head.ok_or_else(|| {
+                            CoreError::invalid("snapshot has no captured working-tree HEAD commit")
+                        })?;
+                        (repo.resolve(&RefSpec::Commit { oid })?, target.head)
+                    }
+                    // Explicitly inspecting the live checkout remains available
+                    // for a review whose target itself is a fixed commit.
+                    ResolvedSource::Commit { .. } => (
+                        repo.resolve(&RefSpec::Head)?,
+                        repo.resolve(&RefSpec::WorkingTree)?,
+                    ),
                 };
                 Ok(NonEmpty::singleton(ResolvedTarget {
                     repo_id: *repo_id,
-                    base: repo.resolve(&RefSpec::Commit { oid })?,
-                    head: target.head,
+                    base,
+                    head,
                 }))
             }
         }

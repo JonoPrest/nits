@@ -2128,3 +2128,28 @@ fn archived_worktree_commit_scopes_and_provenance_survive_amend_and_gc() {
         dirty
     );
 }
+
+#[test]
+fn explicit_worktree_scope_remains_live_for_commit_headed_reviews() {
+    let w = world();
+    w.core
+        .create_review(&human(), review_id(1), ws(), "commits".into(), targets())
+        .unwrap();
+    let before = w.core.review_snapshot(review_id(1)).unwrap();
+    w.a.write_file("live-checkout.txt", b"new uncommitted file\n")
+        .unwrap();
+    let (files, resolved) = w
+        .core
+        .files_scoped(review_id(1), &DiffScope::Worktree { repo_id: rid(1) })
+        .unwrap();
+    assert!(
+        files
+            .iter()
+            .any(|file| file.path.as_str() == "live-checkout.txt")
+    );
+    assert!(matches!(
+        resolved.first().head.source,
+        nits_protocol::ResolvedSource::WorkingTree { head: Some(_), .. }
+    ));
+    assert_eq!(w.core.review_snapshot(review_id(1)).unwrap(), before);
+}

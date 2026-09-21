@@ -649,7 +649,8 @@ It is null for an unborn checkout or a historical snapshot without recorded HEAD
 readers never substitute the current checkout commit for that missing history.
 Schema 6 → 7 preserves historical event bodies and rebuilds views with absent HEAD
 provenance. New snapshots retain both their tree and captured commit through Git GC.
-Commit lists and committed/working-tree scopes use this captured HEAD, including
-archived reviews. A scope needing an unavailable HEAD returns an explicit error;
+Working-tree-headed reviews use this captured HEAD for commit lists and
+committed/working-tree scopes, including archived reviews. For commit-headed reviews, the explicit working-tree scope
+continues to inspect the live checkout. A scope needing an unavailable captured HEAD returns an explicit error;
 a commit list with no captured HEAD is empty. Target events also refresh the
 client commit list, and older in-flight list responses cannot replace newer ones.

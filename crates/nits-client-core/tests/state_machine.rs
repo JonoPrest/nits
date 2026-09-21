@@ -2113,3 +2113,85 @@ fn provenance_refresh_requests_new_commits_and_ignores_out_of_order_old_list() {
     assert!(effects.is_empty());
     assert_eq!(core.view(), &before);
 }
+
+#[test]
+fn pending_repository_selection_survives_provenance_refresh() {
+    let mut core = subscribed(1);
+    let rid = ReviewId::from_parts(4, 1);
+    let second = RepoId::from_parts(2, 3);
+    let effects = core
+        .handle(Input::User(Action::OpenReview { review_id: rid }))
+        .unwrap();
+    let (id, _) = sent_request(&effects).unwrap();
+    let mut snap = snapshot(rid, Seq::new(1));
+    let mut target_b = snap.review.targets.first().clone();
+    target_b.repo_id = second;
+    snap.review.targets =
+        NonEmpty::new(vec![snap.review.targets.first().clone(), target_b]).unwrap();
+    let effects = core
+        .handle(Input::Server(ServerMsg::StreamItem {
+            id,
+            item: StreamItem::ReviewSnapshot { snapshot: snap },
+        }))
+        .unwrap();
+    let initial = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::Send(ClientMsg::Request {
+                id,
+                request: Request::ListCommits { .. },
+            }) => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    core.handle(Input::Server(ServerMsg::Response {
+        id: initial,
+        response: Response::Commits { commits: vec![] },
+    }))
+    .unwrap();
+    assert_eq!(core.view().stepper.as_ref().unwrap().repo_id, repo_id());
+    let effects = core
+        .handle(Input::User(Action::ListCommits { repo_id: second }))
+        .unwrap();
+    let (pending, _) = sent_request(&effects).unwrap();
+    let a = resolved(7).first().clone();
+    let mut b = a.clone();
+    b.repo_id = second;
+    let effects = core
+        .handle(Input::Server(ServerMsg::Event {
+            event: event(
+                2,
+                EventBody::ReviewTargetsResolved {
+                    review_id: rid,
+                    targets: NonEmpty::new(vec![a, b]).unwrap(),
+                },
+            ),
+        }))
+        .unwrap();
+    let (refresh, refreshed_repo) = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::Send(ClientMsg::Request {
+                id,
+                request: Request::ListCommits { repo_id, .. },
+            }) => Some((*id, *repo_id)),
+            _ => None,
+        })
+        .unwrap();
+    core.handle(Input::Server(ServerMsg::Response {
+        id: pending,
+        response: Response::Commits { commits: vec![] },
+    }))
+    .unwrap();
+    core.handle(Input::Server(ServerMsg::Response {
+        id: refresh,
+        response: Response::Commits { commits: vec![] },
+    }))
+    .unwrap();
+    assert_eq!(refreshed_repo, second);
+    assert_eq!(
+        core.view().stepper.as_ref().unwrap().repo_id,
+        second,
+        "automatic refresh must preserve the user's pending repository selection"
+    );
+}

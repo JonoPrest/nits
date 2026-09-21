@@ -4257,12 +4257,20 @@ impl ClientCore {
                     InFlight::ListFiles { review_id, scope },
                 ));
                 // Commit identity can move while the content tree is unchanged
-                // (for example an amend). Refresh the visible repository's list
-                // and supersede outstanding answers from an earlier resolution.
+                // (for example an amend). Preserve a repository selection whose
+                // list is still loading, then fall back to the displayed list.
+                // Supersede answers from an earlier resolution in either case.
                 let repo_id = self
-                    .stepper
-                    .as_ref()
-                    .map(|stepper| stepper.repo_id)
+                    .latest_commits
+                    .and_then(|id| self.in_flight.get(&id))
+                    .and_then(|request| {
+                        if let InFlight::ListCommits { repo_id } = request {
+                            Some(*repo_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .or_else(|| self.stepper.as_ref().map(|stepper| stepper.repo_id))
                     .or_else(|| {
                         self.view
                             .review

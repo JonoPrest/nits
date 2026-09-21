@@ -89,7 +89,7 @@ module ResolvedSource = {
     WorkingTree({
         dirty: array<string>,
         branch: @s.null option<string>,
-        head: @s.null option<string>,
+        head: @s.null option<commitOid>,
       })
 }
 
