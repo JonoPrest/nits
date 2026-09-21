@@ -2,8 +2,9 @@
 """Verify skill delivery through real Cargo archives, installation and a moved binary.
 
 Run after the normal Cargo build has populated the dependency cache. Packaging
-and installation run offline; local dependency patches refer only to extracted
-.crate archives, so unreleased workspace changes need not be published first.
+runs offline; installation also uses the packaged lockfile. Local dependency
+patches refer only to extracted .crate archives, so unreleased workspace changes
+need not be published first.
 No original source path supplies guide content to the installed binary.
 """
 import argparse
@@ -68,7 +69,10 @@ def main():
             f'{json.dumps(name)} = {{ path = {json.dumps(str(path))} }}\n'
             for name, path in sorted(extracted.items()) if name != 'nits'))
         install = temporary / 'installed'
-        run('cargo', 'install', '--offline', '--debug', '--path', str(extracted['nits']),
+        # Match the archived dependency resolution, including locked versions
+        # that have since been yanked. Re-resolving from a CI cache can fail or
+        # select dependencies that were never built by the preceding checks.
+        run('cargo', 'install', '--locked', '--offline', '--debug', '--path', str(extracted['nits']),
             '--root', str(install), '--config', str(config), cwd=temporary)
         binary = install / 'bin/nits'
         offline = temporary / 'offline'
@@ -91,7 +95,8 @@ def main():
             assert heading in installed, heading
         assert '(references/' not in installed
         assert not (offline / 'data').exists() and not (offline / 'config').exists()
-        receipt = {'packages': sorted(selected), 'cargo_install': True, 'standalone': True,
+        receipt = {'packages': sorted(selected), 'cargo_install': True, 'locked': True,
+                   'standalone': True,
                    'canonical_files': 3, 'markdown_bytes': len(installed.encode()),
                    'source_removed_before_standalone': True}
         if args.output:
