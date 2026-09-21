@@ -306,15 +306,36 @@ fn replacing_a_commented_blob_with_a_gitlink_marks_comments_outdated_and_can_res
         None,
     )
     .unwrap();
+    core.add_comment(
+        &ctx(),
+        review_id(),
+        CommentId::from_parts(1, 5),
+        CommentKind::Note,
+        nits_review_core::comments::lines_anchor(
+            repo_id(),
+            path(),
+            nits_protocol::Side::Head,
+            h.blob_oid,
+            1,
+            1,
+        )
+        .unwrap(),
+        "Explain this source line".into(),
+        None,
+    )
+    .unwrap();
     h.move_head(&core, h.to_link);
     let comments = core.comments(review_id()).unwrap();
-    assert_eq!(comments.len(), 1);
-    assert!(matches!(comments[0].state, CommentState::Outdated { .. }));
-    h.move_head(&core, h.to_blob);
-    assert_eq!(
-        core.comments(review_id()).unwrap()[0].state,
-        CommentState::Live
+    assert_eq!(comments.len(), 2);
+    assert!(
+        comments
+            .iter()
+            .all(|c| matches!(c.state, CommentState::Outdated { .. }))
     );
+    h.move_head(&core, h.to_blob);
+    let comments = core.comments(review_id()).unwrap();
+    assert_eq!(comments.len(), 2);
+    assert!(comments.iter().all(|c| c.state == CommentState::Live));
 }
 
 #[test]
@@ -323,23 +344,46 @@ fn checked_out_submodule_pointer_is_captured_without_mutating_the_real_index() {
         .commit("first", files!["lib.txt" => "first\n"])
         .tag("first")
         .commit("second", files!["lib.txt" => "second\n"])
-        .build().unwrap();
+        .build()
+        .unwrap();
     let old: CommitOid = dependency.rev_parse("first").unwrap().parse().unwrap();
     let new: CommitOid = dependency.rev_parse("HEAD").unwrap().parse().unwrap();
-    let superproject = RepoBuilder::new().commit("base", files!["README" => "project\n"]).build().unwrap();
-    superproject.git(&["-c", "protocol.file.allow=always", "submodule", "add", "--", dependency.path().to_str().unwrap(), "dep"]).unwrap();
-    superproject.git(&["-C", "dep", "checkout", "-q", &old.to_string()]).unwrap();
+    let superproject = RepoBuilder::new()
+        .commit("base", files!["README" => "project\n"])
+        .build()
+        .unwrap();
+    superproject
+        .git(&[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--",
+            dependency.path().to_str().unwrap(),
+            "dep",
+        ])
+        .unwrap();
+    superproject
+        .git(&["-C", "dep", "checkout", "-q", &old.to_string()])
+        .unwrap();
     superproject.git(&["add", "dep"]).unwrap();
     let base = commit(&superproject, "add dependency");
     let index = superproject.git(&["ls-files", "--stage"]).unwrap();
-    superproject.git(&["-C", "dep", "checkout", "-q", &new.to_string()]).unwrap();
+    superproject
+        .git(&["-C", "dep", "checkout", "-q", &new.to_string()])
+        .unwrap();
     let repo = Repo::open(superproject.path()).unwrap();
     let base_tree = repo.resolve(&RefSpec::Commit { oid: base }).unwrap().tree;
     let working = repo.resolve(&RefSpec::WorkingTree).unwrap();
     let changes = repo.changed_files(base_tree, working.tree).unwrap();
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].path, path());
-    assert_eq!(changes[0].kind, ChangeKind::Submodule { change: SubmoduleChange::Updated { old, new } });
+    assert_eq!(
+        changes[0].kind,
+        ChangeKind::Submodule {
+            change: SubmoduleChange::Updated { old, new }
+        }
+    );
     assert_eq!(superproject.git(&["ls-files", "--stage"]).unwrap(), index);
     assert_eq!(superproject.rev_parse("HEAD").unwrap(), base.to_string());
 }

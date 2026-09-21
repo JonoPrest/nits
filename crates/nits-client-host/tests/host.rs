@@ -352,17 +352,18 @@ async fn scripted_session_keeps_every_patch_small() {
         matches!(p, ViewPatch::Diff { diff: Some(d), .. } if !d.rows.is_empty() && d.missing.is_empty())
     })
     .await;
-    let total_rows = seen
-        .iter()
-        .rev()
-        .find_map(|p| match p {
-            ViewPatch::Diff { diff: Some(d), .. } => match d.content {
-                nits_protocol::RenderContent::Text { total_rows, .. } => Some(total_rows),
-                nits_protocol::RenderContent::Binary => None,
-            },
-            _ => None,
-        })
-        .unwrap();
+    let total_rows =
+        seen.iter()
+            .rev()
+            .find_map(|p| match p {
+                ViewPatch::Diff { diff: Some(d), .. } => match d.content {
+                    nits_protocol::RenderContent::Text { total_rows, .. } => Some(total_rows),
+                    nits_protocol::RenderContent::Binary
+                    | nits_protocol::RenderContent::Submodule => None,
+                },
+                _ => None,
+            })
+            .unwrap();
     assert!(total_rows >= 100_000, "total rows {total_rows}");
 
     // Scroll to the end: only the far viewport is fetched and pushed.

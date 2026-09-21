@@ -99,6 +99,28 @@ fn line(out: &mut String, old: &str, new: &str, mark: char, text: &str) {
     let _ = writeln!(out, "{old:>5} {new:>5} {mark}{text}");
 }
 
+/// Gitlinks name commits, so these identities are metadata rather than source lines.
+#[must_use]
+pub fn submodule(change: &nits_protocol::SubmoduleChange) -> String {
+    use nits_protocol::SubmoduleChange;
+    match change {
+        SubmoduleChange::Added { new } => format!("Submodule added\nnew commit: {new}\n"),
+        SubmoduleChange::Deleted { old } => format!("Submodule removed\nold commit: {old}\n"),
+        SubmoduleChange::Updated { old, new } => {
+            format!("Submodule updated\nold commit: {old}\nnew commit: {new}\n")
+        }
+        SubmoduleChange::Renamed { from, old, new } => {
+            format!("Submodule renamed from {from}\nold commit: {old}\nnew commit: {new}\n")
+        }
+        SubmoduleChange::BlobToSubmodule { old, new } => {
+            format!("Blob replaced by submodule\nold blob: {old}\nnew commit: {new}\n")
+        }
+        SubmoduleChange::SubmoduleToBlob { old, new } => {
+            format!("Submodule replaced by blob\nold commit: {old}\nnew blob: {new}\n")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,27 +158,5 @@ mod tests {
             ),
             ""
         );
-    }
-}
-
-/// Gitlinks name commits, so these identities are metadata rather than source lines.
-#[must_use]
-pub fn submodule(change: &nits_protocol::SubmoduleChange) -> String {
-    use nits_protocol::SubmoduleChange;
-    match change {
-        SubmoduleChange::Added { new } => format!("Submodule added\nnew commit: {new}\n"),
-        SubmoduleChange::Deleted { old } => format!("Submodule removed\nold commit: {old}\n"),
-        SubmoduleChange::Updated { old, new } => {
-            format!("Submodule updated\nold commit: {old}\nnew commit: {new}\n")
-        }
-        SubmoduleChange::Renamed { from, old, new } => {
-            format!("Submodule renamed from {from}\nold commit: {old}\nnew commit: {new}\n")
-        }
-        SubmoduleChange::BlobToSubmodule { old, new } => {
-            format!("Blob replaced by submodule\nold blob: {old}\nnew commit: {new}\n")
-        }
-        SubmoduleChange::SubmoduleToBlob { old, new } => {
-            format!("Submodule replaced by blob\nold commit: {old}\nnew blob: {new}\n")
-        }
     }
 }

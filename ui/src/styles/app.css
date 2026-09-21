@@ -985,3 +985,6 @@
 .submodule-change { padding: 1rem; font-size: 0.875rem; }
 .submodule-change pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .submodule-change p { margin-top: 0.75rem; color: var(--color-muted); }
+@media (max-width: 700px) {
+  .submodule-change pre { font-size: 0.8125rem; }
+}

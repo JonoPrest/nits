@@ -20,7 +20,7 @@ let make = (~target: Render.RenderTarget.t) =>
       <pre> {React.string(text(change))} </pre>
       <p>
         {React.string(
-          "Gitlink metadata has no line diff. Discuss this change in the review conversation.",
+          "This submodule change has no line diff. Discuss it in the review conversation.",
         )}
       </p>
     </div>

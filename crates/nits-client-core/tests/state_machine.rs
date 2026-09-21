@@ -2431,6 +2431,7 @@ fn review_subset_and_daemon_identity_survive_sidebar_toggle_and_return_home() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // One stream tests typed identity, progress, and metadata-only actions.
 fn submodule_metadata_counts_as_a_file_and_tracks_typed_viewed_identity() {
     use nits_client_core::ViewedState;
     use nits_protocol::{
@@ -2515,6 +2516,21 @@ fn submodule_metadata_counts_as_a_file_and_tracks_typed_viewed_identity() {
             assert!(core.handle(Input::User(action)).is_err());
             assert!(core.view().draft.is_none());
         }
+        core.handle(Input::User(Action::Viewport {
+            file: file.clone(),
+            first_row: 0,
+            last_row: 10,
+        }))
+        .unwrap();
+        assert!(core.handle(Input::User(Action::EnterVisual)).is_err());
+        assert_eq!(
+            core.handle(Input::User(Action::ExpandContext {
+                file: file.clone(),
+                full: true
+            }))
+            .unwrap(),
+            Vec::new()
+        );
         core.handle(Input::User(Action::MarkViewed { file }))
             .unwrap();
         assert_eq!(core.view().diffs[0].viewed, ViewedState::Viewed);

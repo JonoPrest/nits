@@ -2,34 +2,34 @@
 
 exports[`Submodule changes > renders Added metadata and only supported controls > Added 1`] = `
 "Submodule added
-New commit: 3e3f404142434445464748494a4b4c4d4e4f5051Gitlink metadata has no line diff. Discuss this change in the review conversation."
+New commit: 3e3f404142434445464748494a4b4c4d4e4f5051This submodule change has no line diff. Discuss it in the review conversation."
 `;
 
 exports[`Submodule changes > renders BlobToSubmodule metadata and only supported controls > BlobToSubmodule 1`] = `
 "Blob replaced by submodule
 Old blob: a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5
-New commit: 3e3f404142434445464748494a4b4c4d4e4f5051Gitlink metadata has no line diff. Discuss this change in the review conversation."
+New commit: 3e3f404142434445464748494a4b4c4d4e4f5051This submodule change has no line diff. Discuss it in the review conversation."
 `;
 
 exports[`Submodule changes > renders Deleted metadata and only supported controls > Deleted 1`] = `
 "Submodule removed
-Old commit: 1f202122232425262728292a2b2c2d2e2f303132Gitlink metadata has no line diff. Discuss this change in the review conversation."
+Old commit: 1f202122232425262728292a2b2c2d2e2f303132This submodule change has no line diff. Discuss it in the review conversation."
 `;
 
 exports[`Submodule changes > renders Renamed metadata and only supported controls > Renamed 1`] = `
 "Submodule renamed from old-dependency
 Old commit: 1f202122232425262728292a2b2c2d2e2f303132
-New commit: 3e3f404142434445464748494a4b4c4d4e4f5051Gitlink metadata has no line diff. Discuss this change in the review conversation."
+New commit: 3e3f404142434445464748494a4b4c4d4e4f5051This submodule change has no line diff. Discuss it in the review conversation."
 `;
 
 exports[`Submodule changes > renders SubmoduleToBlob metadata and only supported controls > SubmoduleToBlob 1`] = `
 "Submodule replaced by blob
 Old commit: 1f202122232425262728292a2b2c2d2e2f303132
-New blob: a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5Gitlink metadata has no line diff. Discuss this change in the review conversation."
+New blob: a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5This submodule change has no line diff. Discuss it in the review conversation."
 `;
 
 exports[`Submodule changes > renders Updated metadata and only supported controls > Updated 1`] = `
 "Submodule updated
 Old commit: 1f202122232425262728292a2b2c2d2e2f303132
-New commit: 3e3f404142434445464748494a4b4c4d4e4f5051Gitlink metadata has no line diff. Discuss this change in the review conversation."
+New commit: 3e3f404142434445464748494a4b4c4d4e4f5051This submodule change has no line diff. Discuss it in the review conversation."
 `;

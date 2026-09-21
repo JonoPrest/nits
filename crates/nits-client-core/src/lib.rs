@@ -1240,6 +1240,16 @@ impl ClientCore {
             self.view.copy_reference = copy_reference;
             sections.push(ViewSection::Focus);
         }
+        // A pointer refresh may replace the selected source file with a gitlink.
+        // Metadata has no rows to preserve a line selection against.
+        if self
+            .view
+            .diff
+            .as_ref()
+            .is_some_and(|diff| matches!(diff.content, nits_protocol::RenderContent::Submodule))
+        {
+            self.visual_anchor = None;
+        }
         // The Visual selection spans the anchor and the focused row.
         let visual = match (self.visual_anchor, focus) {
             (Some(anchor), Focus::Diff { row, .. }) => Some(crate::view::VisualView {
@@ -1728,6 +1738,14 @@ impl ClientCore {
         else {
             return Err(CoreError::UnknownFile(file.clone()));
         };
+        if matches!(
+            old.target,
+            RenderTarget::Diff {
+                change: nits_protocol::ChangeKind::Submodule { .. }
+            }
+        ) {
+            return Ok(Vec::new());
+        }
         let key = RenderKey {
             opts: opts(&old.opts),
             ..old.clone()
@@ -2574,6 +2592,13 @@ impl ClientCore {
                         Command::VisualMode,
                     )));
                 };
+                if self.view.diff.as_ref().is_some_and(|diff| {
+                    matches!(diff.content, nits_protocol::RenderContent::Submodule)
+                }) {
+                    return Err(CoreError::NoTarget(focus::NoTarget::Nothing(
+                        Command::VisualMode,
+                    )));
+                }
                 self.visual_anchor = Some(VisualAnchor { row, side });
                 // The selection and mode are derived after this returns.
                 Ok(Vec::new())
