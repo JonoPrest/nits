@@ -78,6 +78,61 @@ fn picker(core: &mut ClientCore, repo_id: RepoId) -> RequestId {
     assert_eq!(requests(&effects)[0].1, Request::ListRefs { repo_id });
     requests(&effects)[0].0
 }
+
+#[test]
+fn explicit_refs_never_select_fuzzy_commit_subjects_or_other_catalog_entries() {
+    let [_, repo_id] = repos();
+    let oid = CommitOid::from_bytes([42; 20]);
+    for (query, ref_spec) in [
+        (
+            "branch:main".to_owned(),
+            RefSpec::Branch {
+                name: "main".into(),
+            },
+        ),
+        ("tag:v1".to_owned(), RefSpec::Tag { name: "v1".into() }),
+        (format!("commit:{oid}"), RefSpec::Commit { oid }),
+        ("head".to_owned(), RefSpec::Head),
+        ("upstream".to_owned(), RefSpec::Upstream),
+        ("worktree".to_owned(), RefSpec::WorkingTree),
+    ] {
+        for present in [false, true] {
+            let mut core = ready();
+            let id = picker(&mut core, repo_id);
+            let mut refs = vec![RefCandidate {
+                ref_spec: RefSpec::Commit {
+                    oid: CommitOid::from_bytes([43; 20]),
+                },
+                subject: Some(format!("Fix deployment for {query}")),
+            }];
+            if present {
+                refs.push(RefCandidate {
+                    ref_spec: ref_spec.clone(),
+                    subject: None,
+                });
+            }
+            core.handle(Input::Server(ServerMsg::Response {
+                id,
+                response: Response::Refs { repo_id, refs },
+            }))
+            .unwrap();
+            core.handle(Input::User(Action::RefSelectorQuery {
+                query: query.clone(),
+            }))
+            .unwrap();
+            assert_eq!(core.view().ref_selector.as_ref().unwrap().options.len(), 1);
+            let effects = core.handle(Input::User(Action::SelectCurrentRef)).unwrap();
+            assert_eq!(
+                requests(&effects)[0].1,
+                Request::TreeSnapshot {
+                    repo_id,
+                    ref_spec: ref_spec.clone(),
+                },
+                "{query}, present={present}"
+            );
+        }
+    }
+}
 #[test]
 fn selected_repository_follows_open_file_and_explicit_keyboard_choice() {
     let [alpha, beta] = repos();

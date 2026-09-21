@@ -393,7 +393,7 @@ character separate from the visual glyph.
 
 Browse revision controls name the repository explicitly. The repository choice follows
 an opened file or focused tree; a native selector also chooses any review repository.
-`g b` opens its searchable revision picker, `] r` / `[ r` cycle repositories, and
+`g b` opens its searchable revision picker, `g ]` / `g [` cycle repositories, and
 `g B` restores review heads. Controls derive tooltips from the configured keymap.
 Typing in the picker searches normally (including j/k); Down enters results, where
 j/k or arrows move, Enter selects, and Escape cancels. Explicit branch/tag/commit

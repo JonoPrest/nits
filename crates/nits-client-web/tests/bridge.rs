@@ -249,17 +249,6 @@ impl Browser {
             }
         }
     }
-
-    async fn quiet(&mut self) {
-        while let Ok(Some(Ok(Message::Text(text)))) =
-            tokio::time::timeout(Duration::from_millis(30), self.rx.next()).await
-        {
-            let patches: Vec<ViewPatch> = serde_json::from_str(&text).unwrap();
-            for patch in patches {
-                self.model.apply(patch);
-            }
-        }
-    }
 }
 
 async fn wait_for_sessions(server: &nits_client_web::Server, expected: usize) {
@@ -270,6 +259,21 @@ async fn wait_for_sessions(server: &nits_client_web::Server, expected: usize) {
     })
     .await
     .expect("session count did not settle");
+}
+
+fn assert_tab_b_before_its_key(model: &ViewModel, patches: &[ViewPatch], file: &FileRef) {
+    for patch in patches {
+        if let ViewPatch::Hints { last_key, .. } = patch {
+            assert_eq!(*last_key, None, "tab B received tab A's key verdict");
+        }
+    }
+    assert_eq!(model.last_key, None);
+    assert_eq!(model.open_review, Some(review_b()));
+    assert_eq!(model.copy_target.as_ref(), Some(&file.path));
+    if let Some(diff) = &model.diff {
+        assert_eq!(&diff.file, file);
+    }
+    assert!(model.diffs.iter().all(|diff| &diff.file == file));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -323,9 +327,12 @@ async fn tabs_hold_different_reviews_and_key_verdicts_stay_on_their_socket() {
             .until(|model, _| model.copy_target.as_ref() == Some(&file.path))
             .await;
     }
-    a.quiet().await;
-    b.quiet().await;
-
+    // B can legitimately receive its own content/preferences while A handles a
+    // key. Assert session state, not a timing-dependent absence of any frame.
+    b.dispatch(&Action::SetLayout {
+        layout: Layout::Split,
+    })
+    .await;
     a.key(KeyChord::char('y')).await;
     a.until(|model, _| {
         model.last_key.is_some_and(|key| {
@@ -333,11 +340,21 @@ async fn tabs_hold_different_reviews_and_key_verdicts_stay_on_their_socket() {
         })
     })
     .await;
+    b.until(|model, patches| {
+        assert_tab_b_before_its_key(model, patches, &file_b);
+        model.prefs.layout == Layout::Split
+    })
+    .await;
     assert!(
-        tokio::time::timeout(Duration::from_millis(150), b.rx.next())
-            .await
-            .is_err(),
-        "tab B received tab A's key patch"
+        tokio::time::timeout(
+            Duration::from_millis(150),
+            b.until(|model, patches| {
+                assert_tab_b_before_its_key(model, patches, &file_b);
+                false
+            })
+        )
+        .await
+        .is_err()
     );
     assert_eq!(b.model.last_key, None);
     assert_eq!(a.model.copy_target.as_ref(), Some(&file_a.path));
@@ -356,10 +373,10 @@ async fn tabs_hold_different_reviews_and_key_verdicts_stay_on_their_socket() {
     a.tx.close().await.unwrap();
     wait_for_sessions(&bridge, 1).await;
     b.dispatch(&Action::SetLayout {
-        layout: Layout::Split,
+        layout: Layout::Unified,
     })
     .await;
-    b.until(|model, _| model.prefs.layout == Layout::Split)
+    b.until(|model, _| model.prefs.layout == Layout::Unified)
         .await;
     bridge.stop();
     wait_for_sessions(&bridge, 0).await;
