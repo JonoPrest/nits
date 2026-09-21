@@ -585,8 +585,8 @@ impl Keymap {
             b(X::Global, keys!("3"), C::TabBrowse, false),
             b(X::Global, keys!("g b"), C::BrowseRevision, false),
             b(X::Global, keys!("g B"), C::ResetBrowse, false),
-            b(X::Global, keys!("] r"), C::NextBrowseRepo, false),
-            b(X::Global, keys!("[ r"), C::PrevBrowseRepo, false),
+            b(X::Global, keys!("g ]"), C::NextBrowseRepo, false),
+            b(X::Global, keys!("g ["), C::PrevBrowseRepo, false),
             b(X::Global, keys!("s"), C::ToggleLayout, false),
             b(X::Global, keys!("w"), C::ToggleWhitespace, false),
             // `g` is vim's goto group (which-key label "Go"); the
@@ -1393,6 +1393,32 @@ mod tests {
         assert_eq!(
             map.lookup(Context::Tree, &[KeyChord::char('c')]),
             Lookup::Command(Command::Comment)
+        );
+    }
+
+    #[test]
+    fn browse_repository_chords_are_reachable_without_shadowing_thread_replies() {
+        let map = Keymap::default_table();
+        for context in Context::iter().filter(|context| *context != Context::Composer) {
+            assert_eq!(map.lookup(context, &[KeyChord::char('g')]), Lookup::Prefix);
+            for (suffix, command) in [
+                (']', Command::NextBrowseRepo),
+                ('[', Command::PrevBrowseRepo),
+            ] {
+                assert_eq!(
+                    map.lookup(context, &[KeyChord::char('g'), KeyChord::char(suffix)]),
+                    Lookup::Command(command),
+                    "{context:?}"
+                );
+            }
+        }
+        assert_eq!(
+            map.lookup(Context::Thread, &[KeyChord::char(']')]),
+            Lookup::Command(Command::NextReply)
+        );
+        assert_eq!(
+            map.lookup(Context::Thread, &[KeyChord::char('[')]),
+            Lookup::Command(Command::PrevReply)
         );
     }
 

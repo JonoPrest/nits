@@ -875,12 +875,12 @@ expression: core.view()
       "label": "return to review heads"
     },
     {
-      "keys": "] r",
+      "keys": "g ]",
       "command": "NextBrowseRepo",
       "label": "next Browse repository"
     },
     {
-      "keys": "[ r",
+      "keys": "g [",
       "command": "PrevBrowseRepo",
       "label": "previous Browse repository"
     },
@@ -1277,12 +1277,12 @@ expression: core.view()
       "label": "return to review heads"
     },
     {
-      "keys": "] r",
+      "keys": "g ]",
       "command": "NextBrowseRepo",
       "label": "next Browse repository"
     },
     {
-      "keys": "[ r",
+      "keys": "g [",
       "command": "PrevBrowseRepo",
       "label": "previous Browse repository"
     },

@@ -157,6 +157,30 @@ impl RefSelector {
     }
 
     fn filter(&mut self) {
+        if self.view.purpose == RefSelectorPurpose::Browse {
+            match literal_query(&self.view.query) {
+                LiteralQuery::Ref(ref_spec) => {
+                    let subject = self
+                        .catalog
+                        .iter()
+                        .find(|candidate| candidate.ref_spec == ref_spec)
+                        .and_then(|candidate| candidate.subject.clone());
+                    self.view.options = vec![RefOption {
+                        current: ref_spec == self.view.current,
+                        ref_spec,
+                        subject,
+                    }];
+                    self.view.selected = 0;
+                    return;
+                }
+                LiteralQuery::Invalid => {
+                    self.view.options.clear();
+                    self.view.selected = 0;
+                    return;
+                }
+                LiteralQuery::Search => {}
+            }
+        }
         let query = self.view.query.trim().to_lowercase();
         self.view.options = self
             .catalog
@@ -183,7 +207,7 @@ impl RefSelector {
             })
             .collect();
         if self.view.purpose == RefSelectorPurpose::Browse
-            && let Some(ref_spec) = browse_query(&self.view.query)
+            && let Some(ref_spec) = named_query(&self.view.query)
             && !self
                 .view
                 .options
@@ -200,27 +224,54 @@ impl RefSelector {
     }
 }
 
-// Catalog search also accepts explicit refs outside the recent-commit window.
-// OIDs cross their validating parser here; named revisions are resolved by Git.
-fn browse_query(query: &str) -> Option<RefSpec> {
+#[derive(Debug, PartialEq, Eq)]
+enum LiteralQuery {
+    Search,
+    Ref(RefSpec),
+    Invalid,
+}
+
+// Explicit syntax is a literal request, never a fuzzy catalog search. In
+// particular, a commit subject containing "branch:main" cannot take precedence
+// over that branch. Invalid explicit OIDs never fall back to subject matching.
+fn literal_query(query: &str) -> LiteralQuery {
     let query = query.trim();
-    if query.is_empty() || query.chars().any(char::is_whitespace) {
-        return None;
-    }
-    match query.to_lowercase().as_str() {
+    let special = match query.to_lowercase().as_str() {
         "worktree" | "working-tree" => Some(RefSpec::WorkingTree),
         "head" => Some(RefSpec::Head),
         "upstream" | "@{upstream}" => Some(RefSpec::Upstream),
-        _ => match query.split_once(':') {
-            Some(("branch", name)) if !name.is_empty() => {
-                Some(RefSpec::Branch { name: name.into() })
-            }
-            Some(("tag", name)) if !name.is_empty() => Some(RefSpec::Tag { name: name.into() }),
-            Some(("commit", oid)) => oid.parse().ok().map(|oid| RefSpec::Commit { oid }),
-            Some(_) => None,
-            None => Some(RefSpec::Branch { name: query.into() }),
-        },
+        _ => None,
+    };
+    if let Some(ref_spec) = special {
+        return LiteralQuery::Ref(ref_spec);
     }
+    let Some((kind, value)) = query.split_once(':') else {
+        return LiteralQuery::Search;
+    };
+    if !matches!(kind, "branch" | "tag" | "commit") {
+        return LiteralQuery::Search;
+    }
+    if value.is_empty() || query.chars().any(char::is_whitespace) {
+        return LiteralQuery::Invalid;
+    }
+    match kind {
+        "branch" => LiteralQuery::Ref(RefSpec::Branch { name: value.into() }),
+        "tag" => LiteralQuery::Ref(RefSpec::Tag { name: value.into() }),
+        "commit" => match value.parse() {
+            Ok(oid) => LiteralQuery::Ref(RefSpec::Commit { oid }),
+            Err(_) => LiteralQuery::Invalid,
+        },
+        _ => LiteralQuery::Search,
+    }
+}
+
+// Bare names still search the catalog, with a resolution row for refs outside it.
+fn named_query(query: &str) -> Option<RefSpec> {
+    let query = query.trim();
+    if query.is_empty() || query.contains(':') || query.chars().any(char::is_whitespace) {
+        return None;
+    }
+    Some(RefSpec::Branch { name: query.into() })
 }
 
 fn base_ref(spec: &RefSpec) -> Option<BaseRefSpec> {

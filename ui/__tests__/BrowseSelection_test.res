@@ -21,7 +21,7 @@ let targets: array<Domain.ReviewTarget.t> = [
 let chrome: array<View.Hint.t> = [
   {command: BrowseRevision, keys: "g b", label: "browse revision"},
   {command: ResetBrowse, keys: "g B", label: "return to review heads"},
-  {command: NextBrowseRepo, keys: "] r", label: "next Browse repository"},
+  {command: NextBrowseRepo, keys: "g ]", label: "next Browse repository"},
 ]
 
 test(
