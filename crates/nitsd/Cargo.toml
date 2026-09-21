@@ -29,6 +29,7 @@ notify.workspace = true
 tokio-tungstenite = "0.30.0"
 futures-util = "0.3.34"
 fastrand = "2.5.0"
+sha2 = "0.10"
 nits-config = { workspace = true }
 rustix = { version = "1", features = ["event", "fs"] }
 

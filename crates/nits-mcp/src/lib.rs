@@ -7,9 +7,13 @@
 //! from the MCP client's `initialize` info and subsequent session identity
 //! updates, so provenance is structural.
 
+pub mod checkpoint;
 pub mod jsonrpc;
+pub mod management;
 pub mod server;
+mod supervisor;
 pub mod tools;
+mod worker;
 
 pub use server::{Endpoint, Server};
 
@@ -34,8 +38,8 @@ pub async fn serve_stdio(
     identity: server::AgentIdentity,
     build: nits_protocol::BuildInfo,
 ) -> anyhow::Result<()> {
-    serve(
-        Server::new(endpoint, identity, build),
+    supervisor::serve(
+        Server::new(endpoint, identity, build).checkpoint(),
         BufReader::new(nitsd::launch::stdio::InputPump::stdin()?),
         tokio::io::stdout(),
     )
@@ -119,4 +123,15 @@ async fn write_reply(
     output.write_all(&bytes).await?;
     output.flush().await?;
     Ok(())
+}
+
+/// Private CLI worker entry point. The parent supplies a validated checkpoint
+/// before any application I/O; host stdout stays owned by the supervisor.
+pub async fn serve_worker_stdio(build: nits_protocol::BuildInfo) -> anyhow::Result<()> {
+    worker::serve(
+        build,
+        BufReader::new(nitsd::launch::stdio::InputPump::stdin()?),
+        tokio::io::stdout(),
+    )
+    .await
 }

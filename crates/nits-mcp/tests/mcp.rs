@@ -408,6 +408,8 @@ async fn tools_list_is_json_rpc_conformant() {
     assert_eq!(
         names,
         [
+            "get_daemon_status",
+            "restart_daemon",
             "list_contexts",
             "use_context",
             "list_workspaces",
@@ -2452,6 +2454,8 @@ async fn checkpoints_capture_h1_check_after_h2_and_inspect_delta_with_fresh_iden
     assert!(diff["text"].as_str().unwrap().contains("H2"));
 }
 
+#[path = "checkpoint/mod.rs"]
+mod checkpoint;
 #[path = "scheduling/mod.rs"]
 mod scheduling;
 #[tokio::test]

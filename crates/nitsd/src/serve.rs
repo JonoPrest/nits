@@ -17,7 +17,8 @@ use crate::launch::{self, DaemonSpec, proxy_stdio};
 use crate::server::{UnixServer, WsServer};
 
 /// Where the daemon keeps state and who it listens to.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServeOpts {
     /// Where state lives.
     pub data_dir: PathBuf,
@@ -78,6 +79,14 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
     };
     crate::ownership::associate_socket(&socket, &data_dir)
         .context("associating socket with daemon ownership")?;
+    let control = crate::control::Server::bind(ServeOpts {
+        data_dir: std::fs::canonicalize(&data_dir)?,
+        socket: std::fs::canonicalize(&socket)?,
+        idle_exit,
+        ws: ws.as_ref().map(WsServer::addr),
+    })
+    .context("binding maintenance control")?;
+    let control = tokio::spawn(control.run(Arc::clone(&daemon)));
     daemon.set_phase(crate::ownership::Phase::Serving);
     tracing::info!(socket = %socket.display(), data_dir = %data_dir.display(), "listening");
     let watcher = crate::watcher::Watcher::start(Arc::clone(&daemon));
@@ -112,6 +121,7 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
     let ws = ws.map(|ws| tokio::spawn(ws.run(Arc::clone(&daemon), shutdown.clone())));
     server.run(Arc::clone(&daemon), shutdown).await;
     daemon.set_phase(crate::ownership::Phase::Stopping);
+    let _ = control.await;
     if let Some(ws) = ws {
         let _ = ws.await;
     }
@@ -195,6 +205,9 @@ pub async fn stdio(opts: ServeOpts, autostart: bool) -> anyhow::Result<StdioOutc
         ..DaemonSpec::for_data_dir(opts.data_dir)
     };
     if autostart {
+        crate::upgrade::repair_incompatible(&spec)
+            .await
+            .context("activating installed remote daemon")?;
         launch::ensure_daemon(&spec)
             .await
             .context("starting the daemon")?;

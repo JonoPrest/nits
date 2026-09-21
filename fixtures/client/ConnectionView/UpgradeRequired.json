@@ -1,0 +1,7 @@
+{
+  "client": "0.18.0",
+  "supported": [
+    "9.0.0"
+  ],
+  "type": "UpgradeRequired"
+}

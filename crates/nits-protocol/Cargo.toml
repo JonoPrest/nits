@@ -13,6 +13,7 @@ description = "Wire types for Nits: domain model, events, render model and RPC. 
 
 [dependencies]
 serde = { workspace = true }
+semver = "1"
 url = "2.5"
 ulid = { workspace = true }
 strum = { workspace = true }
@@ -20,6 +21,8 @@ thiserror = { workspace = true }
 schemars = { workspace = true, optional = true }
 
 [features]
+## Dev-only real older serializer build for installed-upgrade process tests.
+upgrade-fixture-previous-protocol = []
 ## JSON Schema derivation for every wire type (`schemars`). Off by default so
 ## wasm and daemon builds stay lean; adapters that advertise schemas turn it on.
 schema = ["dep:schemars"]

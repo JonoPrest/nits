@@ -71,3 +71,12 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 # Wire enums legitimately vary in size; boxing them would hurt every constructor.
 large_enum_variant = "allow"
+
+# Exact executable identity is computed at startup, including in development.
+# Keep SHA-256 compression optimized so debug symbol size does not turn each
+# short CLI invocation or bounded candidate inspection into seconds of hashing.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.test.package.sha2]
+opt-level = 3

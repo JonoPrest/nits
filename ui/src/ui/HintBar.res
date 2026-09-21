@@ -19,6 +19,8 @@ let make = (
   | Connecting(_) => "connecting…"
   | Subscribed(_) => "connected"
   | Rejected(_) => "rejected"
+  | Restarting({operation}) => "Restarting to " ++ operation.target.release.version
+  | UpgradeRequired(_) => "client upgrade required"
   }
   let pending = pendingKeys != ""
   <footer className={"hint-bar" ++ (pending ? " hint-bar-pending" : "")} role="contentinfo">

@@ -1,0 +1,5 @@
+{
+  "kind": "MigrationFailed",
+  "message": "The installed build could not migrate the store; inspect the daemon log. No rollback was attempted.",
+  "stage": "StartingReplacement"
+}

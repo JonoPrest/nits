@@ -38,6 +38,14 @@ use strum::{Display, EnumDiscriminants, EnumIter, EnumMessage, IntoEnumIterator,
 #[serde(tag = "name", content = "arguments", rename_all = "snake_case")]
 pub enum ToolCall {
     #[strum_discriminants(strum(
+        message = "Inspect the active context's running daemon, verified installed candidate, upgrade operation and local MCP adapter independently of application Hello. Read-only; never starts or restarts a daemon or changes context."
+    ))]
+    GetDaemonStatus(NoArgs),
+    #[strum_discriminants(strum(
+        message = "Activate the verified installed build in the active managed context and refresh this MCP worker while preserving the initialized host session. No arbitrary executable or shell command is accepted. AlreadyCurrent/Restarted means ready; Accepted carries an operation to inspect with get_daemon_status. Interrupted mutations may have committed and are never replayed. Raw WebSocket contexts are not managed."
+    ))]
+    RestartDaemon(NoArgs),
+    #[strum_discriminants(strum(
         message = "List configured contexts, the active daemon and the persisted default. Reads the current config file; does not connect or switch."
     ))]
     ListContexts(NoArgs),
@@ -169,9 +177,45 @@ pub enum SessionCall {
     SetIdentity(SetSessionIdentity),
 }
 
+/// Stable management calls handled by the host outside application I/O.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagementCall {
+    Status,
+    Restart,
+}
+
+/// The private worker contract describes scheduling independently of tool names.
+/// New names using these existing behaviors remain usable by an older supervisor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ToolBehavior {
+    Read,
+    Mutation,
+    Session,
+    Wait,
+    Status,
+    Upgrade,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ToolContract {
+    pub name: String,
+    pub behavior: ToolBehavior,
+}
+
+pub(crate) fn contracts() -> Vec<ToolContract> {
+    ToolName::iter()
+        .map(|name| ToolContract {
+            name: name.to_string(),
+            behavior: name.behavior(),
+        })
+        .collect()
+}
+
 /// A `ToolCall` sorted by the state it accesses, rather than a name list.
 #[derive(Debug)]
 pub enum Call {
+    Management(ManagementCall),
     Query(QueryCall),
     /// Only the event wait may overlap later calls; its subscription is
     /// acknowledged first. Ordinary reads and all state changes stay ordered.
@@ -200,6 +244,8 @@ impl ToolCall {
     #[must_use]
     pub fn classify(self) -> Call {
         match self {
+            ToolCall::GetDaemonStatus(NoArgs {}) => Call::Management(ManagementCall::Status),
+            ToolCall::RestartDaemon(NoArgs {}) => Call::Management(ManagementCall::Restart),
             ToolCall::ListContexts(NoArgs {}) => Call::Context(ContextCall::List),
             ToolCall::UseContext(p) => Call::Context(ContextCall::Use(p)),
             ToolCall::ListWorkspaces(NoArgs {}) => Call::Query(QueryCall::ListWorkspaces),
@@ -247,11 +293,48 @@ pub struct Tool {
 }
 
 impl ToolName {
+    pub(crate) fn behavior(self) -> ToolBehavior {
+        match self {
+            Self::GetDaemonStatus => ToolBehavior::Status,
+            Self::RestartDaemon => ToolBehavior::Upgrade,
+            Self::UseContext | Self::SetSessionIdentity => ToolBehavior::Session,
+            Self::SubscribeEvents => ToolBehavior::Wait,
+            Self::EnsureDirectoryReview
+            | Self::UpdateReviewTarget
+            | Self::CreateReview
+            | Self::UpdateReview
+            | Self::AddComment
+            | Self::Suggest
+            | Self::Reply
+            | Self::Resolve
+            | Self::Defer
+            | Self::RequestReview
+            | Self::RecordCheckpoint => ToolBehavior::Mutation,
+            Self::ListContexts
+            | Self::ListWorkspaces
+            | Self::ListReviews
+            | Self::GetReview
+            | Self::GetCheckpointDelta
+            | Self::GetDiff
+            | Self::GetFile
+            | Self::ListComments
+            | Self::GetSessionIdentity => ToolBehavior::Read,
+        }
+    }
+
     /// Schemas of this tool's arguments and result. The match is exhaustive,
     /// so a new `ToolCall` variant cannot ship without both.
     #[must_use]
     pub fn schemas(self) -> (Schema, Schema) {
         match self {
+            ToolName::GetDaemonStatus => (
+                schema_for!(NoArgs),
+                schema_for!(crate::management::DaemonStatus),
+            ),
+            ToolName::RestartDaemon => (
+                schema_for!(NoArgs),
+                schema_for!(crate::management::DaemonUpgrade),
+            ),
             ToolName::ListContexts => (schema_for!(NoArgs), schema_for!(Contexts)),
             ToolName::UseContext => (schema_for!(UseContext), schema_for!(ContextSelected)),
             ToolName::ListWorkspaces => (schema_for!(NoArgs), schema_for!(Workspaces)),
@@ -1187,7 +1270,9 @@ mod tests {
                 ToolName::Defer => Some(&["review_id", "thread_id", "seq"]),
                 ToolName::Resolve => Some(&["review_id", "thread_id", "resolution", "seq"]),
                 ToolName::RequestReview => Some(&["request_id", "review_id", "agent", "seq"]),
-                ToolName::GetCheckpointDelta
+                ToolName::GetDaemonStatus
+                | ToolName::RestartDaemon
+                | ToolName::GetCheckpointDelta
                 | ToolName::RecordCheckpoint
                 | ToolName::ListContexts
                 | ToolName::UseContext

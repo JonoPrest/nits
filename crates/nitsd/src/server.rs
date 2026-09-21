@@ -53,6 +53,10 @@ impl UnixServer {
         })
     }
 
+    pub(crate) async fn accept(&self) -> std::io::Result<tokio::net::UnixStream> {
+        self.listener.accept().await.map(|(stream, _)| stream)
+    }
+
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path

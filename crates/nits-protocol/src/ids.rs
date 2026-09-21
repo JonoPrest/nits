@@ -94,6 +94,10 @@ macro_rules! ulid_id {
 }
 
 ulid_id!(
+    /// A managed daemon replacement operation, independent of durable review events.
+    UpgradeId
+);
+ulid_id!(
     /// A workspace: a named group of repositories.
     WorkspaceId
 );

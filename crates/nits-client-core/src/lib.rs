@@ -35,6 +35,7 @@ mod focus;
 mod home;
 mod ids;
 mod keymap;
+mod lifecycle;
 mod patch;
 mod ref_selector;
 mod reference;
@@ -92,6 +93,9 @@ pub use keymap::{
     KeyCodeKind, KeyParseError, KeySeq, Keymap, KeysConfig, KeysError, Lookup, Mode, Modifiers,
     NamedKey, Override, Overrides, command_named, config_name, label, modes_of,
 };
+pub use lifecycle::{
+    DaemonManagement, DaemonManagementKind, ManagementReply, ManagementRequest, ManagementRequestId,
+};
 pub use patch::{ViewPatch, ViewPatchKind};
 pub use ref_selector::{
     RefOption, RefSelectorPurpose, RefSelectorPurposeKind, RefSelectorSide, RefSelectorStatus,
@@ -125,6 +129,10 @@ pub enum Input {
     },
     Server(ServerMsg),
     Transport(TransportEvent),
+    DaemonManaged {
+        id: ManagementRequestId,
+        reply: ManagementReply,
+    },
     /// Answer to an `Effect::Load`; `None` when the key is absent.
     Stored {
         key: Key,
@@ -166,6 +174,8 @@ pub enum SearchKind {
 #[strum_discriminants(name(ActionKind), derive(Hash, PartialOrd, Ord, strum::EnumIter))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum Action {
+    InspectDaemon,
+    UpgradeDaemon,
     Connect,
     Disconnect,
     /// Refresh the workspace list (and, on its answer, every review list).
@@ -516,6 +526,10 @@ pub enum ScopeChoice {
 #[derive(Debug, Clone, PartialEq, Eq, EnumDiscriminants)]
 #[strum_discriminants(name(EffectKind), derive(Hash))]
 pub enum Effect {
+    ManageDaemon {
+        id: ManagementRequestId,
+        request: ManagementRequest,
+    },
     /// Dial the daemon; report the outcome as `TransportEvent`.
     Connect,
     /// Close the connection. The host still reports `Disconnected`.
@@ -753,6 +767,9 @@ pub struct Config {
 pub struct ClientCore {
     config: Config,
     connection: Connection,
+    recovery: lifecycle::Recovery,
+    next_management: u64,
+    management_request: Option<ManagementRequestId>,
     view: ViewModel,
     now: Millis,
     next_request: u64,
@@ -828,8 +845,16 @@ struct Pending {
     ts: Timestamp,
     mutation: Mutation,
     body: EventBody,
-    /// `false` after a disconnect until it is re-sent on resubscribe.
-    sent: bool,
+    delivery: PendingDelivery,
+}
+
+/// A lost reply is not proof that the mutation was rejected. Only an explicit
+/// admission rejection permits an automatic retry with the original identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingDelivery {
+    AwaitingReceipt,
+    OutcomeUnknown,
+    NotAdmitted,
 }
 
 impl ClientCore {
@@ -840,6 +865,9 @@ impl ClientCore {
         Self {
             config,
             connection: Connection::Disconnected { last_seq: None },
+            recovery: lifecycle::Recovery::Idle,
+            next_management: 0,
+            management_request: None,
             view: ViewModel::default(),
             now: 0,
             next_request: 1,
@@ -938,6 +966,7 @@ impl ClientCore {
             }
             Input::Server(msg) => self.server(msg)?,
             Input::Transport(ev) => self.transport(ev),
+            Input::DaemonManaged { id, reply } => self.managed_daemon(id, reply),
             Input::Stored { key, value } if key == ViewPrefs::KEY => self.prefs_stored(value),
             Input::Stored { key, value } if key == Keymap::KEY => self.keymap_stored(value),
             Input::Stored { key, value } => self.stored(key, value)?,
@@ -945,7 +974,7 @@ impl ClientCore {
                 self.now = self.now.max(ms);
                 // A pending sequence never expires on the clock (vim-like):
                 // it waits until the user continues or cancels.
-                Vec::new()
+                self.restart_tick()
             }
             // Every key the core acts on is counted, including one that
             // resolves to a command changing nothing: a host that must
@@ -987,7 +1016,8 @@ impl ClientCore {
                 sections.extend(delta.sections.iter().copied());
                 false
             }
-            Effect::Connect
+            Effect::ManageDaemon { .. }
+            | Effect::Connect
             | Effect::Disconnect
             | Effect::Send(_)
             | Effect::Persist { .. }
@@ -1006,7 +1036,19 @@ impl ClientCore {
     // One block per derived panel; splitting would hide what is derived.
     #[allow(clippy::too_many_lines)]
     fn derive(&mut self) -> Vec<ViewSection> {
-        let mut sections = Vec::new();
+        let uncertain: Vec<_> = self
+            .pending
+            .iter()
+            .filter(|pending| pending.delivery == PendingDelivery::OutcomeUnknown)
+            .map(|pending| pending.client_seq)
+            .collect();
+        let uncertainty_changed = self.view.uncertain_mutations != uncertain;
+        self.view.uncertain_mutations = uncertain;
+        let mut sections = if uncertainty_changed {
+            vec![ViewSection::Connection]
+        } else {
+            Vec::new()
+        };
         let previous_row = home::focused(&self.view);
         let rows = home::rows(&self.view);
         if rows != self.view.home.rows {
@@ -2051,12 +2093,15 @@ impl ClientCore {
     #[allow(clippy::too_many_lines)]
     fn user(&mut self, action: Action) -> Result<Vec<Effect>, CoreError> {
         match action {
+            Action::InspectDaemon => Ok(self.manage_daemon(ManagementRequest::Inspect)),
+            Action::UpgradeDaemon => Ok(self.manage_daemon(ManagementRequest::Upgrade)),
             Action::Connect => match self.connection {
                 Connection::Disconnected { last_seq } => {
                     self.connection = Connection::Connecting {
                         hello_sent: false,
                         last_seq,
                     };
+                    self.recovery = lifecycle::Recovery::Idle;
                     self.view.connection = ConnectionView::Connecting;
                     let mut effects = vec![Effect::Connect, render(&[ViewSection::Connection])];
                     if !self.prefs_loaded {
@@ -3391,7 +3436,7 @@ impl ClientCore {
             ts: meta.ts,
             mutation: mutation.clone(),
             body,
-            sent: true,
+            delivery: PendingDelivery::AwaitingReceipt,
         });
         let send = self.request(
             Request::Mutate {
@@ -3665,7 +3710,9 @@ impl ClientCore {
                 if was_down {
                     return Vec::new();
                 }
-                self.view.connection = ConnectionView::Disconnected;
+                self.view.connection = self
+                    .restart_disconnected_view()
+                    .unwrap_or(ConnectionView::Disconnected);
                 let mut sections = vec![ViewSection::Connection];
                 if suggestions_changed {
                     sections.extend([ViewSection::Threads, ViewSection::Conversation]);
@@ -3715,16 +3762,31 @@ impl ClientCore {
             },
             ServerMsg::Rejected { error } => match self.connection {
                 Connection::Connecting { .. } => {
-                    // The daemon closes the connection; we go down now so
-                    // the view says why before the transport event lands.
                     self.connection = Connection::Disconnected {
                         last_seq: self.connection.last_seq(),
                     };
                     self.clear_in_flight();
-                    self.view.connection = ConnectionView::Rejected {
-                        error: error.clone(),
-                    };
-                    Err(CoreError::Rejected(error))
+                    if let RpcError::UnsupportedProtocol { supported, .. } = &error {
+                        self.recovery = lifecycle::Recovery::Idle;
+                        self.view.connection = ConnectionView::UpgradeRequired {
+                            client: ProtocolVersion::CURRENT,
+                            supported: supported.clone(),
+                        };
+                        Ok(vec![render(&[ViewSection::Connection])])
+                    } else if matches!(error, RpcError::Restarting { .. })
+                        && !matches!(self.recovery, lifecycle::Recovery::Idle)
+                    {
+                        self.view.connection = self
+                            .restart_disconnected_view()
+                            .unwrap_or(ConnectionView::Rejected { error });
+                        Ok(vec![render(&[ViewSection::Connection])])
+                    } else {
+                        self.recovery = lifecycle::Recovery::Idle;
+                        self.view.connection = ConnectionView::Rejected {
+                            error: error.clone(),
+                        };
+                        Err(CoreError::Rejected(error))
+                    }
                 }
                 Connection::Disconnected { .. } | Connection::Subscribed { .. } => {
                     Err(self.wrong_state(InputKind::Server))
@@ -3864,8 +3926,36 @@ impl ClientCore {
                         pending.client_seq == client_seq
                             && matches!(pending.mutation, Mutation::UpdateReviewTarget { .. })
                     });
-                    // Rejected: the optimistic change is undone.
-                    self.retire_pending(client_seq);
+                    match &error {
+                        RpcError::RestartInterrupted { .. } => {
+                            if let Some(pending) = self
+                                .pending
+                                .iter_mut()
+                                .find(|pending| pending.client_seq == client_seq)
+                            {
+                                pending.delivery = PendingDelivery::OutcomeUnknown;
+                            }
+                        }
+                        RpcError::Restarting { .. } => {
+                            if let Some(pending) = self
+                                .pending
+                                .iter_mut()
+                                .find(|pending| pending.client_seq == client_seq)
+                            {
+                                pending.delivery = PendingDelivery::NotAdmitted;
+                            }
+                        }
+                        RpcError::UnsupportedProtocol { .. }
+                        | RpcError::VersionMismatch { .. }
+                        | RpcError::Invalid { .. }
+                        | RpcError::NotFound { .. }
+                        | RpcError::Forbidden { .. }
+                        | RpcError::Internal { .. }
+                        | RpcError::Cancelled
+                        | RpcError::SeqTooOld { .. } => {
+                            self.retire_pending(client_seq);
+                        }
+                    }
                     sections.extend(self.rebase());
                     sections.push(ViewSection::Threads);
                     if target_update
@@ -3945,6 +4035,9 @@ impl ClientCore {
                     Err(self.wrong_state(InputKind::Server))
                 }
             },
+            ServerMsg::Lifecycle {
+                notice: nits_protocol::LifecycleNotice::Restarting { operation },
+            } => Ok(self.restart_notice(operation)),
         }
     }
 
@@ -3959,7 +4052,9 @@ impl ClientCore {
         self.in_flight.clear();
         self.content_reset_in_flight();
         for p in &mut self.pending {
-            p.sent = false;
+            if p.delivery == PendingDelivery::AwaitingReceipt {
+                p.delivery = PendingDelivery::OutcomeUnknown;
+            }
         }
     }
 
@@ -4145,16 +4240,16 @@ impl ClientCore {
                 let last_seq = self.connection.last_seq().map_or(seq, |s| s.max(seq));
                 self.connection = Connection::Subscribed { last_seq };
                 self.view.connection = ConnectionView::Subscribed;
+                self.recovery = lifecycle::Recovery::Idle;
                 self.view.last_error = None;
-                // Pending mutations lost with the connection go out again,
-                // once each, with their original `client_seq` so the daemon
-                // (and this core, on the echo) can match them.
+                // Only a typed rejection before admission proves a retry safe.
+                // Interrupted or lost acknowledgements never replay a write.
                 let resend: Vec<(ClientSeq, Mutation)> = self
                     .pending
                     .iter_mut()
-                    .filter(|p| !p.sent)
+                    .filter(|p| p.delivery == PendingDelivery::NotAdmitted)
                     .map(|p| {
-                        p.sent = true;
+                        p.delivery = PendingDelivery::AwaitingReceipt;
                         (p.client_seq, p.mutation.clone())
                     })
                     .collect();
@@ -4717,7 +4812,8 @@ impl ClientCore {
             for effect in self.apply_event(event) {
                 match effect {
                     Effect::Render(delta) => sections.extend(delta.sections),
-                    Effect::Connect
+                    Effect::ManageDaemon { .. }
+                    | Effect::Connect
                     | Effect::Disconnect
                     | Effect::Send(_)
                     | Effect::Persist { .. }
@@ -4785,6 +4881,8 @@ fn selector_error(error: &RpcError) -> RefSelectorStatus {
         RpcError::Forbidden { .. }
         | RpcError::SeqTooOld { .. }
         | RpcError::Cancelled
+        | RpcError::Restarting { .. }
+        | RpcError::RestartInterrupted { .. }
         | RpcError::UnsupportedProtocol { .. }
         | RpcError::VersionMismatch { .. }
         | RpcError::Internal { .. } => RefSelectorStatus::DaemonError {
@@ -4799,6 +4897,12 @@ fn rpc_error_message(error: &RpcError) -> String {
         RpcError::Invalid { reason } | RpcError::Forbidden { reason } => reason.clone(),
         RpcError::SeqTooOld { oldest } => format!("event history starts at {oldest}"),
         RpcError::Cancelled => "request cancelled".to_owned(),
+        RpcError::Restarting { operation_id } => {
+            format!("daemon restarting ({operation_id}); request was not admitted")
+        }
+        RpcError::RestartInterrupted { operation_id } => format!(
+            "daemon restarted ({operation_id}); interrupted mutation outcome may be unknown"
+        ),
         RpcError::UnsupportedProtocol { requested, .. } => {
             format!("protocol {requested} is unsupported")
         }

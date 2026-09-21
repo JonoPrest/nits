@@ -24,7 +24,7 @@ impl RequestId {
 }
 
 /// A request (`id` present) or notification (`id` absent).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Incoming {
     pub jsonrpc: String,
     #[serde(default)]
@@ -34,7 +34,7 @@ pub struct Incoming {
     pub params: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RpcErrorBody {
     pub code: i64,
     pub message: String,
@@ -42,9 +42,9 @@ pub struct RpcErrorBody {
     pub data: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outgoing {
-    pub jsonrpc: &'static str,
+    pub jsonrpc: String,
     pub id: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
@@ -62,7 +62,7 @@ impl Outgoing {
     #[must_use]
     pub fn result(id: Value, result: Value) -> Self {
         Self {
-            jsonrpc: "2.0",
+            jsonrpc: "2.0".into(),
             id,
             result: Some(result),
             error: None,
@@ -72,7 +72,7 @@ impl Outgoing {
     #[must_use]
     pub fn error(id: Value, code: i64, message: impl Into<String>) -> Self {
         Self {
-            jsonrpc: "2.0",
+            jsonrpc: "2.0".into(),
             id,
             result: None,
             error: Some(RpcErrorBody {

@@ -251,13 +251,14 @@ let make = (
     }}
     <UI.Box direction=Row gap=Sm>
       {switch connection {
-      | Disconnected(_) | Rejected(_) =>
+      | Disconnected(_) | Rejected(_) | UpgradeRequired(_) =>
         <UI.Button
           label="Reconnect"
           title=?{Chrome.tip(chrome, ReconnectReviewCreation)}
           onClick={() => run(ReconnectReviewCreation)}
         />
-      | Connecting(_) => <span role="status"> {React.string("Connecting…")} </span>
+      | Connecting(_) | Restarting(_) =>
+        <span role="status"> {React.string("Connecting…")} </span>
       | Subscribed(_) => React.null
       }}
       <UI.Button

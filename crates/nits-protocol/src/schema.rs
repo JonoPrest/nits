@@ -7,8 +7,9 @@ use std::borrow::Cow;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
-use crate::ids::{ClientId, CommentId, Oid, RepoId, ReviewId, ThreadId, WorkspaceId};
+use crate::ids::{ClientId, CommentId, Oid, RepoId, ReviewId, ThreadId, UpgradeId, WorkspaceId};
 use crate::invariants::{ColRange, LineRange, NonEmpty, RepoPath};
+use crate::lifecycle::{BuildDigest, ReleaseChannel, ReleaseVersion};
 use crate::version::ProtocolVersion;
 
 /// `string_schema!(Type, "description", "regex")` implements `JsonSchema`
@@ -33,6 +34,18 @@ macro_rules! string_schema {
 const ULID: &str = "^[0-7][0-9A-HJKMNP-TV-Z]{25}$";
 const HEX40: &str = "^[0-9a-f]{40}$";
 
+string_schema!(UpgradeId, "Managed replacement operation id (ULID)", ULID);
+string_schema!(BuildDigest, "Executable SHA-256 digest", "^[0-9a-f]{64}$");
+string_schema!(
+    ReleaseChannel,
+    "Installed release channel",
+    "^[A-Za-z0-9._-]{1,64}$"
+);
+string_schema!(
+    ReleaseVersion,
+    "Semantic release version",
+    "^[0-9]+\\.[0-9]+\\.[0-9]+([+-].*)?$"
+);
 string_schema!(WorkspaceId, "Workspace id (ULID)", ULID);
 string_schema!(RepoId, "Repo id (ULID)", ULID);
 string_schema!(ReviewId, "Review id (ULID)", ULID);

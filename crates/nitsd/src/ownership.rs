@@ -168,6 +168,32 @@ pub(crate) fn associate_socket(socket: &Path, data_dir: &Path) -> io::Result<()>
     Ok(())
 }
 
+/// Last successfully published endpoint/store association. This is used only
+/// to find an active upgrade owner during the gap between listeners, never as
+/// proof that a stopped endpoint is owned or as a substitute startup data path.
+pub(crate) fn associated_data_dir(socket: &Path) -> io::Result<Option<PathBuf>> {
+    let target = match std::fs::read_link(socket_data_path(socket)?) {
+        Ok(target) => target,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !target.is_absolute() || target.file_name() != Some(std::ffi::OsStr::new(FILE_NAME)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid endpoint ownership association",
+        ));
+    }
+    target
+        .parent()
+        .map(|parent| Some(parent.to_path_buf()))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ownership association has no parent",
+            )
+        })
+}
+
 fn socket_data_path(socket: &Path) -> io::Result<PathBuf> {
     let mut name = socket_owner_path(socket)?.into_os_string();
     name.push("-data");

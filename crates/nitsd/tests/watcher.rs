@@ -377,7 +377,7 @@ async fn a_burst_of_writes_resolves_once() {
         .iter()
         .find_map(|u| match u {
             Unsolicited::Event(e) => Some(e),
-            Unsolicited::TreeDelta(_) | Unsolicited::Error(_) => None,
+            Unsolicited::TreeDelta(_) | Unsolicited::Error(_) | Unsolicited::Lifecycle(_) => None,
         })
         .unwrap();
     assert!(matches!(resolved.author, Author::Daemon { .. }));
@@ -406,7 +406,7 @@ async fn create_and_delete_produce_single_deltas_with_the_right_entries() {
         .iter()
         .filter_map(|u| match u {
             Unsolicited::TreeDelta(d) => Some(d),
-            Unsolicited::Event(_) | Unsolicited::Error(_) => None,
+            Unsolicited::Event(_) | Unsolicited::Error(_) | Unsolicited::Lifecycle(_) => None,
         })
         .collect();
     assert_eq!(deltas.len(), 1, "{msgs:#?}");
@@ -424,7 +424,7 @@ async fn create_and_delete_produce_single_deltas_with_the_right_entries() {
         .iter()
         .filter_map(|u| match u {
             Unsolicited::TreeDelta(d) => Some(d),
-            Unsolicited::Event(_) | Unsolicited::Error(_) => None,
+            Unsolicited::Event(_) | Unsolicited::Error(_) | Unsolicited::Lifecycle(_) => None,
         })
         .collect();
     assert_eq!(deltas.len(), 1, "{msgs:#?}");

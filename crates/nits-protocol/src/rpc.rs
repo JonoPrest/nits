@@ -50,6 +50,10 @@ pub enum ClientMsg {
 #[strum_discriminants(name(ServerMsgKind), derive(EnumIter, Hash))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ServerMsg {
+    /// Non-durable control notification, independent of event subscriptions.
+    Lifecycle {
+        notice: crate::LifecycleNotice,
+    },
     /// Handshake accepted. `protocol` is the version all following frames
     /// use; `upgrade` is set when the client is behind but still served.
     Welcome {
@@ -552,6 +556,14 @@ pub enum EntityKind {
 #[strum_discriminants(name(RpcErrorKind), derive(EnumIter, Hash))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum RpcError {
+    /// Admission was closed before this work entered Core; safe to retry later.
+    Restarting {
+        operation_id: crate::UpgradeId,
+    },
+    /// Accepted work was interrupted; a mutation may already have committed.
+    RestartInterrupted {
+        operation_id: crate::UpgradeId,
+    },
     NotFound {
         kind: EntityKind,
         id: String,

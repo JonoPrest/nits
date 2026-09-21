@@ -85,6 +85,20 @@ where
     };
     let negotiated = match hello.negotiate(first) {
         Ok((n, welcome)) => {
+            let operation = daemon.lifecycle().borrow().clone();
+            if let Some(operation) = operation {
+                transport::send_msg(
+                    &mut wr,
+                    &n.wrap(ServerMsg::Rejected {
+                        error: RpcError::Restarting {
+                            operation_id: operation.id,
+                        },
+                    }),
+                )
+                .await?;
+                wr.close().await.ok();
+                return Err(ConnectionError::Rejected);
+            }
             transport::send_msg(&mut wr, &welcome).await?;
             n
         }
@@ -130,7 +144,9 @@ where
     drop(conn);
     drop(outbox);
     result?;
-    writer.await?;
+    if let Ok(result) = tokio::time::timeout(std::time::Duration::from_secs(2), writer).await {
+        result?;
+    }
     Ok(())
 }
 
@@ -145,15 +161,46 @@ async fn read_loop<R: FrameRead>(
     conn: &Arc<Connection>,
     rd: &mut R,
 ) -> Result<(), ConnectionError> {
+    let mut lifecycle = conn.daemon.lifecycle();
     let mut requests = FuturesUnordered::new();
     let mut in_flight: HashMap<RequestId, Arc<CancellationToken>> = HashMap::new();
     loop {
+        let operation = lifecycle.borrow_and_update().clone();
+        if let Some(operation) = operation {
+            conn.outbox.send(ServerMsg::Lifecycle {
+                notice: nits_protocol::LifecycleNotice::Restarting {
+                    operation: operation.clone(),
+                },
+            });
+            let deadline = tokio::time::sleep(std::time::Duration::from_secs(2));
+            tokio::pin!(deadline);
+            while !requests.is_empty() {
+                tokio::select! {
+                    () = &mut deadline => break,
+                    Some((id, token)) = requests.next() => {
+                        if in_flight.get(&id).is_some_and(|current| Arc::ptr_eq(current, &token)) { in_flight.remove(&id); }
+                    }
+                }
+            }
+            for id in in_flight.keys() {
+                conn.outbox.send(ServerMsg::Error {
+                    id: *id,
+                    error: RpcError::RestartInterrupted {
+                        operation_id: operation.id,
+                    },
+                });
+            }
+            return Ok(());
+        }
         // Reading a length-prefixed frame is not cancellation-safe. Keep this
         // future alive while completed requests are removed from the set.
         let next = transport::recv_msg::<_, ClientMsg>(rd);
         tokio::pin!(next);
         let env = loop {
             tokio::select! {
+                changed = lifecycle.changed() => {
+                    if changed.is_ok() { break None; }
+                },
                 env = &mut next => break env?,
                 Some((id, token)) = requests.next(), if !requests.is_empty() => {
                     // An older completion must not remove a reused request ID.
@@ -164,6 +211,9 @@ async fn read_loop<R: FrameRead>(
             }
         };
         let Some(env) = env else {
+            if lifecycle.borrow().is_some() {
+                continue;
+            }
             return Ok(());
         };
         if let Err(error) = conn.negotiated.check(env.v) {
@@ -295,6 +345,16 @@ impl Connection {
     }
 
     async fn handle(self: Arc<Self>, id: RequestId, request: Request) {
+        let operation = self.daemon.lifecycle().borrow().clone();
+        if let Some(operation) = operation {
+            self.outbox.send(ServerMsg::Error {
+                id,
+                error: RpcError::Restarting {
+                    operation_id: operation.id,
+                },
+            });
+            return;
+        }
         let shape = request.shape();
         let result = match request {
             Request::Subscribe { scope, since } => self.subscribe(scope, since).await,

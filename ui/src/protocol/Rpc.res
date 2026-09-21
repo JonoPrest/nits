@@ -22,6 +22,8 @@ module RpcError = {
   @@warning("-27")
   @schema @tag("type")
   type t =
+    | @as("Restarting") Restarting({@as("operation_id") operationId: upgradeId})
+    | @as("RestartInterrupted") RestartInterrupted({@as("operation_id") operationId: upgradeId})
     | @as("NotFound") NotFound({kind: EntityKind.t, id: string})
     | @as("Invalid") Invalid({reason: string})
     | @as("Forbidden") Forbidden({reason: string})
@@ -400,6 +402,7 @@ module ServerMsg = {
     | @as("Error") ServerError({id: requestId, error: RpcError.t})
     | @as("Event") Event({event: Events.Event.t})
     | @as("TreeDelta") TreeDelta({delta: TreeDelta.t})
+    | @as("Lifecycle") Lifecycle({notice: Lifecycle.LifecycleNotice.t})
 }
 
 module Envelope = {

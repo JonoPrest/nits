@@ -6,11 +6,11 @@
 //! for its own state, so "converged" means the client's optimistic
 //! semantics and the daemon's agree — which is exactly what §5.2 promises.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use nits_client_core::{
     Action, CacheConfig, ClientCore, Config, CoreError, Effect, EventMeta, IdSeed, Input,
-    MutationError, TransportEvent, apply_event, local_event,
+    MutationError, TransportEvent, apply_body, apply_event, local_event,
 };
 use nits_protocol::{
     Author, BuildInfo, ClientId, ClientMsg, EntityKind, Event, ProtocolVersion, Request, RequestId,
@@ -43,6 +43,8 @@ struct Client {
     /// Daemon → client, undelivered.
     down: VecDeque<ServerMsg>,
     session: Session,
+    now: i64,
+    mutation_meta: BTreeMap<nits_protocol::ClientSeq, EventMeta>,
 }
 
 /// The daemon as the clients see it: one review, an event log, a clock.
@@ -82,6 +84,12 @@ pub enum Divergence {
     NotOpen(Peer),
 }
 
+#[derive(Clone, Copy)]
+enum Convergence {
+    Complete,
+    AccountForUncertain,
+}
+
 /// See the module docs.
 #[derive(Debug)]
 pub struct Sim {
@@ -114,6 +122,8 @@ impl Sim {
                     up: VecDeque::new(),
                     down: VecDeque::new(),
                     session: Session::Down,
+                    now: 0,
+                    mutation_meta: BTreeMap::new(),
                 }
             })
             .collect();
@@ -241,6 +251,7 @@ impl Sim {
         self.daemon.now_ms += i64::try_from(ms).unwrap_or(i64::MAX);
         let now = u64::try_from(self.daemon.now_ms).unwrap_or(u64::MAX);
         for i in 0..self.clients.len() {
+            self.clients[i].now = self.daemon.now_ms;
             // Ticks never fail and produce no effects.
             let _ = self.clients[i].core.handle(Input::Tick(now));
         }
@@ -319,24 +330,52 @@ impl Sim {
     /// Every client with the review open shows exactly the daemon's state
     /// and has nothing pending.
     pub fn converged(&self) -> Result<(), Divergence> {
+        self.check_convergence(Convergence::Complete)
+    }
+
+    /// Every committed value converges, and any optimistic overlay still
+    /// retained after a lost reply is explicitly identified as uncertain.
+    /// This does not forgive stale snapshots or unlabelled pending requests.
+    pub fn converged_or_uncertain(&self) -> Result<(), Divergence> {
+        self.check_convergence(Convergence::AccountForUncertain)
+    }
+
+    fn check_convergence(&self, policy: Convergence) -> Result<(), Divergence> {
         for (i, c) in self.clients.iter().enumerate() {
             let peer = Peer(i);
             let Some(open) = &c.core.view().review else {
                 return Err(Divergence::NotOpen(peer));
             };
-            if !open.pending.is_empty() {
-                return Err(Divergence::Pending(peer, open.pending.len()));
+            let mut expected = self.daemon.snapshot.clone();
+            match policy {
+                Convergence::Complete if !open.pending.is_empty() => {
+                    return Err(Divergence::Pending(peer, open.pending.len()));
+                }
+                Convergence::Complete => {}
+                Convergence::AccountForUncertain => {
+                    let pending: Vec<_> =
+                        open.pending.iter().map(|event| event.client_seq).collect();
+                    if pending != c.core.view().uncertain_mutations {
+                        return Err(Divergence::Pending(peer, open.pending.len()));
+                    }
+                    for event in &open.pending {
+                        let Some(meta) = c.mutation_meta.get(&event.client_seq) else {
+                            return Err(Divergence::Pending(peer, open.pending.len()));
+                        };
+                        apply_body(&mut expected, meta, &event.body);
+                    }
+                }
             }
-            if open.snapshot.comments != self.daemon.snapshot.comments {
+            if open.snapshot.comments != expected.comments {
                 return Err(Divergence::Comments(peer));
             }
-            if open.snapshot.threads != self.daemon.snapshot.threads {
+            if open.snapshot.threads != expected.threads {
                 return Err(Divergence::Threads(peer));
             }
-            if open.snapshot.checkpoints != self.daemon.snapshot.checkpoints {
+            if open.snapshot.checkpoints != expected.checkpoints {
                 return Err(Divergence::Checkpoints(peer));
             }
-            if open.snapshot.requests != self.daemon.snapshot.requests {
+            if open.snapshot.requests != expected.requests {
                 return Err(Divergence::Requests(peer));
             }
         }
@@ -358,8 +397,25 @@ impl Sim {
                     }
                 }
                 Effect::Disconnect => self.disconnect(peer),
-                Effect::Send(msg) => self.clients[peer.0].up.push_back(msg.clone()),
+                Effect::Send(msg) => {
+                    let client = &mut self.clients[peer.0];
+                    if let ClientMsg::Request {
+                        request: Request::Mutate { client_seq, .. },
+                        ..
+                    } = msg
+                    {
+                        client
+                            .mutation_meta
+                            .entry(*client_seq)
+                            .or_insert_with(|| EventMeta {
+                                author: client.author.clone(),
+                                ts: Timestamp::from_millis(client.now),
+                            });
+                    }
+                    client.up.push_back(msg.clone());
+                }
                 Effect::Render(_)
+                | Effect::ManageDaemon { .. }
                 | Effect::Persist { .. }
                 | Effect::Load { .. }
                 | Effect::Remove { .. } => {}

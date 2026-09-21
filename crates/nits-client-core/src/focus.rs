@@ -626,6 +626,8 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 | Command::FocusThreads
                 | Command::FocusCommits
                 | Command::Submit
+                | Command::InspectDaemon
+                | Command::UpgradeDaemon
                 | Command::Connect
                 | Command::Disconnect
                 | Command::Commits
@@ -1375,6 +1377,8 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             .active_creation()
             .map(|_| Action::Connect)
             .ok_or_else(nothing),
+        Command::InspectDaemon => Ok(Action::InspectDaemon),
+        Command::UpgradeDaemon => Ok(Action::UpgradeDaemon),
         Command::Connect => Ok(Action::Connect),
         Command::Disconnect => Ok(Action::Disconnect),
         Command::Refresh => Ok(Action::ListWorkspaces),

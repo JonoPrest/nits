@@ -1,0 +1,14 @@
+{
+  "build": {
+    "control": 1,
+    "digest": "0101010101010101010101010101010101010101010101010101010101010101",
+    "protocol": "0.18.0",
+    "release": {
+      "channel": "stable",
+      "version": "1.0.0"
+    },
+    "schema": 9,
+    "worker": 1
+  },
+  "type": "Available"
+}

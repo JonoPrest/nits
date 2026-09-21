@@ -145,7 +145,8 @@ fn rendered(effects: &[Effect]) -> Vec<ViewSection> {
             | Effect::Send(_)
             | Effect::Persist { .. }
             | Effect::Load { .. }
-            | Effect::Remove { .. } => None,
+            | Effect::Remove { .. }
+            | Effect::ManageDaemon { .. } => None,
         })
         .flatten()
         .collect()
@@ -160,7 +161,8 @@ fn sent_request(effects: &[Effect]) -> Option<(RequestId, Request)> {
         | Effect::Render(_)
         | Effect::Persist { .. }
         | Effect::Load { .. }
-        | Effect::Remove { .. } => None,
+        | Effect::Remove { .. }
+        | Effect::ManageDaemon { .. } => None,
     })
 }
 
@@ -496,7 +498,8 @@ fn response_first_ref_selection_ignores_its_echo_then_refreshes_the_diff() {
             | Effect::Persist { .. }
             | Effect::Load { .. }
             | Effect::Remove { .. }
-            | Effect::Render(_) => None,
+            | Effect::Render(_)
+            | Effect::ManageDaemon { .. } => None,
         })
         .collect::<Vec<_>>();
     assert!(
@@ -590,13 +593,17 @@ fn rejected_handshake_is_a_typed_error_and_shows_why() {
         requested: ProtocolVersion::CURRENT,
         supported: vec![],
     };
-    let err = core
-        .handle(Input::Server(ServerMsg::Rejected {
-            error: error.clone(),
-        }))
-        .unwrap_err();
-    assert_eq!(err, CoreError::Rejected(error.clone()));
-    assert_eq!(core.view().connection, ConnectionView::Rejected { error });
+    let effects = core
+        .handle(Input::Server(ServerMsg::Rejected { error }))
+        .unwrap();
+    assert!(rendered(&effects).contains(&ViewSection::Connection));
+    assert_eq!(
+        core.view().connection,
+        ConnectionView::UpgradeRequired {
+            client: ProtocolVersion::CURRENT,
+            supported: vec![]
+        }
+    );
     assert!(matches!(core.connection(), Connection::Disconnected { .. }));
 }
 
@@ -2666,3 +2673,212 @@ mod creation;
 
 #[path = "suggestion/mod.rs"]
 mod suggestion_flow;
+
+fn planned_restart(protocol: ProtocolVersion) -> nits_protocol::UpgradeOperation {
+    let source = nits_protocol::BuildDescriptor {
+        digest: nits_protocol::BuildDigest::from_bytes([1; 32]),
+        release: nits_protocol::ReleaseIdentity {
+            channel: "stable".parse().unwrap(),
+            version: "1.0.0".parse().unwrap(),
+        },
+        protocol: ProtocolVersion::CURRENT,
+        schema: SchemaVersion::CURRENT,
+        control: nits_protocol::ControlVersion::CURRENT,
+        worker: nits_protocol::WorkerVersion::CURRENT,
+    };
+    let mut target = source.clone();
+    target.protocol = protocol;
+    target.digest = nits_protocol::BuildDigest::from_bytes([2; 32]);
+    nits_protocol::UpgradeOperation {
+        id: nits_protocol::UpgradeId::from_parts(1, 1),
+        source,
+        target,
+        progress: nits_protocol::UpgradeProgress::Active {
+            stage: nits_protocol::UpgradeStage::Draining,
+        },
+    }
+}
+
+#[test]
+fn planned_restart_preserves_draft_and_cursor_with_bounded_reconnect() {
+    let mut core = subscribed(11);
+    let review_id = ReviewId::from_parts(1, 1);
+    open(&mut core, review_id);
+    core.handle(Input::User(Action::DraftOpened {
+        anchor: Anchor::Review,
+    }))
+    .unwrap();
+    let draft = core.view().draft.clone();
+    let operation = planned_restart(ProtocolVersion::CURRENT);
+    core.handle(Input::Server(ServerMsg::Lifecycle {
+        notice: nits_protocol::LifecycleNotice::Restarting { operation },
+    }))
+    .unwrap();
+    core.handle(Input::Transport(TransportEvent::Disconnected))
+        .unwrap();
+    assert_eq!(core.view().draft, draft);
+    assert_eq!(core.view().open_review, Some(review_id));
+    assert!(core.handle(Input::Tick(99)).unwrap().is_empty());
+    assert!(
+        core.handle(Input::Tick(100))
+            .unwrap()
+            .contains(&Effect::Connect)
+    );
+    core.handle(Input::Transport(TransportEvent::Connected))
+        .unwrap();
+    let effects = core.handle(Input::Server(welcome())).unwrap();
+    assert!(matches!(
+        sent_request(&effects).unwrap().1,
+        Request::Subscribe {
+            since: Since::After { .. },
+            ..
+        }
+    ));
+    core.handle(Input::Transport(TransportEvent::Disconnected))
+        .unwrap();
+    assert!(core.handle(Input::Tick(349)).unwrap().is_empty());
+    assert!(
+        core.handle(Input::Tick(350))
+            .unwrap()
+            .contains(&Effect::Connect)
+    );
+    let effects = core.handle(Input::Tick(60_000)).unwrap();
+    assert!(effects.contains(&Effect::Disconnect));
+    core.handle(Input::Transport(TransportEvent::Disconnected))
+        .unwrap();
+    assert!(matches!(
+        core.view().connection,
+        ConnectionView::Rejected { .. }
+    ));
+    assert!(core.handle(Input::Tick(120_000)).unwrap().is_empty());
+    assert_eq!(core.view().draft, draft);
+}
+
+#[test]
+fn incompatible_restart_retains_draft_and_requires_host_upgrade_without_redial() {
+    let mut core = subscribed(11);
+    open(&mut core, ReviewId::from_parts(1, 1));
+    core.handle(Input::User(Action::DraftOpened {
+        anchor: Anchor::Review,
+    }))
+    .unwrap();
+    let draft = core.view().draft.clone();
+    let operation = planned_restart(ProtocolVersion::new(9, 0, 0));
+    core.handle(Input::Server(ServerMsg::Lifecycle {
+        notice: nits_protocol::LifecycleNotice::Restarting { operation },
+    }))
+    .unwrap();
+    core.handle(Input::Transport(TransportEvent::Disconnected))
+        .unwrap();
+    assert!(matches!(
+        core.view().connection,
+        ConnectionView::UpgradeRequired { .. }
+    ));
+    assert_eq!(core.view().draft, draft);
+    for tick in [100, 1_000, 60_000, 120_000] {
+        assert!(core.handle(Input::Tick(tick)).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn only_explicit_never_admitted_mutations_retry_after_reconnect() {
+    for admitted in [false, true] {
+        let mut core = subscribed(11);
+        open(&mut core, ReviewId::from_parts(1, 1));
+        core.handle(Input::User(Action::DraftOpened {
+            anchor: Anchor::Review,
+        }))
+        .unwrap();
+        let effects = core
+            .handle(Input::User(Action::DraftSubmitted {
+                body: "retained text".into(),
+            }))
+            .unwrap();
+        let (id, original) = sent_request(&effects).unwrap();
+        let operation_id = nits_protocol::UpgradeId::from_parts(1, 1);
+        let error = if admitted {
+            RpcError::RestartInterrupted { operation_id }
+        } else {
+            RpcError::Restarting { operation_id }
+        };
+        core.handle(Input::Server(ServerMsg::Error { id, error }))
+            .unwrap();
+        core.handle(Input::Transport(TransportEvent::Disconnected))
+            .unwrap();
+        core.handle(Input::User(Action::Connect)).unwrap();
+        core.handle(Input::Transport(TransportEvent::Connected))
+            .unwrap();
+        let effects = core.handle(Input::Server(welcome())).unwrap();
+        let (id, _) = sent_request(&effects).unwrap();
+        let effects = core
+            .handle(Input::Server(ServerMsg::Response {
+                id,
+                response: Response::Subscribed { seq: Seq::new(11) },
+            }))
+            .unwrap();
+        let retried = effects
+            .iter()
+            .filter_map(|effect| {
+                if let Effect::Send(ClientMsg::Request {
+                    request: Request::Mutate { .. },
+                    ..
+                }) = effect
+                {
+                    Some(effect)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(retried.len(), usize::from(!admitted));
+        if let Some(Effect::Send(ClientMsg::Request { request, .. })) = retried.first().copied() {
+            assert_eq!(*request, original);
+        }
+        assert_eq!(core.view().uncertain_mutations.len(), usize::from(admitted));
+        assert_eq!(core.pending_count(), 1);
+    }
+}
+
+#[test]
+fn late_commit_after_resubscribe_reconciles_unknown_without_resending() {
+    let mut core = subscribed(11);
+    open(&mut core, ReviewId::from_parts(1, 1));
+    core.handle(Input::User(Action::DraftOpened { anchor: Anchor::Review })).unwrap();
+    let effects = core.handle(Input::User(Action::DraftSubmitted { body: "one accepted comment".into() })).unwrap();
+    let (_, Request::Mutate { client_seq, .. }) = sent_request(&effects).unwrap() else { panic!("mutation") };
+    let body = core.view().review.as_ref().unwrap().pending[0].body.clone();
+    core.handle(Input::Transport(TransportEvent::Disconnected)).unwrap();
+    core.handle(Input::User(Action::Connect)).unwrap();
+    core.handle(Input::Transport(TransportEvent::Connected)).unwrap();
+    let effects = core.handle(Input::Server(welcome())).unwrap();
+    let (id, _) = sent_request(&effects).unwrap();
+    let effects = core.handle(Input::Server(ServerMsg::Response { id, response: Response::Subscribed { seq: Seq::new(11) } })).unwrap();
+    assert!(!effects.iter().any(|effect| matches!(effect, Effect::Send(ClientMsg::Request { request: Request::Mutate { .. }, .. }))));
+    assert_eq!(core.view().uncertain_mutations, [client_seq]);
+    let mut committed = event(12, body);
+    committed.client_id = config().client_id;
+    committed.client_seq = client_seq;
+    core.handle(Input::Server(ServerMsg::Event { event: committed.clone() })).unwrap();
+    assert_eq!(core.pending_count(), 0);
+    assert!(core.view().uncertain_mutations.is_empty());
+    assert_eq!(core.view().review.as_ref().unwrap().snapshot.comments.len(), 1);
+    assert!(matches!(core.handle(Input::Server(ServerMsg::Event { event: committed })), Err(CoreError::StaleEvent { .. })));
+    assert_eq!(core.view().review.as_ref().unwrap().snapshot.comments.len(), 1);
+}
+
+#[test]
+fn maintenance_reply_identity_survives_disconnect_and_discards_superseded_status() {
+    use nits_client_core::{DaemonManagement, ManagementReply};
+    let mut core = subscribed(11);
+    let first = core.handle(Input::User(Action::InspectDaemon)).unwrap();
+    let Effect::ManageDaemon { id: old, .. } = first[0] else { panic!("management") };
+    let second = core.handle(Input::User(Action::UpgradeDaemon)).unwrap();
+    let Effect::ManageDaemon { id: current, .. } = second[0] else { panic!("management") };
+    core.handle(Input::Transport(TransportEvent::Disconnected)).unwrap();
+    let effects = core.handle(Input::DaemonManaged { id: old, reply: ManagementReply::Status(Err("stale failed probe".into())) }).unwrap();
+    assert!(effects.is_empty());
+    assert_eq!(core.view().daemon_management, DaemonManagement::Upgrading);
+    let result = nits_protocol::UpgradeResult::Accepted { operation: planned_restart(ProtocolVersion::CURRENT) };
+    core.handle(Input::DaemonManaged { id: current, reply: ManagementReply::Upgrade(Ok(result.clone())) }).unwrap();
+    assert_eq!(core.view().daemon_management, DaemonManagement::Outcome { result });
+}

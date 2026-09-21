@@ -13,10 +13,13 @@
 //! - [`serve`]: running the daemon, and the stdio proxy that reaches it.
 //! - [`client`]: the async client used by tests, the CLI and the MCP shim.
 
+mod admission;
+pub mod build;
 pub mod client;
 pub mod codec;
 pub mod connection;
 pub mod contexts;
+pub mod control;
 pub mod daemon;
 pub mod dispatch;
 pub mod handshake;
@@ -28,6 +31,7 @@ pub mod render_text;
 pub mod serve;
 pub mod server;
 pub mod transport;
+pub mod upgrade;
 pub mod watcher;
 
 pub use daemon::Daemon;

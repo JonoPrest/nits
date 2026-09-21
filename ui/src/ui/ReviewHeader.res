@@ -126,6 +126,8 @@ let make = (
       | Connecting(_) => "connecting"
       | Subscribed(_) => "connected"
       | Rejected(_) => "rejected"
+      | Restarting({operation}) => "Restarting to " ++ operation.target.release.version
+      | UpgradeRequired(_) => "client upgrade required"
       }
       <header className="review-header" ariaLabel="review targets">
         <div className="review-identity" ariaLabel="Review location">
