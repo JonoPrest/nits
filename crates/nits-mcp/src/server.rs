@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use nits_protocol::{
     AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, Human, LineNo, LineRange, Mutation,
-    NonEmpty, RenderContent, RenderOpts, RepoPath, ReviewTarget, Since,
+    RenderContent, RenderOpts, RepoPath, ReviewTarget, Since,
 };
 use nitsd::client::{Client, ClientError, Identity};
 use nitsd::ops::{EventPoll, Ops, OpsError};
@@ -908,7 +908,7 @@ impl Server {
             .workspace_id
             .or_else(|| here.as_ref().map(|h| h.workspace.id))
             .ok_or_else(|| ToolError::Invalid("workspace_id".into()))?;
-        let targets = NonEmpty::new(
+        let targets = nits_protocol::CreateReviewTargets::try_from(
             p.targets
                 .into_iter()
                 .map(|t| {
@@ -922,7 +922,8 @@ impl Server {
                     })
                 })
                 .collect::<Result<Vec<_>, ToolError>>()?,
-        )?;
+        )
+        .map_err(|error| ToolError::Invalid(error.to_string()))?;
         let (review_id, event) = ops.create_review(workspace_id, p.title, targets).await?;
         ok(tools::Created {
             review_id,

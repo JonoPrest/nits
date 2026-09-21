@@ -139,6 +139,224 @@ fn targets() -> NonEmpty<ReviewTarget> {
     .unwrap()
 }
 
+#[test]
+fn duplicate_creation_targets_fail_before_lookups_resolution_or_events() {
+    let w = world();
+    let before = w.core.last_seq().unwrap();
+    let before_events = w.core.events_after(None).unwrap();
+    let original = targets().first().clone();
+    for head in [
+        original.head.clone(),
+        RefSpec::Head,
+        RefSpec::Branch {
+            name: "missing-ref".into(),
+        },
+    ] {
+        let duplicate = ReviewTarget {
+            head,
+            ..original.clone()
+        };
+        let error = w
+            .core
+            .create_review(
+                &human(),
+                review_id(50),
+                ws(),
+                "duplicate".into(),
+                vec![original.clone(), duplicate],
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, CoreError::Invalid { ref reason } if reason.contains(&rid(1).to_string()) && reason.contains("one base/head pair")),
+            "{error}"
+        );
+        assert_eq!(w.core.last_seq().unwrap(), before);
+        assert_eq!(w.core.events_after(None).unwrap(), before_events);
+        assert!(w.core.reviews(ws()).unwrap().is_empty());
+    }
+    assert!(matches!(
+        w.core.create_review(
+            &human(),
+            review_id(50),
+            ws(),
+            "empty".into(),
+            Vec::<ReviewTarget>::new()
+        ),
+        Err(CoreError::Invalid { .. })
+    ));
+    assert_eq!(w.core.last_seq().unwrap(), before);
+    let valid = w
+        .core
+        .create_review(&human(), review_id(50), ws(), "two repos".into(), targets())
+        .unwrap();
+    assert_eq!(valid.review.targets.len(), 2);
+    assert!(
+        w.core
+            .file_render(
+                review_id(50),
+                rid(1),
+                &p("src/main.rs"),
+                RenderOpts::default(),
+                &DiffScope::All
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn legacy_duplicate_reviews_survive_rebuild_and_explicit_archive_replacement_repair() {
+    use nits_review_core::store::{NewEvent, Store};
+    let w = world();
+    let data = w.data.clone();
+    drop(w.core);
+    let store = Store::open(&data.state()).unwrap();
+    // Write genuine historical event shapes, bypassing only the new creation
+    // boundary as an older daemon did. No decoder or history is rewritten.
+    for conflicting in [false, true] {
+        let target = targets().first().clone();
+        let second = if conflicting {
+            ReviewTarget {
+                base: target.head.clone(),
+                head: target.base.clone(),
+                ..target.clone()
+            }
+        } else {
+            target.clone()
+        };
+        store
+            .append(NewEvent {
+                ts: human().now,
+                author: human().author,
+                client_id: human().client_id,
+                client_seq: human().client_seq,
+                body: EventBody::ReviewCreated {
+                    review: nits_protocol::Review {
+                        id: review_id(50 + u128::from(conflicting)),
+                        workspace_id: ws(),
+                        title: format!("legacy conflicting={conflicting}"),
+                        targets: NonEmpty::new(vec![target, second]).unwrap(),
+                        created: human().now,
+                        status: ReviewStatus::Open,
+                    },
+                },
+            })
+            .unwrap();
+    }
+    drop(store);
+    let core = Core::open(&data).unwrap();
+    for n in [50, 51] {
+        let id = review_id(n);
+        core.resolve_targets(&human(), id).unwrap();
+        core.add_comment(
+            &human(),
+            id,
+            cid(n),
+            CommentKind::Note,
+            Anchor::Review,
+            "Historical discussion remains here".into(),
+            None,
+        )
+        .unwrap();
+        core.request_review(
+            &human(),
+            id,
+            "reviewer".into(),
+            "Original captured targets".into(),
+        )
+        .unwrap();
+    }
+    let originals: Vec<_> = [50, 51]
+        .into_iter()
+        .map(|n| core.review_snapshot(review_id(n)).unwrap())
+        .collect();
+    let history = core.events_after(None).unwrap();
+    drop(core);
+    let store = Store::open(&data.state()).unwrap();
+    store.rebuild_views().unwrap();
+    assert_eq!(store.events_after(None).unwrap(), history);
+    for original in &originals {
+        assert_eq!(
+            store.review_snapshot(original.review.id).unwrap().as_ref(),
+            Some(original)
+        );
+    }
+    drop(store);
+    let core = Core::open(&data).unwrap();
+    assert_eq!(core.reviews(ws()).unwrap().len(), 2);
+    for original in originals {
+        let id = original.review.id;
+        // The user explicitly chooses the first pair; the repair does not
+        // infer a winner from order or modify the archived record's targets.
+        let chosen = original.review.targets.first().clone();
+        let replacement = review_id(if id == review_id(50) { 60 } else { 61 });
+        core.update_review(
+            &human(),
+            id,
+            original.review.title.clone(),
+            ReviewStatus::Archived,
+        )
+        .unwrap();
+        core.create_review(
+            &human(),
+            replacement,
+            ws(),
+            "Chosen replacement".into(),
+            nits_protocol::CreateReviewTargets::singleton(chosen),
+        )
+        .unwrap();
+        for (source, linked, comment) in [(id, replacement, cid(100)), (replacement, id, cid(101))]
+        {
+            core.add_comment(
+                &human(),
+                source,
+                comment,
+                CommentKind::Note,
+                Anchor::Review,
+                format!("Related review: nits://context/local/review/{linked}"),
+                None,
+            )
+            .unwrap();
+        }
+        let archived = core.review_snapshot(id).unwrap();
+        assert_eq!(archived.review.targets, original.review.targets);
+        assert_eq!(archived.resolved, original.resolved);
+        assert_eq!(archived.requests, original.requests);
+        assert_eq!(archived.comments[0], original.comments[0]);
+        assert_eq!(archived.comments.len(), 2);
+        assert_eq!(archived.review.status, ReviewStatus::Archived);
+        let files = core.files(replacement).unwrap();
+        assert_eq!(files.len(), 2);
+        for file in files {
+            assert!(
+                core.file_render(
+                    replacement,
+                    file.repo_id,
+                    &file.path,
+                    RenderOpts::default(),
+                    &DiffScope::All
+                )
+                .is_ok()
+            );
+        }
+    }
+    assert_eq!(
+        &core.events_after(None).unwrap()[..history.len()],
+        history.as_slice()
+    );
+    let repaired: Vec<_> = [50, 51, 60, 61]
+        .into_iter()
+        .map(|n| core.review_snapshot(review_id(n)).unwrap())
+        .collect();
+    drop(core);
+    let store = Store::open(&data.state()).unwrap();
+    store.rebuild_views().unwrap();
+    drop(store);
+    let reopened = Core::open(&data).unwrap();
+    for review in repaired {
+        assert_eq!(reopened.review_snapshot(review.review.id).unwrap(), review);
+    }
+}
+
 fn head_blob(core: &Core, review: ReviewId, repo: RepoId, path: &str) -> nits_protocol::BlobOid {
     let f = core
         .file_change(review, repo, &p(path), &DiffScope::All)

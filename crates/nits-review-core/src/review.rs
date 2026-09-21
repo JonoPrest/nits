@@ -4,8 +4,8 @@ use nits_protocol::{
     BlobOid, ChangeKind, CommitInfo, CommitOid, DiffScope, EntityKind, EventBody, FileChange,
     FileRenderHeader, NonEmpty, RefCandidate, RefSpec, RenderOpts, RenderTarget, RepoId, RepoPath,
     ResolvedRef, ResolvedSource, ResolvedTarget, Review, ReviewId, ReviewSnapshot, ReviewStatus,
-    ReviewTarget, ReviewTargetUpdate, TargetRevision, TreeDelta, TreeEntryKind, TreeSnapshot,
-    ViewedMark, Workspace, WorkspaceId,
+    ReviewTargetUpdate, TargetRevision, TreeDelta, TreeEntryKind, TreeSnapshot, ViewedMark,
+    Workspace, WorkspaceId,
 };
 
 use crate::core::{Core, CoreError, Ctx};
@@ -129,13 +129,18 @@ impl Core {
         id: ReviewId,
         workspace_id: WorkspaceId,
         title: String,
-        targets: NonEmpty<ReviewTarget>,
+        targets: impl TryInto<nits_protocol::CreateReviewTargets, Error: std::fmt::Display>,
     ) -> Result<ReviewRecord, CoreError> {
+        // Parse at the public operation boundary, before any lookup, git read or
+        // append. The remainder only accepts nonempty, unique repository targets.
+        let targets = targets
+            .try_into()
+            .map_err(|error| CoreError::invalid(error.to_string()))?;
         let ws = self.workspace(workspace_id)?;
         if self.store.review(id)?.is_some() {
             return Err(CoreError::invalid(format!("review {id} already exists")));
         }
-        for t in &targets {
+        for t in targets.as_targets() {
             if !ws.repos.iter().any(|r| r.id == t.repo_id) {
                 return Err(CoreError::invalid(format!(
                     "repo {} is not in workspace {workspace_id}",
@@ -146,7 +151,7 @@ impl Core {
         // Pre-flight: every target must resolve before anything is
         // committed, or an unresolvable base (say `Upstream` with no
         // upstream configured) would leave a ghost review behind.
-        for t in &targets {
+        for t in targets.as_targets() {
             let repo = self.workspace_repo(workspace_id, t.repo_id)?;
             repo.resolve(&t.base)?;
             repo.resolve(&t.head)?;
@@ -155,7 +160,7 @@ impl Core {
             id,
             workspace_id,
             title,
-            targets,
+            targets: targets.into(),
             created: ctx.now,
             status: ReviewStatus::Open,
         };

@@ -343,3 +343,98 @@ test("interrupted retry has a new lifecycle revision and ignores an old interrup
   CreationRecovery.observe(state, Some({...interrupted, revision: 5}))
   expect((state.snapshot->Option.getExn).creation.status)->toEqual(interrupted.status)
 })
+
+test("unique target choices follow local add/remove operations before acknowledgements", () => {
+  let dispatch = fn()
+  let creation = CreationFixtures.make()
+  let workspace = CreationFixtures.workspace()
+  let {container, rerender} = render(view(creation, dispatch))
+  let selectors = () => Element.querySelectorAll(container, "select[aria-label='repo']")
+  let options = element => {
+    let nodes = Element.querySelectorAll(element, "option")
+    let values = []
+    nodes->Array.forEach(node => values->Array.push(Element.value(node)))
+    values
+  }
+  expect(options(selectors()->Array.getUnsafe(0)))->toEqual(workspace.repos->Array.map(r => r.id))
+  FireEvent.click(Screen.getByText("+ target"))
+  expect(Array.length(selectors()))->toBe(2)
+  expect(options(selectors()->Array.getUnsafe(0)))->toEqual([
+    (workspace.repos->Array.getUnsafe(0)).id,
+  ])
+  expect(options(selectors()->Array.getUnsafe(1)))->toEqual([
+    (workspace.repos->Array.getUnsafe(1)).id,
+  ])
+  expect(Element.hasAttribute(Screen.getByText("+ target"), "disabled"))->toBe(true)
+  let _ = Screen.getByText(
+    "All workspace repositories are included. Remove a target to choose it again.",
+  )
+  FireEvent.click(Screen.getByText("+ target"))
+  FireEvent.keyDown(Screen.getByPlaceholderText("Title"), {"key": "a", "ctrlKey": true})
+  FireEvent.change(
+    Screen.getByPlaceholderText("Title"),
+    {"target": {"value": "typed after exhaustion"}},
+  )
+  expect(Array.length(selectors()))->toBe(2)
+  let before = lastCreation(dispatch)
+  expect(Array.length(before.draft.targets))->toBe(2)
+  let removed = before.draft.targets->Array.getUnsafe(1)
+  FireEvent.click(
+    Element.querySelectorAll(container, "[aria-label='Remove target']")->Array.getUnsafe(1),
+  )
+  expect(Element.hasAttribute(Screen.getByText("+ target"), "disabled"))->toBe(false)
+  expect(Array.length(options(selectors()->Array.getUnsafe(0))))->toBe(2)
+  FireEvent.click(Screen.getByText("+ target"))
+  let current = lastCreation(dispatch)
+  let added = current.draft.targets->Array.getUnsafe(1)
+  expect(added.repoId)->toBe(removed.repoId)
+  expect(added.id == removed.id)->toBe(false)
+  rerender(view({...creation, revision: before.revision, draft: before.draft}, dispatch))
+  expect(Array.length(selectors()))->toBe(2)
+  expect(Element.value(Screen.getByPlaceholderText("Title")))->toBe("typed after exhaustion")
+  expect(Element.hasAttribute(Screen.getByText("+ target"), "disabled"))->toBe(true)
+})
+
+test("one repo is exhausted immediately and restored duplicates remain correctable", () => {
+  let workspace = CreationFixtures.workspace()
+  let first = workspace.repos->Array.getUnsafe(0)
+  let single = {...workspace, repos: [first]}
+  let dispatch = fn()
+  let creation = CreationFixtures.make(~workspace=single)
+  let {container, rerender} = render(
+    <NewReview
+      creation
+      workspaces=[single]
+      chrome=CreationFixtures.hints
+      bindings=CreationFixtures.hints
+      dispatch
+    />,
+  )
+  expect(Element.hasAttribute(Screen.getByText("+ target"), "disabled"))->toBe(true)
+  let duplicate = {...creation.draft.targets->Array.getUnsafe(0), id: 9, head: "other-head"}
+  let retained = {
+    ...creation,
+    draft: {
+      title: "retain duplicate inputs",
+      targets: creation.draft.targets->Array.concat([duplicate]),
+    },
+    status: Failed({message: "Choose one base/head pair for each repository."}),
+  }
+  rerender(view(retained, dispatch))
+  let rows = Element.querySelectorAll(container, "select[aria-label='repo']")
+  expect(Array.length(rows))->toBe(2)
+  rows->Array.forEach(row => {
+    expect(Element.value(row))->toBe(first.id)
+    expect(Array.length(Element.querySelectorAll(row, "option")))->toBe(2)
+  })
+  expect(Element.value(Screen.getByPlaceholderText("Title")))->toBe("retain duplicate inputs")
+  let _ = Screen.getByText("Choose one base/head pair for each repository.")
+  let other = (workspace.repos->Array.getUnsafe(1)).id
+  FireEvent.change(rows->Array.getUnsafe(1), {"target": {"value": other}})
+  expect(dispatch)->toHaveBeenCalledWith(
+    Action.EditCreationDraft({
+      reviewId: creation.reviewId,
+      edit: Repository({targetId: duplicate.id, repoId: other}),
+    }),
+  )
+})

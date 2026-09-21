@@ -35,6 +35,12 @@ let make = (
   }, [creation])
   let editable = View.ReviewCreation.editable(creation) && !submitted
   let workspace = workspaces->Array.find(w => w.id == creation.workspaceId)
+  let available =
+    workspace
+    ->Option.map(w =>
+      w.repos->Array.filter(r => !(draft.targets->Array.some(t => t.repoId == r.id)))
+    )
+    ->Option.getOr([])
   let send = action => {
     let _ = CreationRecovery.beforeAction(local.current, action, ~workspaces)
     switch local.current.snapshot {
@@ -150,11 +156,29 @@ let make = (
             ariaLabel="repo"
             value=t.repoId
             disabled={!editable}
-            options={workspace
-            ->Option.map(w =>
-              w.repos->Array.map(r => (r.id, RepositoryIdentity.repoLabel(w, r.id)))
-            )
-            ->Option.getOr([])}
+            options={
+              let choices =
+                workspace
+                ->Option.map(w =>
+                  w.repos
+                  ->Array.filter(
+                    r =>
+                      r.id == t.repoId ||
+                        !(
+                          draft.targets->Array.some(
+                            other => other.id != t.id && other.repoId == r.id,
+                          )
+                        ),
+                  )
+                  ->Array.map(r => (r.id, RepositoryIdentity.repoLabel(w, r.id)))
+                )
+                ->Option.getOr([])
+              choices->Array.some(((id, _)) => id == t.repoId)
+                ? choices
+                : choices->Array.concat([
+                    (t.repoId, RepositoryIdentity.shortId(t.repoId) ++ " (not attached)"),
+                  ])
+            }
             onFocus={() => select(t.id)}
             onKeyEvent=onKey
             onChange={repoId => edit(Repository({targetId: t.id, repoId}))}
@@ -230,8 +254,7 @@ let make = (
       <UI.Button
         label="+ target"
         title=?{Chrome.tip(chrome, AddReviewTarget)}
-        disabled={!editable ||
-        workspace->Option.map(w => Array.length(w.repos) == 0)->Option.getOr(true)}
+        disabled={!editable || Array.length(available) == 0}
         onClick={() => run(AddReviewTarget)}
       />
       <UI.Button
@@ -255,6 +278,12 @@ let make = (
             "No repositories to review. Attach one to this workspace, then refresh (R).",
           )}
         </p>
+      : Array.length(available) == 0
+      ? <p className="new-review-hint">
+        {React.string(
+          "All workspace repositories are included. Remove a target to choose it again.",
+        )}
+      </p>
       : React.null}
   </form>
 }

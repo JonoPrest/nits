@@ -10,8 +10,8 @@ use nits_protocol::{
     Anchor, BaseRefSpec, BlobOid, ChunkIndex, CommentId, CommentKind, ContextHash, DiffScope,
     Event, FileChange, FileRenderHeader, LineNo, LineRange, Mutation, NonEmpty, RefSpec,
     RenderChunk, RenderOpts, Repo, RepoId, RepoPath, Request, ResolvedSource, Response, Review,
-    ReviewId, ReviewSnapshot, ReviewTarget, RpcError, Seq, Side, Since, StreamItem, SubscribeScope,
-    ThreadId, TreeEntryKind, Workspace, WorkspaceId,
+    ReviewId, ReviewSnapshot, RpcError, Seq, Side, Since, StreamItem, SubscribeScope, ThreadId,
+    TreeEntryKind, Workspace, WorkspaceId,
 };
 
 use crate::client::{Client, ClientError, Unsolicited};
@@ -525,7 +525,7 @@ impl Ops {
         &mut self,
         workspace_id: WorkspaceId,
         title: String,
-        targets: NonEmpty<ReviewTarget>,
+        targets: nits_protocol::CreateReviewTargets,
     ) -> Result<(ReviewId, Event), OpsError> {
         let (ts, r) = crate::ids::fresh_parts();
         let review_id = ReviewId::from_parts(ts, r);
@@ -534,7 +534,7 @@ impl Ops {
                 review_id,
                 workspace_id,
                 title,
-                targets,
+                targets: targets.into(),
             })
             .await?;
         Ok((review_id, event))

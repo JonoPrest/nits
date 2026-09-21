@@ -184,6 +184,62 @@ async fn mutate(c: &Client, seq: u64, m: Mutation) -> Result<nits_protocol::Even
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_creation_is_a_correlated_invalid_error_without_committed_events() {
+    for transport in [Transport::Unix, Transport::Ws] {
+        let h = start_on(small_repo(), transport);
+        let client = h.endpoint.connect(identity(80, "ada")).await;
+        seed(&h, &client).await;
+        let before = h.daemon.core().last_seq().unwrap();
+        let reviews = h.daemon.core().reviews(ws()).unwrap();
+        for (index, head) in [
+            RefSpec::Head,
+            RefSpec::WorkingTree,
+            RefSpec::Branch {
+                name: "missing".into(),
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let target = ReviewTarget {
+                repo_id: rid(),
+                base: RefSpec::Head,
+                head: RefSpec::Head,
+            };
+            let error = mutate(
+                &client,
+                10 + index as u64,
+                Mutation::CreateReview {
+                    review_id: ReviewId::from_parts(50, index as u128),
+                    workspace_id: ws(),
+                    title: "rejected duplicate".into(),
+                    targets: NonEmpty::new(vec![target.clone(), ReviewTarget { head, ..target }])
+                        .unwrap(),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(error, RpcError::Invalid { ref reason } if reason.contains("one base/head pair") && reason.contains(&rid().to_string())),
+                "{error:?}"
+            );
+            assert_eq!(h.daemon.core().last_seq().unwrap(), before);
+            assert_eq!(h.daemon.core().reviews(ws()).unwrap(), reviews);
+            // A domain rejection leaves this exact connection usable.
+            assert!(matches!(
+                client
+                    .request(Request::GetReview {
+                        review_id: review_id()
+                    })
+                    .await
+                    .unwrap(),
+                Response::Review { .. }
+            ));
+        }
+    }
+}
+
 fn big_source(lines: usize) -> String {
     (0..lines)
         .map(|i| format!("fn f{i}() -> u32 {{ {i} }}\n"))

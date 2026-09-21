@@ -113,9 +113,9 @@ let beforeAction = (
       ->Array.find(w => w.id == saved.creation.workspaceId)
       ->Option.flatMap(w => {
         let repo =
-          w.repos
-          ->Array.find(r => !(saved.creation.draft.targets->Array.some(t => t.repoId == r.id)))
-          ->Option.orElse(w.repos->Array.get(0))
+          w.repos->Array.find(
+            r => !(saved.creation.draft.targets->Array.some(t => t.repoId == r.id)),
+          )
         repo->Option.map(
           r => {
             View.CreationTarget.id: saved.creation.revision + 1,
