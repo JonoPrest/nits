@@ -399,7 +399,13 @@ describe("Palette", () => {
     let cs = Fixtures.parse(View.ContentSearchView.schema, "client", "ContentSearchView", "default")
     let _ = render(<Palette contentSearch=Some(cs) actionPalette=false chrome=[] dispatch />)
     let hit = cs.hits->Array.getUnsafe(0)
-    FireEvent.click(Screen.getByText(hit.path ++ ":" ++ Int.toString(hit.line)))
+    FireEvent.click(
+      Screen.getByLabelText(
+        RepositoryIdentity.fileText(Unavailable, {repoId: hit.repoId, path: hit.path}) ++
+        ":" ++
+        Int.toString(hit.line),
+      ),
+    )
     let calls = mock(dispatch).calls
     let jumped = calls->Array.some(
       args =>

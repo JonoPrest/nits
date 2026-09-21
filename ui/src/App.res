@@ -120,6 +120,7 @@ module Shell = {
   @react.component
   let make = (~core: Core.t) => {
     let (model, setModel) = React.useState(() => View.ViewModel.empty)
+    let repositories = RepositoryIdentity.ofView(model)
     // A core Realign preserves the logical line/side while expansion
     // renumbers its row. Snapshot the browser geometry before React sees
     // each patch, then put that same identity back at the same pixel in a
@@ -457,12 +458,13 @@ module Shell = {
                 | FilesChanged =>
                   <>
                     {switch model.tree.search {
-                    | Some(search) => <SearchBox search dispatch />
+                    | Some(search) => <SearchBox search repositories dispatch />
                     | None => React.null
                     }}
                     {switch model.diff {
                     | Some(diff) if diff.original =>
                       <DiffView
+                        repositories
                         diff
                         layout=model.prefs.layout
                         focus=model.focus
@@ -477,6 +479,7 @@ module Shell = {
                             {model.diffs
                             ->Array.map(diff =>
                               <FileDiff
+                                repositories
                                 key={diff.file.repoId ++ diff.file.path}
                                 diff
                                 layout=model.prefs.layout
@@ -541,6 +544,7 @@ module Shell = {
                       />
                     </UI.Box>
                     <Threads
+                      repositories
                       title="Conversation"
                       focusedComment=?model.focusedComment
                       threads=model.threads
@@ -567,12 +571,13 @@ module Shell = {
                       dispatch
                     />
                     {switch model.tree.search {
-                    | Some(search) => <SearchBox search dispatch />
+                    | Some(search) => <SearchBox search repositories dispatch />
                     | None => React.null
                     }}
                     {switch model.diff {
                     | Some(diff) =>
                       <DiffView
+                        repositories
                         diff
                         layout=model.prefs.layout
                         visual=?model.visual
@@ -626,6 +631,7 @@ module Shell = {
       }}
       {model.contentSearch != None || model.actionPalette
         ? <Palette
+            repositories
             contentSearch=model.contentSearch
             actionPalette=model.actionPalette
             chrome=model.chrome

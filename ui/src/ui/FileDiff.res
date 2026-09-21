@@ -17,6 +17,7 @@ type drag = {side: Domain.Side.t, start: int, current: int}
 
 @react.component
 let make = (
+  ~repositories: RepositoryIdentity.context=Unavailable,
   ~diff: DiffView.t,
   ~layout: Layout.t,
   ~focus: Focus.t,
@@ -91,19 +92,26 @@ let make = (
       }
     | None => None
     }
-  <section className="file-diff" ariaLabel=diff.file.path>
+  <section className="file-diff" ariaLabel={RepositoryIdentity.fileText(repositories, diff.file)}>
     {Attrs.focused(
       <header className="file-diff-header">
         <button
           type_="button"
           className="btn btn-ghost file-chevron"
-          title={collapsed ? "expand file section" : "collapse file section"}
+          title=?{Chrome.tip(chrome, ToggleFileCollapse)}
+          ariaLabel={(collapsed ? "Expand " : "Collapse ") ++
+          RepositoryIdentity.fileText(repositories, diff.file)}
           onClick={_ => dispatch(ToggleFileCollapse({file: diff.file}))}
         >
           {React.string(collapsed ? "▸" : "▾")}
         </button>
-        <span className="file-path mono"> {React.string(diff.file.path)} </span>
-        <UI.CopyPath path={diff.file.path} chrome dispatch />
+        <RepositoryIdentity.File repositories file=diff.file />
+        <UI.CopyPath
+          path={diff.file.path}
+          fileLabel={RepositoryIdentity.fileText(repositories, diff.file)}
+          chrome
+          dispatch
+        />
         stats
         {diff.fileThreads->Array.length > 0
           ? <span className="tree-threads">
@@ -115,7 +123,8 @@ let make = (
             ? <button
                 type_="button"
                 className="btn btn-ghost"
-                title="comment on this file"
+                title=?{Chrome.tip(chrome, Comment)}
+                ariaLabel={"Comment on " ++ RepositoryIdentity.fileText(repositories, diff.file)}
                 onClick={_ => dispatch(CommentFile({file: diff.file}))}
               >
                 {React.string("💬")}
@@ -126,14 +135,17 @@ let make = (
             <UI.Button
               label="expand file"
               kind=Ghost
-              title="show the whole file as context"
+              title=?{Chrome.tip(chrome, ExpandContext)}
+              ariaLabel={"Expand context for " ++
+              RepositoryIdentity.fileText(repositories, diff.file)}
               onClick={() => dispatch(ExpandContext({file: diff.file, full: true}))}
             />
           | Binary(_) | Submodule(_) => React.null
           }}
-          <label className="chip-check" title="mark viewed (v)">
+          <label className="chip-check" title=?{Chrome.tip(chrome, ToggleViewed)}>
             <input
               type_="checkbox"
+              ariaLabel={"Viewed " ++ RepositoryIdentity.fileText(repositories, diff.file)}
               checked={diff.viewed == Viewed}
               onChange={_ => {
                 dispatch(
@@ -239,6 +251,7 @@ let make = (
                 | _ => React.null
                 }
                 <InlineThread
+                  repositories
                   chrome
                   key=thread.id
                   thread

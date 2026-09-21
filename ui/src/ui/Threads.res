@@ -20,13 +20,21 @@ let authorName = (a: Domain.Author.t) =>
   | Daemon(_) => "nitsd"
   }
 
-let placeText = (p: ThreadPlace.t) =>
+let placeText = (
+  ~repositories: RepositoryIdentity.context=Unavailable,
+  ~full=false,
+  p: ThreadPlace.t,
+) => {
+  let fileText = full ? RepositoryIdentity.fileDescription : RepositoryIdentity.fileText
   switch p {
   | Review(_) => "review"
-  | File({file}) => file.path
+  | File({file}) => fileText(repositories, file)
   | Lines({file, start, end_}) =>
-    file.path ++ ":" ++ Int.toString(start) ++ (end_ > start ? "-" ++ Int.toString(end_) : "")
+    fileText(repositories, file) ++
+    ":" ++
+    Int.toString(start) ++ (end_ > start ? "-" ++ Int.toString(end_) : "")
   }
+}
 
 let contextText = (context: Domain.CommentContext.t): string =>
   switch context {
@@ -126,6 +134,7 @@ module Item = {
   @react.component
   let make = (
     ~thread: ThreadView.t,
+    ~repositories: RepositoryIdentity.context=Unavailable,
     ~focused: bool,
     ~onSelect: unit => unit,
     ~onApply: unit => unit,
@@ -154,7 +163,9 @@ module Item = {
         <div className="thread-meta">
           <span className="thread-author"> {React.string(authorName(thread.author))} </span>
           <UI.Badge text={statusText(thread.status)} />
-          <span className="thread-place"> {React.string(placeText(thread.place))} </span>
+          <span className="thread-place" title={placeText(~repositories, ~full=true, thread.place)}>
+            {React.string(placeText(~repositories, thread.place))}
+          </span>
           <Context context=thread.context />
           {thread.replies > 0
             ? <UI.Badge text={Int.toString(thread.replies) ++ " replies"} />
@@ -220,6 +231,7 @@ module Item = {
 @react.component
 let make = (
   ~title: string,
+  ~repositories: RepositoryIdentity.context=Unavailable,
   ~threads: array<ThreadView.t>,
   ~focus: Focus.t,
   ~indexOffset: int,
@@ -242,6 +254,7 @@ let make = (
             <Item
               key=t.id
               thread=t
+              repositories
               dispatch
               focusedComment
               focused={focusedIndex == Some(indexOffset + i)}

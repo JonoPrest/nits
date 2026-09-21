@@ -242,10 +242,10 @@
     overflow-anchor: none;
   }
   .file-diff {
-    @apply shrink-0 overflow-hidden rounded border border-border;
+    @apply shrink-0 overflow-clip rounded border border-border;
   }
   .file-diff-header {
-    @apply sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-panel px-2 py-1;
+    @apply sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-border bg-panel px-2 py-1;
   }
   /* A folded file holding the motion focus (enter unfolds). */
   .file-diff-header[data-focused] {
@@ -403,8 +403,15 @@
   .file-threads {
     @apply border-b border-border px-3 py-1 text-xs text-muted;
   }
+  .repository-file {
+    @apply inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1;
+    overflow-wrap: anywhere;
+  }
+  .repository-file .badge {
+    @apply ml-0 max-w-full;
+  }
   .file-header {
-    @apply flex items-center gap-2;
+    @apply flex flex-wrap items-center gap-2;
   }
   .file-path {
     @apply font-mono text-xs font-semibold;
@@ -558,7 +565,7 @@
     @apply font-semibold;
   }
   .thread-meta {
-    @apply flex gap-2 text-xs text-muted;
+    @apply flex flex-wrap gap-2 text-xs text-muted;
   }
   .thread-comments {
     @apply mt-1 flex flex-col gap-2;

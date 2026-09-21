@@ -18,6 +18,44 @@ let repoTitle = (workspace: Domain.Workspace.t, repository: Domain.Repo.t) =>
     ? repository.displayName ++ " · " ++ shortId(repository.id)
     : repository.displayName
 
+// Names belong to the open review's workspace, never the first global RepoId match.
+type context = Unavailable | Workspace(Domain.Workspace.t)
+let ofView = (model: View.ViewModel.t): context => {
+  let review = switch model.review {
+  | Some(open_) if model.openReview == Some(open_.snapshot.review.id) => Some(open_.snapshot.review)
+  | Some(_) | None => model.reviews->Array.find(r => model.openReview == Some(r.id))
+  }
+  switch review->Option.flatMap(r => model.workspaces->Array.find(w => w.id == r.workspaceId)) {
+  | Some(workspace) => Workspace(workspace)
+  | None => Unavailable
+  }
+}
+let title = (context, id) =>
+  switch context {
+  | Unavailable => "Repository · " ++ shortId(id)
+  | Workspace(workspace) =>
+    switch repo(workspace, id) {
+    | Some(repository) => repoTitle(workspace, repository)
+    | None => repoLabel(workspace, id)
+    }
+  }
+let description = (context, id) =>
+  switch context {
+  | Unavailable => title(context, id)
+  | Workspace(workspace) => repoLabel(workspace, id)
+  }
+let fileText = (context, file: View.FileRef.t) => title(context, file.repoId) ++ " · " ++ file.path
+let fileDescription = (context, file: View.FileRef.t) =>
+  description(context, file.repoId) ++ " · " ++ file.path
+module File = {
+  @react.component
+  let make = (~repositories: context, ~file: View.FileRef.t) =>
+    <span className="repository-file" title={fileDescription(repositories, file)}>
+      <UI.Badge text={title(repositories, file.repoId)} />
+      <span className="file-path mono"> {React.string(file.path)} </span>
+    </span>
+}
+
 let count = (~total: int, ~singular: string, ~plural: string) =>
   Int.toString(total) ++ " " ++ (total == 1 ? singular : plural)
 

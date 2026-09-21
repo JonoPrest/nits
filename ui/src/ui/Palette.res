@@ -9,6 +9,7 @@ type mode = Content | Actions
 
 @react.component
 let make = (
+  ~repositories: RepositoryIdentity.context=Unavailable,
   ~contentSearch: option<ContentSearchView.t>,
   ~actionPalette: bool,
   ~chrome: array<Hint.t>,
@@ -201,15 +202,24 @@ let make = (
                 {c.hits
                 ->Array.mapWithIndex((h, i) =>
                   <div
-                    key={Int.toString(i)}
+                    key={h.repoId ++ h.path ++ Int.toString(i)}
                     id={hitId(i)}
                     role="option"
+                    ariaLabel={RepositoryIdentity.fileText(
+                      repositories,
+                      {repoId: h.repoId, path: h.path},
+                    ) ++
+                    ":" ++
+                    Int.toString(h.line)}
                     ariaSelected={selected == Some(i)}
                     className={"search-hit" ++ (selected == Some(i) ? " selected" : "")}
                     onClick={_ => openHit(h)}
                   >
                     <span className="hit-path">
-                      {React.string(h.path ++ ":" ++ Int.toString(h.line))}
+                      <RepositoryIdentity.File
+                        repositories file={{repoId: h.repoId, path: h.path}}
+                      />
+                      {React.string(":" ++ Int.toString(h.line))}
                     </span>
                     <span className="hit-text"> {React.string(h.text)} </span>
                   </div>
