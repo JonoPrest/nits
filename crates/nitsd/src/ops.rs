@@ -608,21 +608,22 @@ async fn collect_events(
     timeout: Duration,
     max: usize,
 ) -> Result<Polled, OpsError> {
-    let deadline = tokio::time::Instant::now() + timeout;
+    let mut deadline = tokio::time::Instant::now() + timeout;
     let mut events: Vec<Event> = Vec::new();
     while events.len() < max {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if !events.is_empty() && remaining.is_zero() {
             break;
         }
-        // Once something arrived, only drain what is already queued.
-        let wait = if events.is_empty() {
-            remaining
-        } else {
-            remaining.min(Duration::from_millis(20))
-        };
-        match tokio::time::timeout(wait, client.next_unsolicited()).await {
+        match tokio::time::timeout(remaining, client.next_unsolicited()).await {
             Ok(Some(Unsolicited::Event(e))) => {
+                if events.is_empty() {
+                    // Zero-timeout polls still return a historical batch.
+                    // Keep the grace for draining queued and nearby live
+                    // events, but bound the whole drain instead of resetting
+                    // it after every event in a busy subscription.
+                    deadline = tokio::time::Instant::now() + Duration::from_millis(20);
+                }
                 last_seq = e.seq;
                 events.push(e);
             }

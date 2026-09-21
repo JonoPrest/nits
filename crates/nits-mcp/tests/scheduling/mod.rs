@@ -234,6 +234,7 @@ async fn simultaneous_polls_receive_their_own_events_and_eof_cleans_pending_wait
 #[tokio::test]
 async fn event_wait_timeout_is_bounded_and_short_polls_expire() {
     let h = start();
+    shared_review(&h, "replay").await;
     let mut session = initialized(&h).await;
     session
         .tool(json!(1), "subscribe_events", json!({"timeout_ms":u64::MAX}))
@@ -254,6 +255,18 @@ async fn event_wait_timeout_is_bounded_and_short_polls_expire() {
             .as_array()
             .unwrap()
             .is_empty()
+    );
+    session
+        .tool(
+            json!(3),
+            "subscribe_events",
+            json!({"since_seq":0,"timeout_ms":0}),
+        )
+        .await;
+    let replay = session.next().await;
+    assert_eq!(
+        content(&replay)["events"].as_array().unwrap().len(),
+        h.daemon.core().events_after(None).unwrap().len()
     );
     session.stop().await;
 }
@@ -508,4 +521,59 @@ async fn cancel_and_eof_release_owned_daemon_connections() {
     connections(&h, 2).await;
     session.stop().await;
     connections(&h, 0).await;
+}
+
+#[tokio::test]
+async fn filtered_zero_timeout_replay_resumes_every_undelivered_matching_event() {
+    let h = start();
+    let review = shared_review(&h, "filtered replay").await;
+    let mut server = server(&h);
+    init(&mut server).await;
+    let mut expected = Vec::new();
+    for agent in [
+        "other", "wanted", "other", "wanted", "other", "wanted", "other",
+    ] {
+        let receipt = call(
+            &mut server,
+            "request_review",
+            json!({"review_id":review,"agent":agent,"note":"replay cursor"}),
+        )
+        .await;
+        if agent == "wanted" {
+            expected.push(receipt["seq"].clone());
+        }
+    }
+    let mut session = Session::new(server);
+    let mut cursor = json!(0);
+    let mut received = Vec::new();
+    for id in 0..3 {
+        session
+            .tool(
+                json!(id),
+                "subscribe_events",
+                json!({"awaiting_agent":"wanted","since_seq":cursor,"timeout_ms":0,"max":2}),
+            )
+            .await;
+        let reply = session.next().await;
+        let poll = content(&reply);
+        let events = poll["events"].as_array().unwrap();
+        if let Some(last) = events.last() {
+            assert_eq!(poll["last_seq"], last["seq"]);
+        } else {
+            assert_eq!(
+                poll["last_seq"], cursor,
+                "empty replay must not skip unrelated log positions"
+            );
+        }
+        received.extend(events.iter().map(|event| event["seq"].clone()));
+        assert_eq!(
+            received,
+            expected[..received.len()],
+            "every batch is the next matching prefix"
+        );
+        cursor = poll["last_seq"].clone();
+    }
+    assert_eq!(received, expected);
+    assert_eq!(cursor, expected.last().unwrap().clone());
+    session.stop().await;
 }

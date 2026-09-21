@@ -84,7 +84,7 @@ impl EventWait {
         tokio::select! {
             biased;
             () = self.session_end.cancelled() => Err(ToolError::Invalid(format!(
-                "event wait in context {} cancelled because the MCP session context or identity changed",
+                "event wait in context {} cancelled because the MCP session connection, context or identity changed",
                 self.context.name
             ))),
             polled = self.poll.wait() => {
@@ -483,24 +483,25 @@ impl Server {
     }
 
     async fn prepare_wait(&mut self, p: tools::SubscribeEvents) -> Result<EventWait, ToolError> {
-        self.ensure_connected().await?;
-        let since = self.subscription_since(p.start)?;
-        let session = self.session.as_ref().ok_or(ToolError::NotInitialized)?;
-        // Each poll owns its event queue and connection. A cancelled poll
-        // cannot consume another poll's events or leave a shared subscription.
-        let poll = tokio::time::timeout(CONNECT_TIMEOUT, async {
+        // One budget covers reconnecting the session, opening the poll's own
+        // connection, and receiving the subscription acknowledgement.
+        tokio::time::timeout(CONNECT_TIMEOUT, async {
+            self.ensure_connected().await?;
+            let since = self.subscription_since(p.start)?;
+            let session = self.session.as_ref().ok_or(ToolError::NotInitialized)?;
+            // An owned event queue prevents cancellation or one poll's drain
+            // from affecting another poll or leaving a shared subscription.
             let client = self.connect(session.author.clone()).await?;
-            Ok::<_, ToolError>(
-                EventPoll::subscribe(client, p.scope, since, p.timeout.duration(), p.max).await?,
-            )
+            let poll =
+                EventPoll::subscribe(client, p.scope, since, p.timeout.duration(), p.max).await?;
+            Ok(EventWait {
+                poll,
+                context: self.context_identity(),
+                session_end: session.end.clone(),
+            })
         })
         .await
-        .map_err(|_| ToolError::Connecting("event subscription setup timed out".into()))??;
-        Ok(EventWait {
-            poll,
-            context: self.context_identity(),
-            session_end: session.end.clone(),
-        })
+        .map_err(|_| ToolError::Connecting("event subscription setup timed out".into()))?
     }
 
     fn context_identity(&self) -> tools::ContextIdentity {
