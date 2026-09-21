@@ -268,3 +268,7 @@ cover pipelining, subscription ordering, identities, contexts and disconnects.
   tab-local and context-scoped. Form controls use the configurable keymap; shell
   RPC errors are exhaustive. Core race tests and real-browser interrupted-write
   checks cover both committed and uncommitted attempts (#103).
+
+Daemon lifecycle completion includes Core/store ownership after connection or
+watcher cancellation. Local and SSH stop/start use bounded ownership waits;
+real-process gated Git tests cover delayed release, timeout and recovery.

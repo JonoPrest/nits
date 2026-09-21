@@ -62,6 +62,7 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
 
     let server =
         UnixServer::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
+    daemon.set_phase(crate::ownership::Phase::Serving);
     tracing::info!(socket = %socket.display(), data_dir = %data_dir.display(), "listening");
     let watcher = crate::watcher::Watcher::start(Arc::clone(&daemon));
     let shutdown = daemon.shutdown().clone();
@@ -100,6 +101,7 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
         None => None,
     };
     server.run(Arc::clone(&daemon), shutdown).await;
+    daemon.set_phase(crate::ownership::Phase::Stopping);
     if let Some(ws) = ws {
         let _ = ws.await;
     }
@@ -114,6 +116,45 @@ pub enum StdioOutcome {
     Proxied,
     /// Nothing was listening and `autostart` was off.
     NotRunning,
+    /// Core is still owned while its endpoint is unavailable or shutting down.
+    Transitioning { phase: crate::ownership::Phase },
+}
+
+impl StdioOutcome {
+    /// SSH process outcomes, separate from daemon protocol frames.
+    #[must_use]
+    pub const fn exit_code(self) -> i32 {
+        match self {
+            Self::Proxied => 0,
+            Self::NotRunning => 3,
+            Self::Transitioning {
+                phase: crate::ownership::Phase::Starting,
+            } => 4,
+            Self::Transitioning {
+                phase: crate::ownership::Phase::Serving,
+            } => 5,
+            Self::Transitioning {
+                phase: crate::ownership::Phase::Stopping,
+            } => 6,
+        }
+    }
+
+    pub(crate) const fn from_exit_code(code: i32) -> Option<Self> {
+        match code {
+            0 => Some(Self::Proxied),
+            3 => Some(Self::NotRunning),
+            4 => Some(Self::Transitioning {
+                phase: crate::ownership::Phase::Starting,
+            }),
+            5 => Some(Self::Transitioning {
+                phase: crate::ownership::Phase::Serving,
+            }),
+            6 => Some(Self::Transitioning {
+                phase: crate::ownership::Phase::Stopping,
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// How long an auto-started daemon stays up with no client, in seconds.
@@ -135,8 +176,14 @@ pub async fn stdio(opts: ServeOpts, autostart: bool) -> anyhow::Result<StdioOutc
         launch::ensure_daemon(&spec)
             .await
             .context("starting the daemon")?;
-    } else if !launch::is_listening(&spec.socket).await {
-        return Ok(StdioOutcome::NotRunning);
+    } else {
+        match launch::availability(&spec).await? {
+            launch::Availability::Listening => {}
+            launch::Availability::Stopped => return Ok(StdioOutcome::NotRunning),
+            launch::Availability::Transitioning { phase } => {
+                return Ok(StdioOutcome::Transitioning { phase });
+            }
+        }
     }
     proxy_stdio(&spec.socket).await?;
     Ok(StdioOutcome::Proxied)

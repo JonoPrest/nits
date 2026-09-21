@@ -23,8 +23,24 @@ pub const EVENT_BACKLOG: usize = 4096;
 
 type WriteJob = Box<dyn FnOnce(&Core) + Send>;
 
+/// Field order matters: close both stores before releasing process ownership.
+/// Every writer/blocking read retains this same owner even if its caller exits.
+#[derive(Debug)]
+struct OwnedCore {
+    core: Core,
+    lease: crate::ownership::Lease,
+}
+
+impl std::ops::Deref for OwnedCore {
+    type Target = Core;
+
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
+}
+
 pub struct Daemon {
-    core: Arc<Core>,
+    core: Arc<OwnedCore>,
     writer: std::sync::mpsc::Sender<WriteJob>,
     events: broadcast::Sender<Arc<Event>>,
     deltas: broadcast::Sender<Arc<TreeDelta>>,
@@ -102,7 +118,12 @@ impl IntoRpc for CoreError {
 impl Daemon {
     /// Open the data dir and start the writer thread.
     pub fn open(data_dir: &DataDir, build: BuildInfo) -> Result<Arc<Self>, DaemonError> {
-        let core = Arc::new(Core::open(data_dir)?);
+        let lease = crate::ownership::Lease::acquire(&data_dir.root).map_err(CoreError::Io)?;
+        let core = Core::open(data_dir)?;
+        lease
+            .set_phase(crate::ownership::Phase::Starting)
+            .map_err(CoreError::Io)?;
+        let core = Arc::new(OwnedCore { core, lease });
         let (writer, jobs) = std::sync::mpsc::channel::<WriteJob>();
         let writer_core = Arc::clone(&core);
         let shutdown = tokio_util::sync::CancellationToken::new();
@@ -137,6 +158,12 @@ impl Daemon {
     #[must_use]
     pub fn shutdown(&self) -> &tokio_util::sync::CancellationToken {
         &self.shutdown
+    }
+
+    pub(crate) fn set_phase(&self, phase: crate::ownership::Phase) {
+        if let Err(error) = self.core.lease.set_phase(phase) {
+            tracing::warn!(%error, "recording daemon lifecycle phase");
+        }
     }
 
     /// Currently open client connections.

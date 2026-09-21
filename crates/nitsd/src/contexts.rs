@@ -3,6 +3,7 @@
 //! the MCP server and the desktop app all go through here so a machine's
 //! daemon is managed one way.
 
+use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
@@ -17,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::{Client, ClientError, Identity};
 use crate::launch::{self, DaemonSpec};
+use crate::ownership::Phase;
 use crate::transport::FramedConnection;
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -36,6 +38,8 @@ pub enum ContextError {
     NotManaged,
     #[error("daemon is not running")]
     NotRunning,
+    #[error("daemon retains store ownership while starting or stopping ({phase:?})")]
+    Transitioning { phase: Phase },
     #[error("daemon did not stop within {after:?}")]
     StopTimedOut { after: Duration },
     #[error("this context names a `nitsd` binary on {host} ({nitsd}), which cannot serve: {help}")]
@@ -50,6 +54,19 @@ pub enum ContextError {
 
 impl From<ClientError> for ContextError {
     fn from(e: ClientError) -> Self {
+        if let ClientError::Codec(crate::codec::CodecError::Io(error)) = &e
+            && let Some(exit) = error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<ProxyExit>())
+        {
+            return match exit.outcome {
+                crate::serve::StdioOutcome::NotRunning => Self::NotRunning,
+                crate::serve::StdioOutcome::Transitioning { phase } => {
+                    Self::Transitioning { phase }
+                }
+                crate::serve::StdioOutcome::Proxied => Self::Client(Box::new(e)),
+            };
+        }
         ContextError::Client(Box::new(e))
     }
 }
@@ -68,6 +85,9 @@ pub enum Status {
         daemon: BuildInfo,
     },
     Stopped,
+    Transitioning {
+        phase: Phase,
+    },
     /// Could not even ask, e.g. ssh failed. Carries the reason.
     Unreachable {
         reason: String,
@@ -207,11 +227,49 @@ fn ssh_command(target: &SshTarget) -> tokio::process::Command {
 }
 
 /// The two SSH pipes and a signal to the task which owns and reaps the child.
-#[derive(Debug)]
 struct SshStream {
     stdout: ChildStdout,
     stdin: ChildStdin,
     child_done: CancellationToken,
+    exit: SshExit,
+}
+
+enum SshExit {
+    Waiting(Pin<Box<dyn Future<Output = std::io::Result<std::process::ExitStatus>> + Send>>),
+    Finished(std::process::ExitStatus),
+    Failed(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("remote daemon proxy exited with {outcome:?}")]
+struct ProxyExit {
+    outcome: crate::serve::StdioOutcome,
+}
+
+impl SshStream {
+    fn poll_exit(&mut self, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        if let SshExit::Waiting(wait) = &mut self.exit {
+            match wait.as_mut().poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(status)) => self.exit = SshExit::Finished(status),
+                Poll::Ready(Err(error)) => self.exit = SshExit::Failed(error.to_string()),
+            }
+        }
+        Poll::Ready(match &self.exit {
+            SshExit::Finished(status) if status.success() => Ok(()),
+            SshExit::Finished(status) => match status
+                .code()
+                .and_then(crate::serve::StdioOutcome::from_exit_code)
+            {
+                Some(outcome) => Err(std::io::Error::other(ProxyExit { outcome })),
+                None => Err(std::io::Error::other(format!(
+                    "SSH process exited with {status}"
+                ))),
+            },
+            SshExit::Failed(reason) => Err(std::io::Error::other(reason.clone())),
+            SshExit::Waiting(_) => return Poll::Pending,
+        })
+    }
 }
 
 impl AsyncRead for SshStream {
@@ -220,7 +278,14 @@ impl AsyncRead for SshStream {
         cx: &mut TaskContext<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.stdout).poll_read(cx, buf)
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        let before = buf.filled().len();
+        match Pin::new(&mut self.stdout).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) if buf.filled().len() == before => self.poll_exit(cx),
+            result => result,
+        }
     }
 }
 
@@ -230,14 +295,24 @@ impl AsyncWrite for SshStream {
         cx: &mut TaskContext<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
-        Pin::new(&mut self.stdin).poll_write(cx, buf)
+        match Pin::new(&mut self.stdin).poll_write(cx, buf) {
+            Poll::Ready(Err(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                self.poll_exit(cx).map(|result| result.and(Err(error)))
+            }
+            result => result,
+        }
     }
 
     fn poll_flush(
         mut self: Pin<&mut Self>,
         cx: &mut TaskContext<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
-        Pin::new(&mut self.stdin).poll_flush(cx)
+        match Pin::new(&mut self.stdin).poll_flush(cx) {
+            Poll::Ready(Err(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                self.poll_exit(cx).map(|result| result.and(Err(error)))
+            }
+            result => result,
+        }
     }
 
     fn poll_shutdown(
@@ -282,12 +357,11 @@ fn dial_ssh(target: &SshTarget, start: StartPolicy) -> Result<FramedConnection, 
     })?;
     let child_done = CancellationToken::new();
     let reap = child_done.clone();
+    let (exit, exited) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         tokio::select! {
             result = child.wait() => {
-                if let Err(err) = result {
-                    tracing::debug!(%err, "waiting for ssh child failed");
-                }
+                let _ = exit.send(result);
             }
             () = reap.cancelled() => {
                 if let Err(err) = child.kill().await {
@@ -300,6 +374,19 @@ fn dial_ssh(target: &SshTarget, start: StartPolicy) -> Result<FramedConnection, 
         stdout,
         stdin,
         child_done,
+        exit: SshExit::Waiting(Box::pin(async move {
+            // Starts only when EOF/BrokenPipe polls this future, not when SSH
+            // is spawned. A broken SSH process cannot hide EOF indefinitely.
+            tokio::time::timeout(Duration::from_secs(2), exited)
+                .await
+                .map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "SSH process did not exit after EOF",
+                    )
+                })?
+                .map_err(|_| std::io::Error::other("SSH process wait was cancelled"))?
+        })),
     }))
 }
 
@@ -317,8 +404,15 @@ pub async fn dial(endpoint: &DaemonEndpoint) -> Result<FramedConnection, Context
                         .map_err(io("starting the daemon"))?;
                 }
                 StartPolicy::RequireRunning => {
-                    if !launch::is_listening(&spec.socket).await {
-                        return Err(ContextError::NotRunning);
+                    match launch::availability(spec)
+                        .await
+                        .map_err(io("probing daemon ownership"))?
+                    {
+                        launch::Availability::Listening => {}
+                        launch::Availability::Stopped => return Err(ContextError::NotRunning),
+                        launch::Availability::Transitioning { phase } => {
+                            return Err(ContextError::Transitioning { phase });
+                        }
                     }
                 }
             }
@@ -384,8 +478,17 @@ pub async fn status(ctx: &Context) -> Status {
                     };
                 }
             };
-            if !launch::is_listening(&spec.socket).await {
-                return Status::Stopped;
+            match launch::availability(&spec).await {
+                Ok(launch::Availability::Listening) => {}
+                Ok(launch::Availability::Stopped) => return Status::Stopped,
+                Ok(launch::Availability::Transitioning { phase }) => {
+                    return Status::Transitioning { phase };
+                }
+                Err(error) => {
+                    return Status::Unreachable {
+                        reason: error.to_string(),
+                    };
+                }
             }
             match Client::connect_unix(&spec.socket, probe_identity()).await {
                 Ok(c) => Status::Running {
@@ -402,6 +505,7 @@ pub async fn status(ctx: &Context) -> Status {
                     daemon: c.welcome.daemon.clone(),
                 },
                 Err(ContextError::NotRunning) => Status::Stopped,
+                Err(ContextError::Transitioning { phase }) => Status::Transitioning { phase },
                 Err(e) => Status::Unreachable {
                     reason: e.to_string(),
                 },
@@ -447,6 +551,10 @@ pub async fn stop(ctx: &Context) -> Result<bool, ContextError> {
     {
         Ok(c) => c,
         Err(ContextError::NotRunning) => return Ok(false),
+        Err(ContextError::Transitioning { .. }) => {
+            wait_until_stopped(&endpoint).await?;
+            return Ok(true);
+        }
         Err(ContextError::Client(error)) => {
             let (requested, supported) = match *error {
                 ClientError::Rejected(RpcError::UnsupportedProtocol {
@@ -477,7 +585,7 @@ pub async fn stop(ctx: &Context) -> Result<bool, ContextError> {
     }
 }
 
-/// Wait until a managed endpoint no longer accepts connections.
+/// Wait until a managed endpoint and every background store owner have exited.
 ///
 /// The shutdown response is sent before the daemon cancels its accept loop,
 /// so returning immediately would let a following `daemon start` reconnect to
@@ -488,7 +596,11 @@ async fn wait_until_stopped(endpoint: &DaemonEndpoint) -> Result<(), ContextErro
         loop {
             match endpoint {
                 DaemonEndpoint::Local { spec, .. } => {
-                    if !launch::is_listening(&spec.socket).await {
+                    if launch::availability(spec)
+                        .await
+                        .map_err(io("probing daemon ownership"))?
+                        == launch::Availability::Stopped
+                    {
                         return Ok(());
                     }
                 }
@@ -497,6 +609,7 @@ async fn wait_until_stopped(endpoint: &DaemonEndpoint) -> Result<(), ContextErro
                         .await
                     {
                         Err(ContextError::NotRunning) => return Ok(()),
+                        Err(ContextError::Transitioning { .. }) => {}
                         Ok(client) => drop(client),
                         Err(ContextError::Client(error))
                             if matches!(
@@ -660,6 +773,72 @@ mod tests {
         assert_eq!(
             endpoint.reference_context().unwrap().locator().unwrap(),
             nits_protocol::ReferenceLocator::WebSocket("wss://reviews.example/daemon".into())
+        );
+    }
+    #[cfg(unix)]
+    fn scripted_ssh(dir: &Path, script: &str) -> Context {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("ssh");
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Context::Ssh {
+            host: "test-host".into(),
+            bin: nits_config::RemoteBin::Default,
+            args: Vec::new(),
+            ssh: Some(path.to_str().unwrap().into()),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ssh_exit_outcomes_distinguish_ownership_from_absence_and_transport_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        for (code, expected) in [
+            (0, Status::Stopped), // legacy EOF-only proxy
+            (3, Status::Stopped),
+            (
+                4,
+                Status::Transitioning {
+                    phase: Phase::Starting,
+                },
+            ),
+            (
+                5,
+                Status::Transitioning {
+                    phase: Phase::Serving,
+                },
+            ),
+            (
+                6,
+                Status::Transitioning {
+                    phase: Phase::Stopping,
+                },
+            ),
+        ] {
+            let context = scripted_ssh(dir.path(), &format!("exit {code}"));
+            assert_eq!(status(&context).await, expected, "exit {code}");
+        }
+        for code in [1, 2, 7, 255] {
+            let context = scripted_ssh(dir.path(), &format!("exit {code}"));
+            assert!(
+                matches!(status(&context).await, Status::Unreachable { .. }),
+                "exit {code}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ssh_eof_without_process_exit_is_bounded_and_not_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        // exec keeps the sleeper as the owned child, so stream cancellation
+        // kills/reaps it without leaving a shell's grandchild behind.
+        let context = scripted_ssh(dir.path(), "exec 1>&-\nexec sleep 60");
+        let status = tokio::time::timeout(Duration::from_secs(5), status(&context))
+            .await
+            .unwrap();
+        assert!(
+            matches!(status, Status::Unreachable { reason } if reason.contains("did not exit after EOF"))
         );
     }
 }
