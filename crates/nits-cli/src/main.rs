@@ -3,6 +3,8 @@
 //! printer over [`nitsd::ops::Ops`]; `--json` prints the protocol values
 //! verbatim for scripting.
 
+mod skill;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
@@ -114,6 +116,12 @@ impl From<StartPolicyArg> for contexts::StartPolicy {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
+    /// Print self-contained review guidance for any coding agent; no daemon needed.
+    /// Ask an agent to run `nits skill` and follow the printed instructions.
+    /// Output is always Markdown, including with --json. Redirect it to a
+    /// personal/project SKILL.md for optional persistent use; printing alone
+    /// does not install or register anything.
+    Skill,
     /// Open a portable review/thread/reply reference in the browser UI.
     Open {
         reference: nits_protocol::ReviewReference,
@@ -1155,6 +1163,11 @@ async fn main() -> anyhow::Result<()> {
         SelectionOrigin::Flag
     };
     let mut cli = Cli::from_arg_matches(&matches)?;
+    if matches!(cli.cmd, Some(Cmd::Skill)) {
+        // Instruction discovery must work even with malformed context config,
+        // an unreachable daemon, or a protocol mismatch after an upgrade.
+        return skill::print();
+    }
     let event_scope = event_scope(&cli).unwrap_or_else(|error| error.exit());
     if cli.cmd.is_none()
         && cli.path.is_some()
@@ -1206,6 +1219,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let mut ops = ops;
     match cmd {
+        Cmd::Skill => skill::print(),
         Cmd::Context(_) | Cmd::Daemon(_) | Cmd::Keys(_) | Cmd::Mcp => {
             unreachable!("handled above")
         }

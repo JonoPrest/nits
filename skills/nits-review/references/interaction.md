@@ -164,6 +164,25 @@ Choose only one scope (`--review`, `--workspace`, or `--awaiting`); a requests-o
 follow does not receive thread replies. On process failure, restart from the saved
 cursor with the same context. Stop/reap a follower started for a completed task.
 
+## CLI maintenance within the task
+
+Use the same context and complete author identity when correcting an existing
+comment. `comment edit REVIEW_ID COMMENT_ID --body 'Corrected explanation'`
+changes prose, preserving its anchor and suggestion patch; `comment delete
+REVIEW_ID COMMENT_ID` leaves a tombstone and event history. Only the complete
+original author can edit/delete: matching an agent display name alone is not
+enough. Retain model, session, invoking human and origin. An MCP-authored comment
+cannot be edited as a CLI author merely by copying its name.
+
+`review rename REVIEW_ID 'New title'` preserves status and targets. `review
+archive REVIEW_ID` preserves discussion; `review reopen REVIEW_ID` first checks
+that the refs resolve. `review set-base REVIEW_ID main --repo REPO_ID` changes
+only that repo's base; a working tree cannot be the base. `review delete REVIEW_ID`
+removes it from listings with no undelete, while retaining history. `workspace
+rename WORKSPACE_ID 'New name'` preserves membership; `workspace detach
+WORKSPACE_ID REPO_ID` removes membership and retains checkout files/history.
+Use these maintenance actions only when they are part of the requested task.
+
 ## Uncertain mutation outcomes
 
 On disconnect, an error can mean the daemon committed the mutation but its reply
@@ -173,9 +192,17 @@ the intended comment/request/state with this agent's provenance before retrying.
 If success still cannot be distinguished from failure, report uncertainty and
 avoid another potentially duplicate mutation until reconciled.
 
-Core mutations support client-generated comment IDs and client sequence
-idempotency. The MCP and CLI convenience commands allocate these internally;
-they expose receipts, not a caller-supplied replay key. Repeating a CLI invocation
-or MCP tool call is a new operation. A custom protocol client may preserve its
-original IDs and client sequence for supported replay, but do not invent an
-`idempotency_key` argument or claim that re-running a convenience call is safe.
+The MCP and CLI convenience commands allocate mutation IDs internally and expose
+receipts, not a caller-supplied replay key. Repeating a CLI invocation or MCP tool
+call is a new operation. The protocol has client-generated IDs and sequence
+numbers for attribution and correlation, but no general durable mutation
+idempotency guarantee. Do not invent an `idempotency_key` argument or claim that
+reusing a client sequence or re-running a convenience call is safe.
+
+Suggestions remain bound to their original comment, blob and patch even after a
+prose edit or reanchor. The UI can preview and explicitly apply them; current
+CLI/MCP suggestion commands create suggestions, not apply them. A durable applied
+receipt proves application. Proposed bytes without a receipt, or a generic error
+after an attempted apply, leave the outcome uncertain: filesystem replacement and
+event persistence are separate steps. Inspect and reconcile; do not automatically
+replay an uncertain apply.
