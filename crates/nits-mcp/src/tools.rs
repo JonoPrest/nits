@@ -1050,7 +1050,11 @@ mod tests {
             );
         }
         assert_eq!(
-            ToolName::SubscribeEvents.tool().input_schema["properties"]["timeout_ms"]["maximum"],
+            ToolName::SubscribeEvents
+                .tool()
+                .input_schema
+                .get("properties")
+                .unwrap()["timeout_ms"]["maximum"],
             60_000
         );
     }
@@ -1371,7 +1375,7 @@ mod tests {
             assert_eq!(parsed.start, EventStart::Live);
             assert_eq!(
                 parsed.timeout.duration(),
-                std::time::Duration::from_millis(30_000)
+                std::time::Duration::from_secs(30)
             );
             assert_eq!(parsed.max, 100);
         }
