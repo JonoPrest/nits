@@ -556,12 +556,26 @@ mod tests {
     #[test]
     fn different_filesystem_staging_fails_before_claiming_the_target() {
         let fixture = Fixture::new();
-        let Ok(metadata) = tempfile::tempdir_in("/dev/shm") else { return };
-        if metadata.path().metadata().unwrap().dev() == fixture.root.metadata().unwrap().dev() { return; }
+        let Ok(metadata) = tempfile::tempdir_in("/dev/shm") else {
+            return;
+        };
+        if metadata.path().metadata().unwrap().dev() == fixture.root.metadata().unwrap().dev() {
+            return;
+        }
         let mut file = fixture.open();
-        let result = file.replace_with(metadata.path(), b"base\n", b"patched\n", |_| panic!("target must not be claimed"));
-        assert!(result.unwrap_err().to_string().contains("different filesystems"));
-        assert_eq!(std::fs::read(fixture.root.join("dir/file")).unwrap(), b"base\n");
+        let result = file.replace_with(metadata.path(), b"base\n", b"patched\n", |_| {
+            panic!("target must not be claimed")
+        });
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("different filesystems")
+        );
+        assert_eq!(
+            std::fs::read(fixture.root.join("dir/file")).unwrap(),
+            b"base\n"
+        );
         assert_eq!(std::fs::read_dir(metadata.path()).unwrap().count(), 0);
     }
 
