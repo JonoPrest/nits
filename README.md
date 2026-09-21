@@ -24,20 +24,40 @@ Debian/Ubuntu and Fedora/RHEL repositories, and tarballs for
 <https://jonoprest.github.io/nits/> and on the [releases page][releases].
 There is no Windows build yet — the daemon's transport is unix-socket only.
 
-Point an agent at it with `nits mcp`, e.g.
-`claude mcp add nits -- nits mcp`.
-An agent can inspect `get_session_identity` and set its display/routing name
-and model with `set_session_identity`, without restarting MCP. See
-[session identity and targeted requests](docs/MCP-IDENTITY.md).
+Start a review with **Claude Code** after installing Nits:
 
-The repository includes the Codex-compatible [Nits review skill](skills/nits-review/SKILL.md).
-Install it from this checkout, then invoke `$nits-review` when participating in a
-Nits review (or point an agent directly at the skill file):
+> Run `nits skill`, read its instructions, and use Nits to review the changes I requested.
+
+`nits skill` prints the installed version's self-contained review guide, including
+CLI and MCP interaction and revision workflows. It works outside a checkout,
+without a daemon or network connection, and does not install anything. Claude
+can use Nits MCP tools if they are already available; otherwise it can use the
+CLI immediately. MCP is optional: `claude mcp add nits -- nits mcp` configures it
+when you want that integration.
+
+For an optional persistent Claude Code skill, export the same complete guide:
 
 ```sh
-mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-cp -R skills/nits-review "${CODEX_HOME:-$HOME/.codex}/skills/"
+mkdir -p ~/.claude/skills/nits-review
+nits skill > ~/.claude/skills/nits-review/SKILL.md
 ```
+
+Then invoke `/nits-review` with your review request in Claude Code. For one
+project, use `.claude/skills/nits-review/SKILL.md` instead. The exported file
+contains its supporting references, so no repository checkout or extra files are
+required. Run the export again after upgrading Nits. See the
+[Claude Code skill documentation](https://code.claude.com/docs/en/skills) for
+personal/project skill discovery.
+
+The same `nits skill` instructions work with other shell-capable agents. Codex
+users can optionally export to `${CODEX_HOME:-$HOME/.codex}/skills/nits-review/SKILL.md`
+and invoke `$nits-review`; create that directory first. Agent-specific setup is
+separate from the portable instructions. The [canonical review skill](skills/nits-review/SKILL.md)
+and its references are maintained once and bundled into every Nits binary.
+
+An agent should inspect `get_session_identity` and use accurate display/routing
+name and model with `set_session_identity` when MCP is available. See
+[session identity and targeted requests](docs/MCP-IDENTITY.md).
 
 Cutting a release: [`docs/RELEASING.md`](docs/RELEASING.md).
 

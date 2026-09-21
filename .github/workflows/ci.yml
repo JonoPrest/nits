@@ -83,6 +83,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: ./.github/actions/web-bundle
       - run: cargo nextest run --workspace
+      - name: bundled skill survives Cargo packaging and install
+        run: python3 scripts/check-skill-package.py
       - name: browser origin boundary
         run: |
           pnpm --dir ui exec playwright install --with-deps chromium

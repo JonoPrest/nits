@@ -22,6 +22,25 @@ $ nits diff
 Other ways to install — Homebrew, `apt`, `dnf`, the AUR — and the full
 documentation are at <https://github.com/JonoPrest/nits>.
 
+In Claude Code, ask: **Run `nits skill`, read its instructions, and use Nits for
+this review.** The command prints the installed version's portable, self-contained
+review guide without needing a checkout, daemon, network, or MCP setup. Claude
+can use available MCP tools or continue directly through the CLI.
+
+For optional persistent Claude Code use:
+
+```sh
+mkdir -p ~/.claude/skills/nits-review
+nits skill > ~/.claude/skills/nits-review/SKILL.md
+```
+
+Invoke `/nits-review` with your task; use `.claude/skills/nits-review/SKILL.md` for
+a project-local skill. The exported guide includes its references; re-export
+after a Nits upgrade. Printing alone does not install or register anything.
+Other coding agents can read the same command output. Codex additionally supports
+exporting it to `${CODEX_HOME:-$HOME/.codex}/skills/nits-review/SKILL.md` (create the
+directory first) and invoking `$nits-review`.
+
 Select a default daemon with `nits context use <NAME>` (saved atomically in
 `~/.config/nits/config.toml`, or `--config` / `NITS_CONFIG`). Offline contexts
 can be selected. `nits context show` reports the effective selection and its
