@@ -13,6 +13,7 @@ mod directory;
 pub mod git;
 pub mod patch;
 pub mod render;
+mod repository;
 pub mod review;
 pub mod store;
 

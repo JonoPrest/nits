@@ -287,10 +287,10 @@ impl Ops {
         path: &RepoPath,
         side: Side,
     ) -> Result<(RepoId, BlobOid), OpsError> {
-        let snap = self.snapshot(review_id).await?;
-        let resolved = snap
-            .resolved
-            .ok_or_else(|| OpsError::Invalid("review targets are not resolved yet".into()))?;
+        // ListFiles validates the review's workspace memberships even when the
+        // requested path is unchanged. Historical snapshots remain metadata-only
+        // and cannot authorize reading a surviving membership in another workspace.
+        let (_, resolved) = self.files_scoped(review_id, DiffScope::All).await?;
         let mut found = None;
         for t in resolved
             .iter()

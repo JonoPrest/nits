@@ -81,12 +81,11 @@ impl Core {
         let (workspace_id, repo_id) = if let Some(ids) = located {
             ids
         } else {
-            self.create_workspace(ctx, options.workspace_id, name.clone())?;
-            self.attach_repo(
+            self.create_workspace_with_repo(
                 ctx,
                 options.workspace_id,
                 options.repo_id,
-                &root.to_string_lossy(),
+                root,
                 name.clone(),
             )?;
             (options.workspace_id, options.repo_id)

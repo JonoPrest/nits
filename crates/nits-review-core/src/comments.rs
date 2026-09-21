@@ -55,7 +55,7 @@ impl Core {
                         "repo {repo_id} is not in review {review}"
                     )));
                 }
-                self.repo(repo_id)?.blob(blob_oid)?;
+                self.review_repo(review, repo_id)?.blob(blob_oid)?;
                 Ok(Anchor::File {
                     repo_id,
                     path,
@@ -75,7 +75,7 @@ impl Core {
                         "repo {repo_id} is not in review {review}"
                     )));
                 }
-                let bytes = self.repo(repo_id)?.blob(blob_oid)?;
+                let bytes = self.review_repo(review, repo_id)?.blob(blob_oid)?;
                 let text = lines_of(&bytes);
                 if lines.end().index() as usize >= text.len() {
                     return Err(CoreError::invalid(format!(
@@ -385,7 +385,7 @@ impl Core {
                 ));
             }
         };
-        let repo = self.repo(repo_id)?;
+        let repo = self.review_repo(review, repo_id)?;
         let file = repo.workdir().join(path.as_str());
         let current = std::fs::read(&file)?;
         let expected = repo.blob(blob_oid)?;
@@ -443,7 +443,7 @@ impl Core {
                 continue;
             };
             let old_t = old.iter().find(|t| t.repo_id == repo_id);
-            let repo = self.repo(repo_id)?;
+            let repo = self.review_repo(review, repo_id)?;
             let fate_map = match fates.entry((repo_id, side)) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
@@ -455,7 +455,7 @@ impl Core {
                         Side::Base => t.base.tree,
                         Side::Head => t.head.tree,
                     });
-                    e.insert(self.path_fates(repo_id, old_tree, new_tree)?)
+                    e.insert(Self::path_fates(&repo, repo_id, old_tree, new_tree)?)
                 }
             };
             let fate = fate_map.get(&path).cloned().unwrap_or(PathFate::Gone);
@@ -485,12 +485,11 @@ impl Core {
     /// For every path in `old_tree` (or all of `new_tree` when there is no
     /// old), where it is in `new_tree`: same path, renamed, or gone.
     fn path_fates(
-        &self,
+        repo: &crate::git::Repo,
         repo_id: RepoId,
         old_tree: Option<nits_protocol::TreeOid>,
         new_tree: nits_protocol::TreeOid,
     ) -> Result<HashMap<RepoPath, PathFate>, CoreError> {
-        let repo = self.repo(repo_id)?;
         let snap = repo.tree_snapshot(repo_id, new_tree)?;
         let mut fates: HashMap<RepoPath, PathFate> = snap
             .entries
