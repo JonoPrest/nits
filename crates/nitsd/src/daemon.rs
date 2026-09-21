@@ -31,6 +31,8 @@ struct OwnedCore {
     lease: crate::ownership::Lease,
     // Retained with Core even after the listener and socket file disappear.
     _socket_lease: Option<crate::ownership::Lease>,
+    // Last: waiters observe closure only after Core and both guards drop.
+    released: tokio::sync::watch::Sender<()>,
 }
 
 impl std::ops::Deref for OwnedCore {
@@ -146,6 +148,7 @@ impl Daemon {
             core,
             lease,
             _socket_lease: socket_lease,
+            released: tokio::sync::watch::channel(()).0,
         });
         let (writer, jobs) = std::sync::mpsc::channel::<WriteJob>();
         let writer_core = Arc::clone(&core);
@@ -181,6 +184,13 @@ impl Daemon {
     #[must_use]
     pub fn shutdown(&self) -> &tokio_util::sync::CancellationToken {
         &self.shutdown
+    }
+
+    /// Closed after every Core user, its stores and ownership guards are gone.
+    /// In particular the dedicated writer is outside Tokio's blocking pool, so
+    /// runtime shutdown alone does not wait for its started work to finish.
+    pub(crate) fn core_released(&self) -> tokio::sync::watch::Receiver<()> {
+        self.core.released.subscribe()
     }
 
     pub(crate) fn set_phase(&self, phase: crate::ownership::Phase) {

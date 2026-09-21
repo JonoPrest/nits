@@ -62,8 +62,22 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
     )
     .with_context(|| format!("opening data dir {}", data_dir.display()))?;
 
+    let mut released = daemon.core_released();
+    let _cancel_on_exit = daemon.shutdown().clone().drop_guard();
     let server =
         UnixServer::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
+    let ws = match ws {
+        Some(addr) => {
+            let ws = WsServer::bind(addr)
+                .await
+                .with_context(|| format!("binding ws {addr}"))?;
+            tracing::info!(ws = %ws.addr(), "listening");
+            Some(ws)
+        }
+        None => None,
+    };
+    crate::ownership::associate_socket(&socket, &data_dir)
+        .context("associating socket with daemon ownership")?;
     daemon.set_phase(crate::ownership::Phase::Serving);
     tracing::info!(socket = %socket.display(), data_dir = %data_dir.display(), "listening");
     let watcher = crate::watcher::Watcher::start(Arc::clone(&daemon));
@@ -81,7 +95,10 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
         tokio::spawn(async move {
             let mut quiet_since = tokio::time::Instant::now();
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                tokio::select! {
+                    () = token.cancelled() => return,
+                    () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+                }
                 if d.connections() > 0 {
                     quiet_since = tokio::time::Instant::now();
                 } else if quiet_since.elapsed() >= idle {
@@ -92,22 +109,19 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
             }
         });
     }
-    let ws = match ws {
-        Some(addr) => {
-            let ws = WsServer::bind(addr)
-                .await
-                .with_context(|| format!("binding ws {addr}"))?;
-            tracing::info!(ws = %ws.addr(), "listening");
-            Some(tokio::spawn(ws.run(Arc::clone(&daemon), shutdown.clone())))
-        }
-        None => None,
-    };
+    let ws = ws.map(|ws| tokio::spawn(ws.run(Arc::clone(&daemon), shutdown.clone())));
     server.run(Arc::clone(&daemon), shutdown).await;
     daemon.set_phase(crate::ownership::Phase::Stopping);
     if let Some(ws) = ws {
         let _ = ws.await;
     }
     watcher.stop();
+    drop(daemon);
+    // Returning from the process entry point could otherwise terminate the
+    // dedicated writer thread, releasing its OS locks while its Git child is
+    // still running. Library callers can cancel this await without releasing
+    // the guards retained by the actual Core users.
+    let _ = released.changed().await;
     Ok(())
 }
 

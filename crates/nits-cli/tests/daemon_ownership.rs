@@ -56,14 +56,24 @@ fn configure_contexts(dir: &Path, socket: &Path, ssh: &Path) {
     config.save(&dir.join("config.toml")).unwrap();
 }
 
+enum Gate {
+    Watcher,
+    DirectoryWriter,
+}
+
 struct Fixture {
     dir: tempfile::TempDir,
     repo: TestRepo,
     daemon: Child,
+    requests: Vec<AsyncChild>,
 }
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_gate(Gate::Watcher).await
+    }
+
+    async fn with_gate(gate: Gate) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let repo = RepoBuilder::new()
             .commit("base", files!["file.txt" => "base\n"])
@@ -75,7 +85,8 @@ impl Fixture {
         executable(
             &filter,
             &format!(
-                "#!/bin/sh\nif test -e {}; then\n touch {}\n while ! test -e {}; do sleep .01; done\nfi\ncat\n",
+                "#!/bin/sh\nprintf '%s %s %s\\n' \"$$\" \"$PPID\" \"$GIT_INDEX_FILE\" >> {}\nif test -e {}; then\n printf '%s\\n' \"$$\" > {}\n while ! test -e {}; do sleep .01; done\nfi\ncat\n",
+                quote(&dir.path().join("filter-invocations")),
                 quote(&dir.path().join("armed")),
                 quote(&dir.path().join("entered")),
                 quote(&dir.path().join("release")),
@@ -134,15 +145,29 @@ impl Fixture {
             .stderr(log)
             .spawn()
             .unwrap();
-        let fixture = Self { dir, repo, daemon };
+        let mut fixture = Self {
+            dir,
+            repo,
+            daemon,
+            requests: Vec::new(),
+        };
         fixture.wait_for(|| socket.exists()).await;
-        fixture.ok("box", &["--json", ".", "--headless"]).await;
+        if matches!(gate, Gate::Watcher) {
+            fixture.ok("box", &["--json", ".", "--headless"]).await;
+        }
         std::fs::write(fixture.path("armed"), "").unwrap();
         std::fs::write(
             fixture.repo.path().join("file.txt"),
             "pending filtered change\n",
         )
         .unwrap();
+        if matches!(gate, Gate::DirectoryWriter) {
+            // No repo is attached yet: this RPC's dedicated writer must enter
+            // Git before it can publish the attachment to the watcher.
+            fixture
+                .requests
+                .push(fixture.spawn("box", &["--json", ".", "--headless"]));
+        }
         fixture.wait_for(|| fixture.path("entered").exists()).await;
         fixture
     }
@@ -204,6 +229,8 @@ impl Fixture {
             "initial-daemon.log",
             "data/nitsd.log",
             "unrelated-data/nitsd.log",
+            "filter-invocations",
+            "entered",
         ]
         .map(|name| std::fs::read_to_string(self.path(name)).unwrap_or_default())
         .join("\n")
@@ -269,8 +296,8 @@ impl Drop for Fixture {
     }
 }
 
-async fn stop_waits_for_git(context: &str) {
-    let fixture = Fixture::new().await;
+async fn stop_waits_for_git(context: &str, gate: Gate) {
+    let fixture = Fixture::with_gate(gate).await;
     let mut stop = fixture.spawn(context, &["daemon", "stop"]);
     fixture.assert_stopping().await;
     fixture
@@ -278,15 +305,15 @@ async fn stop_waits_for_git(context: &str) {
         .await;
     let status = fixture.ok(context, &["daemon", "status", "--json"]).await;
     let status: serde_json::Value = serde_json::from_str(&status).unwrap();
-    assert_eq!(status[0]["status"], "transitioning");
     assert_eq!(
-        status[0]["phase"],
-        if context.starts_with("socket-") {
-            "Unknown"
-        } else {
-            "Stopping"
-        }
+        status[0]["status"],
+        "transitioning",
+        "{status}; release={}; daemon={:?}; {}",
+        fixture.path("release").exists(),
+        std::fs::read_to_string(format!("/proc/{}/status", fixture.daemon.id())),
+        fixture.logs(),
     );
+    assert_eq!(status[0]["phase"], "Stopping");
     assert!(
         stop.try_wait().unwrap().is_none(),
         "stop completed before the gated Git read"
@@ -303,12 +330,12 @@ async fn stop_waits_for_git(context: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_stop_waits_for_real_git_ownership_then_immediately_restarts() {
-    stop_waits_for_git("box").await;
+    stop_waits_for_git("box", Gate::Watcher).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ssh_stop_waits_for_real_git_ownership_then_immediately_restarts() {
-    stop_waits_for_git("remote").await;
+    stop_waits_for_git("remote", Gate::Watcher).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -365,6 +392,72 @@ async fn cancelled_stop_preserves_ownership_and_start_waits_for_release() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn socket_only_context_and_dangling_alias_retain_the_actual_daemons_ownership() {
     for context in ["socket-only", "socket-alias"] {
-        stop_waits_for_git(context).await;
+        stop_waits_for_git(context, Gate::Watcher).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn socket_selection_does_not_inherit_an_unrelated_stopping_stores_phase() {
+    let fixture = Fixture::new().await;
+    let stopping = fixture.spawn("box", &["daemon", "stop"]);
+    fixture.assert_stopping().await;
+    let config_path = fixture.path("config.toml");
+    let mut config = nits_config::Config::load(&config_path).unwrap();
+    for (name, data) in [("other", "other-data"), ("socket-only-other", "data")] {
+        config.contexts.insert(
+            name.parse().unwrap(),
+            nits_config::Context::Local {
+                data_dir: Some(fixture.path(data)),
+                socket: Some(fixture.path("other.sock")),
+            },
+        );
+    }
+    config.save(&config_path).unwrap();
+    fixture.ok("other", &["daemon", "start"]).await;
+    let status = fixture
+        .ok("socket-only-other", &["daemon", "status", "--json"])
+        .await;
+    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status[0]["status"], "running");
+    fixture.ok("socket-only-other", &["daemon", "stop"]).await;
+    let status = fixture
+        .ok("socket-only-other", &["daemon", "status", "--json"])
+        .await;
+    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status[0]["status"], "stopped");
+    assert_eq!(
+        fixture
+            .ok("socket-only-other", &["daemon", "stop"])
+            .await
+            .trim(),
+        "not running"
+    );
+    // Starting with the correct independent store works while the first is held.
+    fixture.ok("other", &["daemon", "start"]).await;
+    fixture.ok("other", &["daemon", "stop"]).await;
+    fixture.assert_stopping().await;
+    // Starting with the explicitly configured occupied store must still wait.
+    let launches = std::fs::read(fixture.path("pids")).unwrap();
+    let mut waiting = fixture.spawn("socket-only-other", &["daemon", "start"]);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(waiting.try_wait().unwrap().is_none());
+    assert_eq!(std::fs::read(fixture.path("pids")).unwrap(), launches);
+    waiting.kill().await.unwrap();
+    waiting.wait().await.unwrap();
+    fixture.release();
+    assert!(fixture.output(stopping).await.status.success());
+    fixture.ok("socket-only-other", &["daemon", "start"]).await;
+    assert_eq!(
+        std::fs::read_link(fixture.path("other.sock.owner-data")).unwrap(),
+        std::fs::canonicalize(fixture.path("data/daemon.lock")).unwrap(),
+        "start must honor the configured store, not the endpoint's previous association",
+    );
+    fixture.ok("socket-only-other", &["daemon", "stop"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_exit_waits_for_a_dedicated_writer_with_real_git_in_local_and_ssh_stop() {
+    for context in ["box", "remote"] {
+        stop_waits_for_git(context, Gate::DirectoryWriter).await;
     }
 }

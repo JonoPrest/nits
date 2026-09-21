@@ -21,7 +21,7 @@ pub enum Phase {
     Starting = 1,
     Serving = 2,
     Stopping = 3,
-    /// The endpoint is occupied but the caller does not know its data directory.
+    /// The endpoint is occupied but has no live store association.
     Unknown = 4,
 }
 
@@ -46,6 +46,14 @@ impl TryFrom<u8> for Phase {
 pub enum Ownership {
     Free,
     Held { phase: Phase },
+}
+
+/// Absence of a guard is different from a known endpoint whose owner released it.
+/// Only untracked endpoints need the legacy configured-data-directory fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketOwnership {
+    Untracked,
+    Tracked(Ownership),
 }
 
 /// Retained alongside Core, and dropped only after Core and its stores.
@@ -98,7 +106,7 @@ impl Lease {
 /// listener-based lifecycle semantics; the probe never creates a lock file.
 pub fn probe(data_dir: &Path) -> io::Result<Ownership> {
     match probe_file(&data_dir.join(FILE_NAME))? {
-        Probe::Free => Ok(Ownership::Free),
+        Probe::Untracked | Probe::Free => Ok(Ownership::Free),
         Probe::Held(mut file) => {
             let mut byte = [Phase::Starting as u8];
             // Acquisition can precede the first successful Core/phase write.
@@ -110,19 +118,64 @@ pub fn probe(data_dir: &Path) -> io::Result<Ownership> {
     }
 }
 
-/// A socket-only context may not know the server's actual data directory.
-/// This independent occupancy guard has no writable phase metadata: even a
-/// competing server opening a different store cannot overwrite its incumbent.
-pub fn probe_socket(socket: &Path) -> io::Result<Ownership> {
+/// The endpoint's own guard determines occupancy; its published association
+/// supplies the phase of the store actually served here, regardless of client
+/// configuration. A missing/stale association cannot certify a held guard free.
+pub fn probe_socket(socket: &Path) -> io::Result<SocketOwnership> {
     Ok(match probe_file(&socket_owner_path(socket)?)? {
-        Probe::Free => Ownership::Free,
-        Probe::Held(_) => Ownership::Held {
-            phase: Phase::Unknown,
-        },
+        Probe::Untracked => SocketOwnership::Untracked,
+        Probe::Free => SocketOwnership::Tracked(Ownership::Free),
+        Probe::Held(_) => {
+            let phase = match probe_file(&socket_data_path(socket)?)? {
+                Probe::Untracked | Probe::Free => Phase::Unknown,
+                Probe::Held(mut file) => {
+                    let mut byte = [Phase::Starting as u8];
+                    let _ = file.read(&mut byte)?;
+                    Phase::try_from(byte[0])?
+                }
+            };
+            SocketOwnership::Tracked(Ownership::Held { phase })
+        }
     })
 }
 
+/// Publish only after both Core open and Unix bind succeed. This separate,
+/// atomically replaced symlink never replaces either stable lock inode. Old
+/// owners update their own store's phase, so cannot clobber a newer endpoint's
+/// association after it successfully binds a different store.
+pub(crate) fn associate_socket(socket: &Path, data_dir: &Path) -> io::Result<()> {
+    let target = std::fs::canonicalize(data_dir.join(FILE_NAME))?;
+    let association = socket_data_path(socket)?;
+    match std::fs::symlink_metadata(&association) {
+        Ok(metadata) if !metadata.file_type().is_symlink() => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "refusing to replace a non-symlink socket association",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let mut temporary = association.as_os_str().to_os_string();
+    temporary.push(format!(".{}.{}", std::process::id(), fastrand::u64(..)));
+    let temporary = PathBuf::from(temporary);
+    std::os::unix::fs::symlink(target, &temporary)?;
+    if let Err(error) = std::fs::rename(&temporary, association) {
+        let _ = std::fs::remove_file(temporary);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn socket_data_path(socket: &Path) -> io::Result<PathBuf> {
+    let mut name = socket_owner_path(socket)?.into_os_string();
+    name.push("-data");
+    Ok(PathBuf::from(name))
+}
+
 enum Probe {
+    Untracked,
     Free,
     Held(File),
 }
@@ -130,7 +183,7 @@ enum Probe {
 fn probe_file(path: &Path) -> io::Result<Probe> {
     let file = match File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Probe::Free),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Probe::Untracked),
         Err(error) => return Err(error),
     };
     match file.try_lock() {
@@ -228,14 +281,14 @@ mod tests {
         assert!(Core::open(&data).is_err());
         assert_eq!(
             probe_socket(&socket).unwrap(),
-            Ownership::Held {
+            SocketOwnership::Tracked(Ownership::Held {
                 phase: Phase::Unknown
-            }
+            })
         );
         release.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while probe(&data.root).unwrap() != Ownership::Free
-                || probe_socket(&socket).unwrap() != Ownership::Free
+                || probe_socket(&socket).unwrap() != SocketOwnership::Tracked(Ownership::Free)
             {
                 tokio::task::yield_now().await;
             }
@@ -243,7 +296,10 @@ mod tests {
         .await
         .unwrap();
         // Free ownership must imply the stores have already been dropped.
-        assert_eq!(probe_socket(&socket).unwrap(), Ownership::Free);
+        assert_eq!(
+            probe_socket(&socket).unwrap(),
+            SocketOwnership::Tracked(Ownership::Free)
+        );
         let reopened = Core::open(&data).unwrap();
         drop(reopened);
         assert!(
@@ -349,6 +405,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let data = DataDir::new(dir.path());
         let daemon = Daemon::open(&data, build()).unwrap();
+        let mut released = daemon.core_released();
         let (entered, started) = tokio::sync::oneshot::channel();
         let (release, gate) = std::sync::mpsc::channel();
         let writer = Arc::clone(&daemon);
@@ -373,7 +430,14 @@ mod tests {
             }
         );
         assert!(Core::open(&data).is_err());
+        assert!(!released.has_changed().unwrap(), "writer still owns Core");
         release.send(()).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), released.changed())
+                .await
+                .unwrap()
+                .is_err()
+        );
         tokio::time::timeout(Duration::from_secs(5), async {
             while probe(&data.root).unwrap() != Ownership::Free {
                 tokio::task::yield_now().await;
@@ -393,17 +457,17 @@ mod tests {
         let guard = Lease::for_socket(&socket).unwrap();
         assert_eq!(
             probe_socket(&alias).unwrap(),
-            Ownership::Held {
+            SocketOwnership::Tracked(Ownership::Held {
                 phase: Phase::Unknown
-            }
+            })
         );
         let extra = Lease::for_socket(&alias).unwrap();
         drop(guard);
         assert_eq!(
             probe_socket(&socket).unwrap(),
-            Ownership::Held {
+            SocketOwnership::Tracked(Ownership::Held {
                 phase: Phase::Unknown
-            }
+            })
         );
         assert!(
             std::fs::read(socket_owner_path(&socket).unwrap())
@@ -411,9 +475,95 @@ mod tests {
                 .is_empty()
         );
         drop(extra);
-        assert_eq!(probe_socket(&alias).unwrap(), Ownership::Free);
+        assert_eq!(
+            probe_socket(&alias).unwrap(),
+            SocketOwnership::Tracked(Ownership::Free)
+        );
         assert!(socket_owner_path(&socket).unwrap().exists());
         std::os::unix::fs::symlink("loop", dir.path().join("loop")).unwrap();
         assert!(probe_socket(&dir.path().join("loop")).is_err());
+    }
+
+    #[tokio::test]
+    async fn only_a_successfully_bound_owner_publishes_its_store_association() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("daemon.sock");
+        assert_eq!(probe_socket(&socket).unwrap(), SocketOwnership::Untracked);
+        let first_data = DataDir::new(dir.path().join("first"));
+        let first = Daemon::open_at_socket(&first_data, build(), &socket).unwrap();
+        let bound = crate::server::UnixServer::bind(&socket).unwrap();
+        associate_socket(&socket, &first_data.root).unwrap();
+        first.set_phase(Phase::Serving);
+        let first_link = std::fs::read_link(socket_data_path(&socket).unwrap()).unwrap();
+        for data in [&first_data, &DataDir::new(dir.path().join("rejected"))] {
+            let opts = crate::serve::ServeOpts {
+                socket: socket.clone(),
+                ..crate::serve::ServeOpts::new(data.root.clone())
+            };
+            assert!(crate::serve::serve(opts).await.is_err());
+            assert_eq!(
+                std::fs::read_link(socket_data_path(&socket).unwrap()).unwrap(),
+                first_link
+            );
+            assert_eq!(
+                probe_socket(&socket).unwrap(),
+                SocketOwnership::Tracked(Ownership::Held {
+                    phase: Phase::Serving
+                })
+            );
+        }
+        // A new binding may use another store while the old owner still has
+        // background work. Late phase updates belong only to that old store.
+        drop(bound);
+        let second_data = DataDir::new(dir.path().join("second"));
+        let second = Daemon::open_at_socket(&second_data, build(), &socket).unwrap();
+        let _bound = crate::server::UnixServer::bind(&socket).unwrap();
+        associate_socket(&socket, &second_data.root).unwrap();
+        second.set_phase(Phase::Serving);
+        first.set_phase(Phase::Stopping);
+        assert_eq!(
+            probe_socket(&socket).unwrap(),
+            SocketOwnership::Tracked(Ownership::Held {
+                phase: Phase::Serving
+            })
+        );
+        drop(second);
+        // Its writer may briefly keep Core; wait for the associated store to
+        // release, then the remaining old endpoint owner has unknown phase.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while probe(&second_data.root).unwrap() != Ownership::Free {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            probe_socket(&socket).unwrap(),
+            SocketOwnership::Tracked(Ownership::Held {
+                phase: Phase::Unknown
+            })
+        );
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while probe_socket(&socket).unwrap() != SocketOwnership::Tracked(Ownership::Free) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn socket_association_preserves_an_unrelated_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("daemon.sock");
+        let _lease = Lease::acquire(dir.path()).unwrap();
+        let path = socket_data_path(&socket).unwrap();
+        std::fs::write(&path, "user data").unwrap();
+        assert_eq!(
+            associate_socket(&socket, dir.path()).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "user data");
     }
 }

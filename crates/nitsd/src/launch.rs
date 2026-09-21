@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use tokio::net::UnixStream;
 
-use crate::ownership::{self, Ownership, Phase};
+use crate::ownership::{self, Ownership, Phase, SocketOwnership};
 
 pub mod stdio;
 
@@ -126,19 +126,22 @@ pub enum Availability {
 }
 
 pub async fn availability(spec: &DaemonSpec) -> std::io::Result<Availability> {
-    let owner = match ownership::probe(&spec.data_dir)? {
-        Ownership::Free => ownership::probe_socket(&spec.socket)?,
-        occupied @ Ownership::Held { .. } => occupied,
-    };
-    if matches!(
-        owner,
-        Ownership::Held {
-            phase: Phase::Stopping
+    let owner = match ownership::probe_socket(&spec.socket)? {
+        SocketOwnership::Tracked(owner) => owner,
+        SocketOwnership::Untracked => {
+            // A legacy listener can serve a different store from the caller's
+            // configured default. With no endpoint association, prefer it.
+            if is_listening(&spec.socket).await {
+                return Ok(Availability::Listening);
+            }
+            ownership::probe(&spec.data_dir)?
         }
-    ) {
-        return Ok(Availability::Transitioning {
-            phase: Phase::Stopping,
-        });
+    };
+    if let Ownership::Held {
+        phase: phase @ (Phase::Starting | Phase::Stopping),
+    } = owner
+    {
+        return Ok(Availability::Transitioning { phase });
     }
     if is_listening(&spec.socket).await {
         return Ok(Availability::Listening);
@@ -188,8 +191,13 @@ pub async fn ensure_daemon(spec: &DaemonSpec) -> std::io::Result<bool> {
         match availability(spec).await? {
             Availability::Listening => return Ok(spawned),
             Availability::Stopped if !spawned => {
-                spawn_detached(spec)?;
-                spawned = true;
+                // Status/stop concern the selected endpoint. Starting also
+                // requires the explicitly configured store to be unowned; do
+                // not silently substitute an endpoint's previous data path.
+                if ownership::probe(&spec.data_dir)? == Ownership::Free {
+                    spawn_detached(spec)?;
+                    spawned = true;
+                }
             }
             Availability::Stopped | Availability::Transitioning { .. } => {}
         }
