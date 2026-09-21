@@ -17,7 +17,9 @@ an older release, a different channel, or a candidate with an older store schema
 installed candidate and last operation. It never starts or restarts a daemon.
 `nits daemon upgrade --json` activates the verified installed candidate. An
 `Accepted` result contains an operation ID and phase; it is not a readiness
-claim. Inspect status until the operation becomes `Ready` or `Failed`.
+claim. Public `daemon upgrade` prints its typed result and exits nonzero for
+`Failed`; status queries and accepted operations retain a successful exit.
+Inspect status until the operation becomes `Ready` or `Failed`.
 `AlreadyCurrent` means the running and selected installed digests match.
 
 Local contexts use the selected Nits installation (`NITS_BIN`, the invoked CLI
@@ -87,3 +89,29 @@ build. An already-running legacy MCP adapter predating the stable supervisor
 also needs one host restart to enter the supported upgrade contract. This
 bootstrap does not claim graceful notices or transparent session replacement
 from binaries that never implemented them.
+
+## An ongoing MCP session
+
+`get_daemon_status` remains available even if the application Hello is rejected.
+It reports the selected context, daemon/candidate, stable MCP host and active
+worker builds, compatibility and operation progress. `restart_daemon` accepts
+no executable path: it targets that selected managed context and verified
+installation. Pings, cancellation and independent status remain responsive.
+
+The host runs a replaceable worker over a separate versioned private protocol.
+It checkpoints initialized identity, invoking human, selected context and cursor
+policy before acknowledging session changes. A new worker restores that state
+without dialing during restore, then obtains a fresh daemon ClientId and sequence.
+In-flight requests and mutation identities are never replayed into that worker.
+Interrupted writes report unknown outcome; explicitly unforwarded work is
+identified separately. Tool manifests come from the typed worker contract, and
+capability changes emit the MCP tool-list change notification.
+
+Before activation, the supervisor verifies a compatible local worker candidate
+and pins the remote/local daemon candidate's digest. An installation replacement
+between those steps fails before disrupting the incumbent. SSH needs the proper
+remote daemon installation and local worker installation; a remote-only update
+does not magically update an old local adapter. The host remains usable for
+management and returns an explicit upgrade requirement if it cannot load a
+compatible worker. Readiness requires the target build to be running, not merely
+a historical Ready journal entry.

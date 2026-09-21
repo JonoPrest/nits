@@ -4,7 +4,7 @@
     "version": "0.1.0"
   },
   "protocol": "0.18.0",
-  "schema": 9,
+  "schema": 10,
   "type": "Welcome",
   "upgrade": null
 }

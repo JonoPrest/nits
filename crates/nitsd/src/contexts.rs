@@ -918,9 +918,28 @@ mod tests {
     fn configured_remote_arguments_remain_literal_shell_words() {
         let directory = tempfile::tempdir().unwrap();
         let marker = directory.path().join("must-not-exist");
-        let words = vec!["".to_owned(), "/opt/installed Nits/nits".into(), "apostrophe'quote".into(), "line\nline".into(), format!("$(touch {})", marker.display()), "semi;colon".into(), "--expected-build".into(), "abcd".into()];
-        let script = format!("set -- {}; printf '%s\\0' \"$@\"", words.iter().map(|word| remote_word(word)).collect::<Vec<_>>().join(" "));
-        let output = std::process::Command::new("sh").args(["-c", &script]).output().unwrap();
+        let words = [
+            String::new(),
+            "/opt/installed Nits/nits".into(),
+            "apostrophe'quote".into(),
+            "line\nline".into(),
+            format!("$(touch {})", marker.display()),
+            "semi;colon".into(),
+            "--expected-build".into(),
+            "abcd".into(),
+        ];
+        let script = format!(
+            "set -- {}; printf '%s\\0' \"$@\"",
+            words
+                .iter()
+                .map(|word| remote_word(word))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let output = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .output()
+            .unwrap();
         assert!(output.status.success());
         let mut expected = words.join("\0").into_bytes();
         expected.push(0);

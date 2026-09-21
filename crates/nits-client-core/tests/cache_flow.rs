@@ -242,6 +242,7 @@ fn requests(effects: &[Effect]) -> Vec<(RequestId, Request)> {
             Effect::Send(ClientMsg::Request { id, request }) => Some((*id, request.clone())),
             Effect::Send(ClientMsg::Hello { .. } | ClientMsg::Cancel { .. })
             | Effect::Connect
+            | Effect::ManageDaemon { .. }
             | Effect::Disconnect
             | Effect::Render(_)
             | Effect::Persist { .. }
@@ -258,6 +259,7 @@ fn loads(effects: &[Effect]) -> Vec<String> {
             Effect::Load { key } => Some(key.clone()),
             Effect::Send(_)
             | Effect::Connect
+            | Effect::ManageDaemon { .. }
             | Effect::Disconnect
             | Effect::Render(_)
             | Effect::Persist { .. }
@@ -273,6 +275,7 @@ fn persists(effects: &[Effect]) -> Vec<String> {
             Effect::Persist { key, .. } => Some(key.clone()),
             Effect::Send(_)
             | Effect::Connect
+            | Effect::ManageDaemon { .. }
             | Effect::Disconnect
             | Effect::Render(_)
             | Effect::Load { .. }
@@ -291,6 +294,7 @@ fn persisted_view_prefs(effects: &[Effect]) -> Vec<nits_client_core::ViewPrefs> 
             Effect::Persist { .. }
             | Effect::Send(_)
             | Effect::Connect
+            | Effect::ManageDaemon { .. }
             | Effect::Disconnect
             | Effect::Render(_)
             | Effect::Load { .. }
@@ -306,6 +310,7 @@ fn removes(effects: &[Effect]) -> Vec<String> {
             Effect::Remove { key } => Some(key.clone()),
             Effect::Send(_)
             | Effect::Connect
+            | Effect::ManageDaemon { .. }
             | Effect::Disconnect
             | Effect::Render(_)
             | Effect::Load { .. }
@@ -321,6 +326,7 @@ fn cancels(effects: &[Effect]) -> Vec<RequestId> {
             Effect::Send(ClientMsg::Cancel { id }) => Some(*id),
             Effect::Send(ClientMsg::Hello { .. } | ClientMsg::Request { .. })
             | Effect::Connect
+            | Effect::ManageDaemon { .. }
             | Effect::Disconnect
             | Effect::Render(_)
             | Effect::Load { .. }
@@ -337,6 +343,7 @@ fn rendered(effects: &[Effect]) -> Vec<ViewSection> {
             Effect::Render(d) => Some(d.sections.clone()),
             Effect::Send(_)
             | Effect::Connect
+            | Effect::ManageDaemon { .. }
             | Effect::Disconnect
             | Effect::Load { .. }
             | Effect::Persist { .. }
@@ -386,7 +393,11 @@ impl Kv {
                             .unwrap(),
                         );
                     }
-                    Effect::Send(_) | Effect::Connect | Effect::Disconnect | Effect::Render(_) => {}
+                    Effect::Send(_)
+                    | Effect::Connect
+                    | Effect::ManageDaemon { .. }
+                    | Effect::Disconnect
+                    | Effect::Render(_) => {}
                 }
                 out.push(e);
             }

@@ -2818,16 +2818,14 @@ fn only_explicit_never_admitted_mutations_retry_after_reconnect() {
             .unwrap();
         let retried = effects
             .iter()
-            .filter_map(|effect| {
-                if let Effect::Send(ClientMsg::Request {
-                    request: Request::Mutate { .. },
-                    ..
-                }) = effect
-                {
-                    Some(effect)
-                } else {
-                    None
-                }
+            .filter(|effect| {
+                matches!(
+                    effect,
+                    Effect::Send(ClientMsg::Request {
+                        request: Request::Mutate { .. },
+                        ..
+                    })
+                )
             })
             .collect::<Vec<_>>();
         assert_eq!(retried.len(), usize::from(!admitted));
@@ -2843,27 +2841,62 @@ fn only_explicit_never_admitted_mutations_retry_after_reconnect() {
 fn late_commit_after_resubscribe_reconciles_unknown_without_resending() {
     let mut core = subscribed(11);
     open(&mut core, ReviewId::from_parts(1, 1));
-    core.handle(Input::User(Action::DraftOpened { anchor: Anchor::Review })).unwrap();
-    let effects = core.handle(Input::User(Action::DraftSubmitted { body: "one accepted comment".into() })).unwrap();
-    let (_, Request::Mutate { client_seq, .. }) = sent_request(&effects).unwrap() else { panic!("mutation") };
+    core.handle(Input::User(Action::DraftOpened {
+        anchor: Anchor::Review,
+    }))
+    .unwrap();
+    let effects = core
+        .handle(Input::User(Action::DraftSubmitted {
+            body: "one accepted comment".into(),
+        }))
+        .unwrap();
+    let (_, Request::Mutate { client_seq, .. }) = sent_request(&effects).unwrap() else {
+        panic!("mutation")
+    };
     let body = core.view().review.as_ref().unwrap().pending[0].body.clone();
-    core.handle(Input::Transport(TransportEvent::Disconnected)).unwrap();
+    core.handle(Input::Transport(TransportEvent::Disconnected))
+        .unwrap();
     core.handle(Input::User(Action::Connect)).unwrap();
-    core.handle(Input::Transport(TransportEvent::Connected)).unwrap();
+    core.handle(Input::Transport(TransportEvent::Connected))
+        .unwrap();
     let effects = core.handle(Input::Server(welcome())).unwrap();
     let (id, _) = sent_request(&effects).unwrap();
-    let effects = core.handle(Input::Server(ServerMsg::Response { id, response: Response::Subscribed { seq: Seq::new(11) } })).unwrap();
-    assert!(!effects.iter().any(|effect| matches!(effect, Effect::Send(ClientMsg::Request { request: Request::Mutate { .. }, .. }))));
+    let effects = core
+        .handle(Input::Server(ServerMsg::Response {
+            id,
+            response: Response::Subscribed { seq: Seq::new(11) },
+        }))
+        .unwrap();
+    assert!(!effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Send(ClientMsg::Request {
+            request: Request::Mutate { .. },
+            ..
+        })
+    )));
     assert_eq!(core.view().uncertain_mutations, [client_seq]);
     let mut committed = event(12, body);
     committed.client_id = config().client_id;
     committed.client_seq = client_seq;
-    core.handle(Input::Server(ServerMsg::Event { event: committed.clone() })).unwrap();
+    core.handle(Input::Server(ServerMsg::Event {
+        event: committed.clone(),
+    }))
+    .unwrap();
     assert_eq!(core.pending_count(), 0);
     assert!(core.view().uncertain_mutations.is_empty());
-    assert_eq!(core.view().review.as_ref().unwrap().snapshot.comments.len(), 1);
-    assert!(matches!(core.handle(Input::Server(ServerMsg::Event { event: committed })), Err(CoreError::StaleEvent { .. })));
-    assert_eq!(core.view().review.as_ref().unwrap().snapshot.comments.len(), 1);
+    assert_eq!(
+        core.view().review.as_ref().unwrap().snapshot.comments.len(),
+        1
+    );
+    assert!(
+        core.handle(Input::Server(ServerMsg::Event { event: committed }))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        core.view().review.as_ref().unwrap().snapshot.comments.len(),
+        1
+    );
 }
 
 #[test]
@@ -2871,14 +2904,33 @@ fn maintenance_reply_identity_survives_disconnect_and_discards_superseded_status
     use nits_client_core::{DaemonManagement, ManagementReply};
     let mut core = subscribed(11);
     let first = core.handle(Input::User(Action::InspectDaemon)).unwrap();
-    let Effect::ManageDaemon { id: old, .. } = first[0] else { panic!("management") };
+    let Effect::ManageDaemon { id: old, .. } = first[0] else {
+        panic!("management")
+    };
     let second = core.handle(Input::User(Action::UpgradeDaemon)).unwrap();
-    let Effect::ManageDaemon { id: current, .. } = second[0] else { panic!("management") };
-    core.handle(Input::Transport(TransportEvent::Disconnected)).unwrap();
-    let effects = core.handle(Input::DaemonManaged { id: old, reply: ManagementReply::Status(Err("stale failed probe".into())) }).unwrap();
+    let Effect::ManageDaemon { id: current, .. } = second[0] else {
+        panic!("management")
+    };
+    core.handle(Input::Transport(TransportEvent::Disconnected))
+        .unwrap();
+    let effects = core
+        .handle(Input::DaemonManaged {
+            id: old,
+            reply: ManagementReply::Status(Err("stale failed probe".into())),
+        })
+        .unwrap();
     assert!(effects.is_empty());
     assert_eq!(core.view().daemon_management, DaemonManagement::Upgrading);
-    let result = nits_protocol::UpgradeResult::Accepted { operation: planned_restart(ProtocolVersion::CURRENT) };
-    core.handle(Input::DaemonManaged { id: current, reply: ManagementReply::Upgrade(Ok(result.clone())) }).unwrap();
-    assert_eq!(core.view().daemon_management, DaemonManagement::Outcome { result });
+    let result = nits_protocol::UpgradeResult::Accepted {
+        operation: planned_restart(ProtocolVersion::CURRENT),
+    };
+    core.handle(Input::DaemonManaged {
+        id: current,
+        reply: ManagementReply::Upgrade(Ok(result.clone())),
+    })
+    .unwrap();
+    assert_eq!(
+        core.view().daemon_management,
+        DaemonManagement::Outcome { result }
+    );
 }

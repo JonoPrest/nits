@@ -17,7 +17,8 @@ use std::time::Duration;
 
 use nits_client_core::{
     Action, Bytes, CacheConfig, ClientCore, Config, DiskTier, Effect, IdSeed, Input, KeyChord,
-    Keymap, ManagementReply, ManagementRequest, ManagementRequestId, TransportEvent, ViewBatchKind, ViewDelivery, ViewEncoder, ViewPatch,
+    Keymap, ManagementReply, ManagementRequest, ManagementRequestId, TransportEvent, ViewBatchKind,
+    ViewDelivery, ViewEncoder, ViewPatch,
 };
 use nits_protocol::{Author, BuildInfo, ClientId, ClientMsg, Envelope, ServerMsg};
 use nitsd::contexts::DaemonEndpoint;
@@ -341,11 +342,13 @@ struct ConnectionFeed {
 }
 
 impl ConnectionFeed {
-    fn send(&self, event: IncomingEvent) -> Result<(), mpsc::error::SendError<Incoming>> {
-        self.incoming.send(Incoming {
-            generation: self.generation,
-            event,
-        })
+    fn send(&self, event: IncomingEvent) -> Result<(), mpsc::error::SendError<()>> {
+        self.incoming
+            .send(Incoming {
+                generation: self.generation,
+                event,
+            })
+            .map_err(|_| mpsc::error::SendError(()))
     }
 }
 
@@ -792,6 +795,8 @@ mod tests {
             management,
             management_tasks: tokio::task::JoinSet::new(),
             patches,
+            encoder: ViewEncoder::default(),
+            shutdown: CancellationToken::new(),
         };
         let (incoming, _received) = mpsc::unbounded_channel();
         let (current, _sent) = mpsc::unbounded_channel();

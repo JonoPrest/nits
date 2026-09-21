@@ -188,7 +188,8 @@ fn request_id(effects: &[Effect]) -> RequestId {
             | Effect::Render(_)
             | Effect::Persist { .. }
             | Effect::Load { .. }
-            | Effect::Remove { .. } => None,
+            | Effect::Remove { .. }
+            | Effect::ManageDaemon { .. } => None,
         })
         .unwrap()
 }

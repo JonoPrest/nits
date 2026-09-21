@@ -530,6 +530,53 @@ async fn prepare_replacement(
     })
 }
 
+#[derive(Debug)]
+enum MonitorDecision {
+    Pending { stage: UpgradeStage },
+    Complete(UpgradeResult),
+}
+
+fn monitor_decision(operation: &UpgradeOperation, running: &ManagedDaemonState) -> MonitorDecision {
+    match &operation.progress {
+        UpgradeProgress::Active { stage } => MonitorDecision::Pending { stage: *stage },
+        UpgradeProgress::Failed { failure } => MonitorDecision::Complete(UpgradeResult::Failed {
+            failure: failure.clone(),
+        }),
+        UpgradeProgress::Ready {} => match running {
+            ManagedDaemonState::Running { build } if *build == operation.target => {
+                MonitorDecision::Complete(UpgradeResult::Restarted {
+                    operation: operation.clone(),
+                })
+            }
+            ManagedDaemonState::Running { build } => {
+                MonitorDecision::Complete(UpgradeResult::Failed {
+                    failure: UpgradeFailure {
+                        stage: UpgradeStage::ConfirmingReady,
+                        kind: UpgradeFailureKind::ContextMismatch,
+                        message: format!(
+                            "upgrade journal records build {}, but the endpoint now runs {}; inspect get_daemon_status before retrying",
+                            operation.target.digest, build.digest
+                        ),
+                    },
+                })
+            }
+            ManagedDaemonState::Stopped {}
+            | ManagedDaemonState::Unavailable { .. }
+            | ManagedDaemonState::Legacy { .. } => MonitorDecision::Pending {
+                stage: UpgradeStage::ConfirmingReady,
+            },
+            ManagedDaemonState::NotManaged {} => MonitorDecision::Complete(UpgradeResult::Failed {
+                failure: UpgradeFailure {
+                    stage: UpgradeStage::ConfirmingReady,
+                    kind: UpgradeFailureKind::NotManaged,
+                    message: "daemon readiness cannot be confirmed for an unmanaged endpoint"
+                        .into(),
+                },
+            }),
+        },
+    }
+}
+
 async fn monitor(endpoint: &Endpoint, mut operation: UpgradeOperation) -> UpgradeResult {
     let deadline = tokio::time::Instant::now() + UPGRADE_MONITOR_BUDGET;
     let mut stage = UpgradeStage::PreparingRestart;
@@ -544,14 +591,9 @@ async fn monitor(endpoint: &Endpoint, mut operation: UpgradeOperation) -> Upgrad
                 {
                     operation = current;
                 }
-                match &operation.progress {
-                    UpgradeProgress::Active { stage: current } => stage = *current,
-                    UpgradeProgress::Ready {} => return UpgradeResult::Restarted { operation },
-                    UpgradeProgress::Failed { failure } => {
-                        return UpgradeResult::Failed {
-                            failure: failure.clone(),
-                        };
-                    }
+                match monitor_decision(&operation, &status.running) {
+                    MonitorDecision::Pending { stage: current } => stage = current,
+                    MonitorDecision::Complete(result) => return result,
                 }
             }
             Err(error) => {
@@ -1221,6 +1263,79 @@ mod tests {
             .unwrap()
             .unwrap();
         serde_json::from_str(&line).unwrap()
+    }
+
+    #[test]
+    fn stale_ready_journal_cannot_complete_without_the_expected_running_build() {
+        let build = nitsd::build::running().unwrap();
+        let mut operation = UpgradeOperation {
+            id: nits_protocol::UpgradeId::from_parts(2, 3),
+            source: build.clone(),
+            target: build.clone(),
+            progress: UpgradeProgress::Ready {},
+        };
+        for running in [
+            ManagedDaemonState::Stopped {},
+            ManagedDaemonState::Unavailable {
+                reason: "store still held".into(),
+            },
+            ManagedDaemonState::Legacy {
+                reason: "control not ready".into(),
+            },
+        ] {
+            assert!(matches!(
+                monitor_decision(&operation, &running),
+                MonitorDecision::Pending {
+                    stage: UpgradeStage::ConfirmingReady
+                }
+            ));
+        }
+        assert!(matches!(
+            monitor_decision(&operation, &ManagedDaemonState::Running { build: build.clone() }),
+            MonitorDecision::Complete(UpgradeResult::Restarted { operation: ready }) if ready == operation
+        ));
+        let mut changed = build.clone();
+        changed.digest = nits_protocol::BuildDigest::from_bytes([43; 32]);
+        assert!(matches!(
+            monitor_decision(&operation, &ManagedDaemonState::Running { build: changed }),
+            MonitorDecision::Complete(UpgradeResult::Failed {
+                failure: UpgradeFailure {
+                    stage: UpgradeStage::ConfirmingReady,
+                    kind: UpgradeFailureKind::ContextMismatch,
+                    ..
+                }
+            })
+        ));
+        assert!(matches!(
+            monitor_decision(&operation, &ManagedDaemonState::NotManaged {}),
+            MonitorDecision::Complete(UpgradeResult::Failed {
+                failure: UpgradeFailure {
+                    kind: UpgradeFailureKind::NotManaged,
+                    ..
+                }
+            })
+        ));
+        operation.progress = UpgradeProgress::Active {
+            stage: UpgradeStage::Draining,
+        };
+        assert!(matches!(
+            monitor_decision(&operation, &ManagedDaemonState::Running { build }),
+            MonitorDecision::Pending {
+                stage: UpgradeStage::Draining
+            }
+        ));
+        let failure = UpgradeFailure {
+            stage: UpgradeStage::Draining,
+            kind: UpgradeFailureKind::DrainTimeout,
+            message: "owned Git work remains".into(),
+        };
+        operation.progress = UpgradeProgress::Failed {
+            failure: failure.clone(),
+        };
+        assert!(matches!(
+            monitor_decision(&operation, &ManagedDaemonState::Stopped {}),
+            MonitorDecision::Complete(UpgradeResult::Failed { failure: actual }) if actual == failure
+        ));
     }
 
     #[test]

@@ -438,7 +438,8 @@ Cache entries are `TreeSnapshot`s (§4.7), render headers and render **chunks** 
 1. Client generates the ULID, applies the event locally (marked `pending`), emits `Send`.
 2. Daemon assigns `seq`, broadcasts to all subscribers including the originator.
 3. On seeing its own event, client clears `pending`. On foreign events, it re-applies pending events on top.
-4. Conflicts are limited to edits of the same comment and resolve/unresolve toggles: **last writer by `seq` wins**; the view re-renders.
+4. A lost reply is an unknown outcome, retained explicitly until a durable event reconciles it. Only a typed never-admitted rejection is automatically resent; ClientId/ClientSeq are provenance, not a general daemon deduplication guarantee.
+5. Conflicts are limited to edits of the same comment and resolve/unresolve toggles: **last writer by `seq` wins**; the view re-renders.
 
 ### 5.3 Client-local state
 
@@ -605,7 +606,7 @@ drains remaining responses to stdout. Daemon EOF or reset ends the proxy even
 while client stdin remains open. Its cancellable stdin worker is joined and
 restores descriptor flags on every exit, including forwarding-future cancellation;
 pipes, regular files, terminals, sockets and `/dev/null` retain their input semantics.
-Transport errors are reported without reconnecting or replaying requests.
+The proxy reports transport errors without replaying requests. Higher-level compatible UI recovery and CLI `events --follow` may establish a fresh transport with a bounded budget; mutations whose replies were lost remain uncertain.
 
 ## 9. Persistence & lifecycle
 
@@ -849,3 +850,39 @@ are excluded from the ordinary optimistic mutation resend list. Request/review/c
 checks reject stale or mismatched preview replies; a durable event/snapshot receipt
 wins over older previews and errors. The UI keeps patch evidence visible while a
 request is pending or rejected, and offers Apply only after a ready preview.
+
+
+### Installed-build activation and live MCP sessions (#137)
+
+Protocol0.18 adds typed lifecycle notices and admission/interruption errors;
+persisted schema10 is unchanged. The independent maintenance contract and MCP
+host/worker contract are version1. Build identity is the complete executable's
+SHA-256; release ordering is a separate same-channel semantic-version relation.
+Neither protocol nor package version substitutes for executable identity.
+
+The shared native coordinator freezes a verified candidate, records one operation
+under a stable per-store lock, closes admission, drains accepted jobs and bounded
+connection output, waits for actual store ownership release, then confirms the
+replacement's descriptor and Hello. Local and SSH adapters use that same path;
+WebSocket contexts remain explicitly unmanaged. Configured SSH executable and
+arguments remain literal remote shell words. Preflight pins an expected digest
+when a worker handoff depends on the candidate remaining unchanged.
+
+Hosts tag transport output by generation, so a retired connection cannot install
+its writer, event or disconnect into the successor. The sans-I/O client drives
+planned reconnect from clock inputs and preserves its review/draft/cursor. An
+incompatible host displays UpgradeRequired rather than looping or downgrading.
+The native host owns management I/O separately from daemon connection generations.
+
+The MCP supervisor checkpoints identity/context/cursor policy into a replacement
+worker, owns host request outcomes, and never transfers in-flight mutations. Its
+monotonic worker tickets distinguish reused host IDs after cancellation. Session
+barriers preserve input ordering before a management target is captured. The
+worker's typed tool manifest drives ordinary scheduling and advertisements; status
+and restart remain available without the application protocol. An accepted
+operation is monitored while ping/cancellation remain usable. A Ready journal
+must agree with the actual running descriptor before the worker is installed.
+
+See [DAEMON-UPGRADES.md](DAEMON-UPGRADES.md) for CLI/keymap behavior, failure
+recovery, exact local/remote installation selection and the explicit pre-contract
+legacy bootstrap boundary.
