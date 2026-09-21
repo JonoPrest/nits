@@ -502,3 +502,20 @@ test("one repo is exhausted immediately and restored duplicates remain correctab
     },
   )
 })
+
+test("empty workspace guidance names the configured refresh chord", () => {
+  let workspace = {...CreationFixtures.workspace(), repos: []}
+  let chrome: array<View.Hint.t> = [{keys: "alt+f", command: Refresh, label: "refresh"}]
+  let _ = render(
+    <NewReview
+      creation={CreationFixtures.make(~workspace)}
+      workspaces=[workspace]
+      chrome
+      bindings=chrome
+      dispatch={_ => ()}
+    />,
+  )
+  let _ = Screen.getByText(
+    "No repositories to review. Attach one to this workspace, then refresh (alt+f).",
+  )
+})

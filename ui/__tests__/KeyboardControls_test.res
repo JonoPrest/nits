@@ -229,3 +229,58 @@ test("file header controls advertise the precise full-file commands after rebind
   FireEvent.click(select(container, "[title='whole file (alt+x)']"))
   expect(dispatch)->toHaveBeenLastCalledWith(Action.ExpandContext({file: diff.file, full: true}))
 })
+
+[false, true]->Array.forEach(editor => {
+  test("closing help restores its native invoker: editor=" ++ Bool.toString(editor), () => {
+    let dispatch = fn()
+    let submitted = fn()
+    let help = Fixtures.parse(View.HelpView.schema, "client", "HelpView", "default")
+    let element = show =>
+      <div>
+        <textarea ariaLabel="Retained editor" defaultValue="retained text" />
+        <UI.Button label="Retained submit" onClick=submitted />
+        {show ? <HelpOverlay help bindings=custom dispatch /> : React.null}
+      </div>
+    let {rerender} = render(element(false))
+    let invoker = editor
+      ? Screen.getByLabelText("Retained editor")
+      : Screen.getByText("Retained submit")
+    Element.focus(invoker)
+    rerender(element(true))
+    expect(Document.activeElement)->toEqual(Nullable.make(Screen.getByPlaceholderText("filter…")))
+    rerender(element(false))
+    expect(Document.activeElement)->toEqual(Nullable.make(invoker))
+    expect(submitted)->not_->toHaveBeenCalled
+    expect(dispatch)->not_->toHaveBeenCalled
+    expect(Element.value(Screen.getByLabelText("Retained editor")))->toBe("retained text")
+  })
+})
+
+["other focus", "removed", "disabled"]->Array.forEach(reason => {
+  test("closing help does not restore an unavailable or superseded invoker: " ++ reason, () => {
+    let help = Fixtures.parse(View.HelpView.schema, "client", "HelpView", "default")
+    let element = (show, changed) =>
+      <div>
+        {reason == "removed" && changed
+          ? React.null
+          : <button key="invoker" disabled={reason == "disabled" && changed}>
+              {React.string("invoker")}
+            </button>}
+        <button key="other"> {React.string("other")} </button>
+        {show ? <HelpOverlay help bindings=custom dispatch={_ => ()} /> : React.null}
+      </div>
+    let {rerender} = render(element(false, false))
+    let invoker = Screen.getByText("invoker")
+    Element.focus(invoker)
+    rerender(element(true, false))
+    let other = Screen.getByText("other")
+    if reason == "other focus" {
+      Element.focus(other)
+    }
+    rerender(element(false, true))
+    expect(Document.activeElement == Nullable.make(invoker))->toBe(false)
+    if reason == "other focus" {
+      expect(Document.activeElement)->toEqual(Nullable.make(other))
+    }
+  })
+})

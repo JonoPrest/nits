@@ -285,7 +285,8 @@ let make = (
     {workspace->Option.map(w => Array.length(w.repos) == 0)->Option.getOr(true)
       ? <p className="new-review-hint">
           {React.string(
-            "No repositories to review. Attach one to this workspace, then refresh (R).",
+            "No repositories to review. Attach one to this workspace, then refresh" ++
+            Chrome.keys(chrome, Refresh)->Option.mapOr("", keys => " (" ++ keys ++ ")") ++ ".",
           )}
         </p>
       : Array.length(available) == 0
