@@ -280,3 +280,33 @@ fn directory_lookup_detects_legacy_aliases_and_reuses_either_survivor_after_rest
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn configured_symlink_workdir_keeps_canonical_ownership_and_directory_reuse() {
+    let (dir, _data, core) = setup();
+    let alpha = repo("alpha.txt");
+    let alias = dir.path().join("configured-workdir");
+    std::os::unix::fs::symlink(alpha.path(), &alias).unwrap();
+    alpha
+        .git(&["config", "core.worktree", alias.to_str().unwrap()])
+        .unwrap();
+    let attached = attach(&core, ws(1), rid(1), alpha.path()).unwrap();
+    let canonical = std::fs::canonicalize(alpha.path()).unwrap();
+    assert_eq!(Path::new(&attached.path), canonical);
+    assert_eq!(core.repo_checkout_path(rid(1)).unwrap(), canonical);
+    let before = core.last_seq().unwrap();
+    assert!(attach(&core, ws(1), rid(2), &alias).is_err());
+    assert_eq!(core.last_seq().unwrap(), before);
+    let options = EnsureDirectoryReview {
+        workspace_id: ws(9),
+        repo_id: rid(9),
+        review_id: ReviewId::from_parts(1, 9),
+        path: alpha.path().to_str().unwrap().into(),
+        base: None,
+        head: Some(RefSpec::WorkingTree),
+    };
+    let opened = core.ensure_directory_review(&ctx(), options).unwrap();
+    assert_eq!((opened.workspace_id, opened.repo_id), (ws(1), rid(1)));
+    assert_eq!(core.workspaces().unwrap().len(), 3);
+}
