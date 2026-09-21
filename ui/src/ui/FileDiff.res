@@ -26,10 +26,11 @@ let make = (
   ~pendingRefresh: bool,
   ~isOpen: bool,
   ~chrome: array<View.Hint.t>=[],
+  ~bindings: array<View.Hint.t>=[],
   ~visual: option<VisualView.t>=?,
   ~dispatch: Action.t => unit,
 ) => {
-  // Fold state is core-owned (`z a` toggles; motions skip folded files).
+  // Fold state is core-owned (ToggleFileCollapse; motions skip folded files).
   let collapsed = diff.collapsed
   let (drag, setDrag) = React.useState(() => None)
   // Patches are viewport-bounded (§6.3): accumulate every row this file
@@ -237,7 +238,7 @@ let make = (
               // last line of its range (UI-DESIGN §Comments).
               {switch (r.drafted, draft) {
               | (Some((Anchor, _)), Some({purpose: Comment(_)} as d)) =>
-                <Composer chrome draft=d pendingRefresh dispatch />
+                <Composer chrome bindings draft=d pendingRefresh dispatch />
               | (Some(_), _) | (None, _) => React.null
               }}
               {r.threads
@@ -248,7 +249,7 @@ let make = (
                 let thread = threads->Array.getUnsafe(ti)
                 let composer = switch (replyTo, draft) {
                 | (Some(id), Some(d)) if id == thread.id =>
-                  <Composer chrome draft=d pendingRefresh dispatch />
+                  <Composer chrome bindings draft=d pendingRefresh dispatch />
                 | _ => React.null
                 }
                 <InlineThread

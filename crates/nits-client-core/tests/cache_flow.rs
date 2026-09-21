@@ -4412,3 +4412,23 @@ mod shared_trees;
 
 #[path = "cache_flow/browse_selection.rs"]
 mod browse_selection;
+
+#[test]
+fn browse_unchanged_file_fold_controls_share_the_core_state() {
+    let mut core = browse_ready(RefSpec::WorkingTree);
+    core.handle(Input::User(Action::SetFocus {
+        focus: Focus::Diff {
+            row: 0,
+            side: Side::Head,
+        },
+    }))
+    .unwrap();
+    let file = file_ref("unchanged.rs");
+    assert!(!core.view().diffs.iter().any(|diff| diff.file == file));
+    assert!(!core.view().diff.as_ref().unwrap().collapsed);
+    core.handle(Input::Key(KeyChord::char('C'))).unwrap();
+    assert!(core.view().diff.as_ref().unwrap().collapsed);
+    core.handle(Input::Key(KeyChord::named(NamedKey::Enter)))
+        .unwrap();
+    assert!(!core.view().diff.as_ref().unwrap().collapsed);
+}

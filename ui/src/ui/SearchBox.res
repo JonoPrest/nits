@@ -6,6 +6,7 @@ open View
 let make = (
   ~search: SearchView.t,
   ~repositories: RepositoryIdentity.context=Unavailable,
+  ~bindings: array<View.Hint.t>=[],
   ~dispatch: Action.t => unit,
 ) => {
   let (
@@ -14,10 +15,14 @@ let make = (
     resultsRef,
     toInput,
     onResultsFocus,
+    onResultsPointer,
+    onResultsBlur,
     onChange,
     onInputKey,
     onResultsKey,
+    _,
   ) = SearchNavigation.useNavigation(
+    ~bindings,
     ~count=Array.length(search.hits),
     ~selected=search.selected,
     ~first=() => dispatch(SearchFirst({search: Files})),
@@ -45,6 +50,8 @@ let make = (
       listRef={ReactDOM.Ref.domRef(resultsRef)}
       onKey=onResultsKey
       onFocus=onResultsFocus
+      onPointer=onResultsPointer
+      onBlur=onResultsBlur
       activeId={selected->Option.map(hitId)}
     >
       {search.hits

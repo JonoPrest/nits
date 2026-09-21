@@ -85,7 +85,7 @@ let conflictMatches = (conflict: Conflict.t, query: string) =>
   conflict.commands->Array.some(command => fuzzyScore((command :> string), query)->Option.isSome)
 
 @react.component
-let make = (~help: HelpView.t, ~dispatch: Action.t => unit) => {
+let make = (~help: HelpView.t, ~bindings: array<View.Hint.t>=[], ~dispatch: Action.t => unit) => {
   let (query, setQuery) = React.useState(() => "")
   let groups = filteredGroups(help.groups, query)
   let conflicts = help.conflicts->Array.filter(conflict => conflictMatches(conflict, query))
@@ -108,10 +108,14 @@ let make = (~help: HelpView.t, ~dispatch: Action.t => unit) => {
     resultsRef,
     toInput,
     onResultsFocus,
+    onResultsPointer,
+    onResultsBlur,
     onChange,
     onInputKey,
     onResultsKey,
+    onDialogKey,
   ) = SearchNavigation.useNavigation(
+    ~bindings,
     ~count,
     ~selected=selection,
     ~first=() => setSelection(_ => 0),
@@ -138,7 +142,7 @@ let make = (~help: HelpView.t, ~dispatch: Action.t => unit) => {
     className="help-overlay"
     role="dialog"
     ariaLabel="keyboard help"
-    onKeyDown={ev => SearchNavigation.onDialogKey(close, ev)}
+    onKeyDown={ev => onDialogKey(ev)}
   >
     <div className="help-panel panel" ref={ReactDOM.Ref.domRef(panelRef)}>
       <header className="panel-header"> {React.string("Keyboard")} </header>
@@ -157,6 +161,8 @@ let make = (~help: HelpView.t, ~dispatch: Action.t => unit) => {
         listRef={ReactDOM.Ref.domRef(resultsRef)}
         onKey=onResultsKey
         onFocus=onResultsFocus
+        onPointer=onResultsPointer
+        onBlur=onResultsBlur
         activeId={selected->Option.map(hitId)}
       >
         {Array.length(groups) == 0 && Array.length(conflicts) == 0
@@ -211,7 +217,7 @@ let make = (~help: HelpView.t, ~dispatch: Action.t => unit) => {
             </section>
           : React.null}
       </UI.SearchResults>
-      <UI.Button label="close ⎋" kind=Ghost onClick=close />
+      <UI.Button label="Close" title=?{Chrome.tip(bindings, Back)} kind=Ghost onClick=close />
     </div>
   </div>
 }

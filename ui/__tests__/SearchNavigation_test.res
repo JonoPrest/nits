@@ -1,3 +1,5 @@
+let searchBindings: array<View.Hint.t> = [{keys: "esc", command: Back, label: "back"}]
+
 open Vitest
 open TestingLibrary
 
@@ -64,7 +66,7 @@ module FileHarness = {
       }
     }
     <div>
-      <SearchBox search={{query, hits, selected}} dispatch=send />
+      <SearchBox bindings=searchBindings search={{query, hits, selected}} dispatch=send />
       <UI.Button label="after results" onClick={() => ()} />
     </div>
   }
@@ -92,7 +94,13 @@ module ContentHarness = {
       | _ => ()
       }
     }
-    <Palette contentSearch=Some(search) actionPalette=false chrome=hints dispatch=send />
+    <Palette
+      bindings=searchBindings
+      contentSearch=Some(search)
+      actionPalette=false
+      chrome=hints
+      dispatch=send
+    />
   }
 }
 type surface = Files | Content | Actions | Help
@@ -100,8 +108,13 @@ let mount = (surface, dispatch) =>
   switch surface {
   | Files => render(<FileHarness dispatch />)
   | Content => render(<ContentHarness dispatch />)
-  | Actions => render(<Palette contentSearch=None actionPalette=true chrome=hints dispatch />)
-  | Help => render(<HelpOverlay help={help(hints)} dispatch />)
+  | Actions =>
+    render(
+      <Palette
+        bindings=searchBindings contentSearch=None actionPalette=true chrome=hints dispatch
+      />,
+    )
+  | Help => render(<HelpOverlay bindings=searchBindings help={help(hints)} dispatch />)
   }
 let placeholder = surface =>
   switch surface {
@@ -201,7 +214,8 @@ let selected = container =>
 testAsync("action result replacement clamps selection and activation to the same row", async () => {
   let user = User.setup()
   let dispatch = fn()
-  let element = chrome => <Palette contentSearch=None actionPalette=true chrome dispatch />
+  let element = chrome =>
+    <Palette bindings=searchBindings contentSearch=None actionPalette=true chrome dispatch />
   let {container, rerender} = render(element(hints))
   await User.keyboard(user, "{ArrowDown}jj")
   rerender(element(hints->Array.slice(~start=0, ~end=2)))
@@ -216,7 +230,7 @@ testAsync("action result replacement clamps selection and activation to the same
 testAsync("help live replacement preserves valid focus and selection", async () => {
   let user = User.setup()
   let dispatch = fn()
-  let element = hints => <HelpOverlay help={help(hints)} dispatch />
+  let element = hints => <HelpOverlay bindings=searchBindings help={help(hints)} dispatch />
   let {container, rerender} = render(element(hints))
   await User.keyboard(user, "{ArrowDown}jj")
   rerender(element(hints->Array.slice(~start=0, ~end=2)))
@@ -231,16 +245,24 @@ testAsync("file and content live replacement never leave focus on a removed resu
   let user = User.setup()
   let dispatch = fn()
   let file = {...fileBase(), hits: files(), selected: 2}
-  let {container, rerender} = render(<SearchBox search=file dispatch />)
+  let {container, rerender} = render(<SearchBox bindings=searchBindings search=file dispatch />)
   await User.keyboard(user, "{ArrowDown}")
-  rerender(<SearchBox search={{...file, hits: files()->Array.slice(~start=0, ~end=1)}} dispatch />)
+  rerender(
+    <SearchBox
+      bindings=searchBindings
+      search={{...file, hits: files()->Array.slice(~start=0, ~end=1)}}
+      dispatch
+    />,
+  )
   expect(Element.textContent(selected(container)))->toContain("a.rs")
-  rerender(<SearchBox search={{...file, hits: []}} dispatch />)
+  rerender(<SearchBox bindings=searchBindings search={{...file, hits: []}} dispatch />)
   expect(current())->toEqual(Screen.getByPlaceholderText("file…"))
   cleanup()
   let content = {...contentBase(), hits: contentHits(), pending: false, selected: 2}
   let element = search =>
-    <Palette contentSearch=Some(search) actionPalette=false chrome=hints dispatch />
+    <Palette
+      bindings=searchBindings contentSearch=Some(search) actionPalette=false chrome=hints dispatch
+    />
   let {container, rerender} = render(element(content))
   await User.keyboard(user, "{ArrowDown}")
   rerender(element({...content, hits: contentHits()->Array.slice(~start=0, ~end=1)}))
@@ -281,7 +303,8 @@ testAsync(
   async () => {
     let user = User.setup()
     let dispatch = fn()
-    let element = chrome => <Palette contentSearch=None actionPalette=true chrome dispatch />
+    let element = chrome =>
+      <Palette bindings=searchBindings contentSearch=None actionPalette=true chrome dispatch />
     let {rerender} = render(element(hints))
     await User.keyboard(user, "{ArrowDown}{Tab}")
     let control = current()
@@ -305,7 +328,7 @@ module ShellKeys = {
         subscribe: _ => () => (),
         attach: () => (),
       }
-      let handler = ev => App.onKeyDown(core, ~onChord=_ => (), ev)
+      let handler = ev => App.onKeyDown(core, ~onChord=_ => App.Pending.Unbound, ev)
       App.KeyEvent.listen("keydown", handler)
       Some(() => App.KeyEvent.unlisten("keydown", handler))
     })
@@ -321,9 +344,11 @@ module ShellKeys = {
       let dispatch = fn()
       let onKey = fn()
       let dialog = switch surface {
-      | Help => <HelpOverlay help={help(hints)} dispatch />
+      | Help => <HelpOverlay bindings=searchBindings help={help(hints)} dispatch />
       | Files | Content | Actions =>
-        <Palette contentSearch=None actionPalette=true chrome=hints dispatch />
+        <Palette
+          bindings=searchBindings contentSearch=None actionPalette=true chrome=hints dispatch
+        />
       }
       render(
         <ShellKeys onKey>
@@ -339,11 +364,11 @@ module ShellKeys = {
       | Actions => {
           expect(Element.textContent(current()))->toBe("Content")
           await User.tab(user)
-          expect(Element.textContent(current()))->toBe("close ⎋")
+          expect(Element.textContent(current()))->toBe("Close")
           await User.keyboard(user, "{Shift>}{Tab}{/Shift}")
           expect(Element.textContent(current()))->toBe("Content")
         }
-      | Help => expect(Element.textContent(current()))->toBe("close ⎋")
+      | Help => expect(Element.textContent(current()))->toBe("Close")
       | Files | Content => ()
       }
       await User.keyboard(user, "{Shift>}{Tab}{/Shift}")
@@ -409,9 +434,13 @@ coreSearches->Array.forEach(search => {
           }
         }
         let element = switch search {
-        | Files => <SearchBox search={{query: "", hits: files(), selected: 0}} dispatch />
+        | Files =>
+          <SearchBox
+            bindings=searchBindings search={{query: "", hits: files(), selected: 0}} dispatch
+          />
         | Content =>
           <Palette
+            bindings=searchBindings
             contentSearch=Some({
               ...contentBase(),
               query: "",
@@ -440,4 +469,54 @@ coreSearches->Array.forEach(search => {
       },
     )
   })
+})
+
+@module("react") external act: (unit => unit) => unit = "act"
+@module("@testing-library/react") @scope("fireEvent")
+external pointerDown: element => unit = "pointerDown"
+@set external setScrollIntoView: (element, unit => unit) => unit = "scrollIntoView"
+
+[Files, Content, Actions, Help]->Array.forEach(surface => {
+  testAsync(
+    "pointer entry preserves the clicked result before keyboard scrolling resumes: " ++
+    placeholder(surface),
+    async () => {
+      let dispatch = fn()
+      let {container} = mount(surface, dispatch)
+      let list = container->Element.querySelector("[role=listbox]")->Nullable.getExn
+      let options = list->Element.querySelectorAll("[role=option]")
+      let last = options->Array.getUnsafe(2)
+      let scroll = fn()
+      options->Array.forEach(option => setScrollIntoView(option, () => scroll()))
+      pointerDown(last)
+      act(() => Element.focus(list))
+      expect(scroll)->not_->toHaveBeenCalled
+      FireEvent.mouseUp(last)
+      FireEvent.click(last)
+      switch surface {
+      | Files =>
+        expect(dispatch)->toHaveBeenLastCalledWith(
+          Action.Viewport({file: (files()->Array.getUnsafe(2)).file, firstRow: 0, lastRow: 59}),
+        )
+      | Content => {
+          let hit = contentHits()->Array.getUnsafe(2)
+          expect(dispatch)->toHaveBeenLastCalledWith(
+            Action.Viewport({
+              file: {repoId: hit.repoId, path: hit.path},
+              firstRow: Math.Int.max(hit.line - 30, 0),
+              lastRow: hit.line + 30,
+            }),
+          )
+        }
+      | Actions | Help =>
+        expect(dispatch)->toHaveBeenLastCalledWith(Action.RunCommand({command: CopyPath}))
+      }
+      // Mock dispatch intentionally leaves the dialog open; entering it from
+      // the keyboard must still reveal the selected result.
+      act(() => Element.focus(Screen.getByPlaceholderText(placeholder(surface))))
+      let user = User.setup()
+      await User.keyboard(user, "{ArrowDown}")
+      expect(scroll)->toHaveBeenCalled
+    },
+  )
 })

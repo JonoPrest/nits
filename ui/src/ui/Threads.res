@@ -219,7 +219,12 @@ module Item = {
         </div>
         {switch (thread.outdated, thread.context) {
         | (true, Some(_)) =>
-          <UI.Button label="Open original diff (enter)" kind=Ghost onClick=onOriginal />
+          <UI.Button
+            label="Open original diff"
+            title=?{Chrome.tip(chrome, Open)}
+            kind=Ghost
+            onClick=onOriginal
+          />
         | (true, None) | (false, _) => React.null
         }}
       </li>,
@@ -237,6 +242,7 @@ let make = (
   ~indexOffset: int,
   ~dispatch: Action.t => unit,
   ~chrome: array<Hint.t>=[],
+  ~bindings: array<View.Hint.t>=[],
   ~draft: option<Draft.t>=?,
   ~pendingRefresh: bool=false,
   ~focusedComment: option<string>=?,
@@ -278,7 +284,7 @@ let make = (
               chrome
               composer={switch draft {
               | Some(draft) if View.Draft.thread(draft) == Some(t.id) =>
-                <Composer chrome draft pendingRefresh dispatch />
+                <Composer chrome bindings draft pendingRefresh dispatch />
               | Some(_) | None => React.null
               }}
               onReply={() => dispatch(ReplyOpened({threadId: t.id}))}

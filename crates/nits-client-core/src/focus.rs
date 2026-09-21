@@ -351,8 +351,9 @@ fn open_file(file: FileRef, around_row: u32, side: Side, landing: Landing) -> Ac
 
 /// Whether the stacked section for `render` is folded (skipped by motions).
 fn collapsed_of(view: &ViewModel, render: &crate::cache::RenderKey) -> bool {
-    view.diffs
+    view.diff
         .iter()
+        .chain(&view.diffs)
         .find(|d| d.file.repo_id == render.repo_id && d.file.path == render.path)
         .is_some_and(|d| d.collapsed)
 }
@@ -895,6 +896,21 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             Focus::Composer | Focus::Help => Err(nothing()),
         },
         Command::Back => {
+            if focus == Focus::Help {
+                return Ok(Action::ToggleHelp);
+            }
+            if view.ref_selector.is_some() {
+                return Ok(Action::CloseRefSelector);
+            }
+            if view.action_palette {
+                return Ok(Action::ActionPalette { open: false });
+            }
+            if view.content_search.is_some() {
+                return Ok(Action::ContentSearch {
+                    query: None,
+                    all_files: false,
+                });
+            }
             if view.active_creation().is_some() {
                 return Ok(Action::CancelNewReview);
             }

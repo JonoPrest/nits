@@ -1,8 +1,15 @@
+let searchBindings: array<View.Hint.t> = [{keys: "esc", command: Back, label: "back"}]
+
 // 4.4 component tests: each Row variant in both layouts, placeholder →
 // chunk swap in the diff view, composer state, hint bar and tree.
 
 open Vitest
 open TestingLibrary
+
+let editorBindings: array<View.Hint.t> = [
+  {keys: "ctrl+enter", command: Submit, label: "submit"},
+  {keys: "esc", command: Back, label: "discard"},
+]
 
 afterEach(cleanup)
 
@@ -105,7 +112,7 @@ describe("InlineThread", () => {
     )
     // Every comment body renders inline (design: threads under their row).
     expect(Screen.getByText("This should be a newtype."))->toBeTruthy
-    FireEvent.click(Screen.getByText("Reply (r)"))
+    FireEvent.click(Screen.getByText("Reply"))
     expect(dispatch)->toHaveBeenLastCalledWith(Action.ReplyOpened({threadId: thread.id}))
     FireEvent.click(Screen.getByText("Resolve finding"))
     expect(dispatch)->toHaveBeenLastCalledWith(Action.ResolveThread({threadId: thread.id}))
@@ -119,7 +126,7 @@ describe("InlineThread", () => {
       />,
     )
     expect(Screen.getByText("the composer"))->toBeTruthy
-    expect(Array.length(Screen.queryAllByText("Reply (r)")))->toBe(0)
+    expect(Array.length(Screen.queryAllByText("Reply")))->toBe(0)
   })
 })
 
@@ -127,7 +134,7 @@ describe("Composer", () => {
   test("submits with ctrl+enter and discards with esc, never leaking keys", () => {
     let dispatch = fn()
     let draft = Fixtures.parse(View.Draft.schema, "client", "Draft", "default")
-    let _ = render(<Composer draft pendingRefresh=true dispatch />)
+    let _ = render(<Composer bindings=editorBindings draft pendingRefresh=true dispatch />)
     let box = Screen.getByPlaceholderText("Reply…")
     expect(Screen.getByText("changes pending"))->toBeTruthy
     FireEvent.change(box, {"target": {"value": "  "}})
@@ -238,7 +245,7 @@ describe("HelpOverlay", () => {
       ],
       conflicts: [{context: Diff, keys: "z u", commands: [ExpandUp, ExpandDown]}],
     }
-    let {container} = render(<HelpOverlay help dispatch={_ => ()} />)
+    let {container} = render(<HelpOverlay bindings=searchBindings help dispatch={_ => ()} />)
     ["z u", "z d", "z c", "z z", "z t", "z b", "?"]->Array.forEach(
       keys => expect(Array.length(Screen.queryAllByText(keys)))->toBe(keys == "z u" ? 2 : 1),
     )
@@ -409,7 +416,11 @@ describe("Palette", () => {
   test("content hits jump to the file; actions run keymap commands", () => {
     let dispatch = fn()
     let cs = Fixtures.parse(View.ContentSearchView.schema, "client", "ContentSearchView", "default")
-    let _ = render(<Palette contentSearch=Some(cs) actionPalette=false chrome=[] dispatch />)
+    let _ = render(
+      <Palette
+        bindings=searchBindings contentSearch=Some(cs) actionPalette=false chrome=[] dispatch
+      />,
+    )
     let hit = cs.hits->Array.getUnsafe(0)
     FireEvent.click(
       Screen.getByLabelText(
@@ -432,7 +443,9 @@ describe("Palette", () => {
       {keys: "s", command: ToggleLayout, label: "split/unified"},
       {keys: "w", command: ToggleWhitespace, label: "whitespace"},
     ]
-    let _ = render(<Palette contentSearch=None actionPalette=true chrome dispatch />)
+    let _ = render(
+      <Palette bindings=searchBindings contentSearch=None actionPalette=true chrome dispatch />,
+    )
     FireEvent.click(Screen.getByText("split/unified"))
     expect(dispatch)->toHaveBeenLastCalledWith(Action.RunCommand({command: ToggleLayout}))
   })
@@ -519,7 +532,7 @@ describe("Jump to original diff", () => {
         title="Threads" threads=[outdated] focus={Thread({index: 0})} indexOffset=0 dispatch
       />,
     )
-    FireEvent.click(Screen.getByText("Open original diff (enter)"))
+    FireEvent.click(Screen.getByText("Open original diff"))
     expect(dispatch)->toHaveBeenCalledWith(Action.OpenOriginalDiff({threadId: outdated.id}))
     // Clicking the row itself also jumps to the original, not the moved-on diff.
     let calls = mock(dispatch).calls
@@ -554,13 +567,22 @@ describe("DiffView (viewed)", () => {
   test("collapses a viewed file until the reader asks to see it", () => {
     let dispatch = fn()
     let base = Fixtures.parse(View.DiffView.schema, "client", "DiffView", "default")
-    let viewed = {...base, viewed: Viewed}
-    let {container} = render(
+    let viewed = {...base, viewed: Viewed, collapsed: true}
+    let {container, rerender} = render(
       <DiffView diff=viewed layout=Unified focus={Diff({row: 121, side: Head})} dispatch />,
     )
     expect(Element.querySelector(container, ".diff-collapsed"))->not_->toBeNull
     expect(Element.querySelector(container, ".diff-scroll.hidden"))->not_->toBeNull
     FireEvent.click(Screen.getByText("show anyway"))
+    expect(dispatch)->toHaveBeenLastCalledWith(Action.ToggleFileCollapse({file: viewed.file}))
+    rerender(
+      <DiffView
+        diff={{...viewed, collapsed: false}}
+        layout=Unified
+        focus={Diff({row: 121, side: Head})}
+        dispatch
+      />,
+    )
     expect(Element.querySelector(container, ".diff-collapsed"))->toBeNull
   })
 })
@@ -841,7 +863,7 @@ describe("RefSelector", () => {
       "RefSelectorView",
       "default",
     )
-    let {rerender} = render(<RefSelector selector dispatch />)
+    let {rerender} = render(<RefSelector bindings=searchBindings selector dispatch />)
     let input = Screen.getByPlaceholderText("Find a head revision")
     expect(Document.activeElement)->toEqual(Nullable.make(input))
     let _ = Screen.getByText("branch")
@@ -853,7 +875,9 @@ describe("RefSelector", () => {
     let callsBefore = mock(dispatch).calls->Array.length
     FireEvent.keyDown(input, {"key": "j", "ctrlKey": false})
     expect(mock(dispatch).calls->Array.length)->toBe(callsBefore)
-    rerender(<RefSelector selector={...selector, query: "feature"} dispatch />)
+    rerender(
+      <RefSelector bindings=searchBindings selector={...selector, query: "feature"} dispatch />,
+    )
     FireEvent.keyDown(input, {"key": "ArrowDown", "ctrlKey": false})
     expect(dispatch)->toHaveBeenLastCalledWith(Action.RefSelectorStep({delta: 0}))
     let results = Screen.getByLabelText("revisions")
@@ -876,16 +900,30 @@ describe("RefSelector", () => {
       "default",
     )
     let dispatch = fn()
-    let {rerender} = render(<RefSelector selector={...selector, status: Loading({})} dispatch />)
+    let {rerender} = render(
+      <RefSelector bindings=searchBindings selector={...selector, status: Loading({})} dispatch />,
+    )
     let _ = Screen.getByTextRe(/Loading branches/)
-    rerender(<RefSelector selector={...selector, options: [], status: Ready({})} dispatch />)
+    rerender(
+      <RefSelector
+        bindings=searchBindings selector={...selector, options: [], status: Ready({})} dispatch
+      />,
+    )
     let _ = Screen.getByText("No matching refs")
     rerender(
-      <RefSelector selector={...selector, status: InvalidRef({message: "missing"})} dispatch />,
+      <RefSelector
+        bindings=searchBindings
+        selector={...selector, status: InvalidRef({message: "missing"})}
+        dispatch
+      />,
     )
     let _ = Screen.getByText("Invalid ref: missing")
     rerender(
-      <RefSelector selector={...selector, status: DaemonError({message: "offline"})} dispatch />,
+      <RefSelector
+        bindings=searchBindings
+        selector={...selector, status: DaemonError({message: "offline"})}
+        dispatch
+      />,
     )
     let _ = Screen.getByText("Daemon error: offline")
   })
@@ -969,7 +1007,7 @@ describe("HelpOverlay", () => {
 
   test("autofocuses and fuzzy-ranks normalized chords without empty groups", () => {
     let dispatch = fn()
-    let {container} = render(<HelpOverlay help dispatch />)
+    let {container} = render(<HelpOverlay bindings=searchBindings help dispatch />)
     let input = Screen.getByPlaceholderText("filter…")
     expect(Document.activeElement->Nullable.toOption)->toEqual(Some(input))
 
@@ -997,7 +1035,7 @@ describe("HelpOverlay", () => {
 
   test("Escape closes help from the focused search input", () => {
     let dispatch = fn()
-    render(<HelpOverlay help dispatch />)->ignore
+    render(<HelpOverlay bindings=searchBindings help dispatch />)->ignore
     let input = Screen.getByPlaceholderText("filter…")
     FireEvent.keyDown(input, {"key": "Escape", "ctrlKey": false})
     expect(dispatch)->toHaveBeenCalledWith(Action.ToggleHelp({}))
@@ -2485,7 +2523,7 @@ describe("Deferred findings", () => {
         purpose: Defer({threadId: "finding"}),
       }
       let dispatch = fn()
-      let _ = render(<Composer draft pendingRefresh=false dispatch />)
+      let _ = render(<Composer bindings=editorBindings draft pendingRefresh=false dispatch />)
       let reason = Screen.getByPlaceholderText(
         "Reason for deferring this unfixed finding (required)…",
       )
@@ -2515,7 +2553,9 @@ test("deferral rejection is visible and keeps both inputs available for correcti
     submissionError: None,
   }
   let dispatch = fn()
-  let {container, rerender} = render(<Composer draft pendingRefresh=false dispatch />)
+  let {container, rerender} = render(
+    <Composer bindings=editorBindings draft pendingRefresh=false dispatch />,
+  )
   let reason = Screen.getByPlaceholderText(
     "Reason for deferring this unfixed finding (required)…",
   )
@@ -2527,7 +2567,12 @@ test("deferral rejection is visible and keeps both inputs available for correcti
   // verifies the parse failure, patch delivery, and absence of a committed event.
   let message = "Invalid tracking URL. Enter a complete http:// or https:// URL."
   rerender(
-    <Composer draft={{...draft, submissionError: Some(message)}} pendingRefresh=false dispatch />,
+    <Composer
+      bindings=editorBindings
+      draft={{...draft, submissionError: Some(message)}}
+      pendingRefresh=false
+      dispatch
+    />,
   )
   let alert = Element.querySelector(container, "[role='alert']")->Nullable.getExn
   expect(Element.textContent(alert))->toContain(message)
@@ -2542,7 +2587,7 @@ test("deferral rejection is visible and keeps both inputs available for correcti
       trackingUrl: Some("https://example.com/issues/288"),
     }),
   )
-  rerender(<Composer draft pendingRefresh=false dispatch />)
+  rerender(<Composer bindings=editorBindings draft pendingRefresh=false dispatch />)
   expect(Element.querySelector(container, "[role='alert']"))->toBeNull
   expect(Element.value(reason))->toBe("External follow-up")
 })
@@ -2704,7 +2749,7 @@ test("a linked outdated finding opens a visible original pane instead of the cur
     attach: () => (),
   }
   let {container} = render(<App.Shell core />)
-  FireEvent.click(Screen.getByText("Open original diff (enter)"))
+  FireEvent.click(Screen.getByText("Open original diff"))
   expect(dispatch)->toHaveBeenCalledWith(Action.OpenOriginalDiff({threadId: thread.id}))
   act(() =>
     push.contents({
