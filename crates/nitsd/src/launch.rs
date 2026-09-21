@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 use tokio::net::UnixStream;
 
+mod stdio;
+
 /// How long to wait for a freshly started daemon to listen.
 pub const START_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -167,13 +169,14 @@ pub async fn ensure_daemon(spec: &DaemonSpec) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// Pipe this process's stdin/stdout to the daemon socket until either side
-/// closes.
+/// Pipe this process's stdin/stdout to the daemon socket. Stdin EOF closes
+/// the request half while remaining responses drain; daemon EOF ends the
+/// proxy even if stdin is still open. A failed connection is never replayed.
+///
+/// This exclusively consumes stdin while active and restores its descriptor
+/// flags before returning, including when the future is cancelled.
 pub async fn proxy_stdio(socket: &Path) -> std::io::Result<()> {
-    let mut upstream = UnixStream::connect(socket).await?;
-    let mut stdio = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
-    tokio::io::copy_bidirectional(&mut stdio, &mut upstream).await?;
-    Ok(())
+    stdio::proxy(UnixStream::connect(socket).await?).await
 }
 
 #[cfg(test)]

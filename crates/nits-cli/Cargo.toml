@@ -42,6 +42,7 @@ tempfile = { workspace = true }
 tokio-util.workspace = true
 tokio-tungstenite = "0.30.0"
 futures-util = "0.3.34"
+rustix = { version = "1", features = ["fs", "net", "pty"] }
 
 [lints]
 workspace = true

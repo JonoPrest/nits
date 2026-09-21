@@ -526,6 +526,13 @@ Tailwind v4 via `@tailwindcss/vite`; no CSS-in-JS, no runtime style computation.
 
 The daemon is unaware of remoteness. Every native host can dial a local socket, a configured WebSocket, or `ssh host nits daemon stdio`; SSH remains the authentication layer. Disconnect preserves the client's last event sequence, and an explicit reconnect creates a fresh transport (and a fresh, owned SSH child) before replaying only the event gap.
 
+The stdio proxy half-closes daemon input when client stdin reaches EOF, then
+drains remaining responses to stdout. Daemon EOF or reset ends the proxy even
+while client stdin remains open. Its cancellable stdin worker is joined and
+restores descriptor flags on every exit, including forwarding-future cancellation;
+pipes, regular files, terminals, sockets and `/dev/null` retain their input semantics.
+Transport errors are reported without reconnecting or replaying requests.
+
 ## 9. Persistence & lifecycle
 
 - One daemon per machine, data dir `~/.local/share/nits/` (`state.redb`, logs, per-repo diff cache).
