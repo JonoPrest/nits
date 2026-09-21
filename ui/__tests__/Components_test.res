@@ -634,28 +634,40 @@ describe("NewReview (late workspaces)", () => {
 })
 
 describe("ReviewList", () => {
-  test("groups reviews under their workspace and opens the form from +", () => {
-    let dispatch = fn()
-    let ws = Fixtures.parse(Domain.Workspace.schema, "protocol", "Workspace", "default")
-    let review = Fixtures.parse(Domain.Review.schema, "protocol", "Review", "default")
-    let other = {...ws, id: "01ARZ3NDEKTSV4RRFFQ69G5FAV", name: "empty-ws"}
-    let _ = render(
-      <ReviewList
-        reviews=[{...review, workspaceId: ws.id}]
-        workspaces=[ws, other]
-        connection={Subscribed({})}
-        focus={ReviewList({index: 0})}
-        dispatch
-      />,
-    )
-    let group = Screen.getByLabelText(ws.name)
-    expect(Array.length(Element.querySelectorAll(group, ".review-item")))->toBe(1)
-    let emptyGroup = Screen.getByLabelText("empty-ws")
-    expect(Array.length(Element.querySelectorAll(emptyGroup, ".review-item")))->toBe(0)
-    FireEvent.click(Element.querySelector(emptyGroup, "button[title]")->Nullable.getExn)
-    let _ = Screen.getByPlaceholderText("Title")
-    expect(dispatch)->not_->toHaveBeenCalled
-  })
+  test(
+    "groups review target summaries beneath workspace inventory and dispatches the shared create action",
+    () => {
+      let dispatch = fn()
+      let ws = Fixtures.parse(Domain.Workspace.schema, "protocol", "Workspace", "default")
+      let review = Fixtures.parse(Domain.Review.schema, "protocol", "Review", "default")
+      let other = {...ws, id: "01ARZ3NDEKTSV4RRFFQ69G5FAV", name: "empty-ws"}
+      let _ = render(
+        <ReviewList
+          reviews=[{...review, workspaceId: ws.id}]
+          workspaces=[ws, other]
+          home={
+            rows: [
+              {workspaceId: ws.id, kind: Workspace({})},
+              {workspaceId: ws.id, kind: Review({reviewId: review.id})},
+              {workspaceId: other.id, kind: Workspace({})},
+            ],
+            selectedWorkspace: Some(ws.id),
+            expanded: [],
+            creating: None,
+          }
+          chrome=[{keys: "N", command: NewReview, label: "new review"}]
+          focus={ReviewList({index: 0})}
+          dispatch
+        />,
+      )
+      let group = Screen.getByLabelText(ws.name)
+      expect(Array.length(Element.querySelectorAll(group, ".review-item")))->toBe(1)
+      let emptyGroup = Screen.getByLabelText("empty-ws")
+      expect(Array.length(Element.querySelectorAll(emptyGroup, ".review-item")))->toBe(0)
+      FireEvent.click(Screen.getByLabelText("New review in empty-ws"))
+      expect(dispatch)->toHaveBeenLastCalledWith(Action.StartReview({workspaceId: other.id}))
+    },
+  )
 })
 
 describe("ReviewHeader", () => {
@@ -1816,6 +1828,29 @@ describe("Copying from the keyboard, through the shell", () => {
     }
     (render(<App.Shell core />), push)
   }
+
+  testAsync(
+    "checkout copying follows its rebound chord and uses an absolute daemon path",
+    async () => {
+      installClipboard("ok")
+      let initial = {
+        ...model(~target="src/a.rs", ~lastKey=None),
+        copyCheckout: Some("/srv/atlas"),
+        bindings: [{keys: "g y", command: CopyCheckout, label: "copy checkout path"}],
+      }
+      let (_, push) = mount(initial)
+      pressKey("y")
+      await flush()
+      expect(copiedPaths())->toEqual([])
+      act(() => push.contents({...initial, lastKey: after(1, None)}))
+      pressKey("g")
+      act(() => push.contents({...initial, lastKey: after(2, None)}))
+      pressKey("y")
+      await flush()
+      expect(copiedPaths())->toEqual(["/srv/atlas"])
+      cleanup()
+    },
+  )
 
   testAsync("`y` copies the current target when the core is caught up", async () => {
     installClipboard("ok")

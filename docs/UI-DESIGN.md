@@ -357,3 +357,20 @@ centers the exact comment, including resolved and outdated findings. Stable IDs
 survive anchor movement; original-context controls remain available on the
 finding. Missing/deleted targets and mismatched browser contexts show explicit
 errors. Legacy `?review=ID` URLs remain supported.
+
+### Workspace and repository identity
+
+The home screen shows each workspace's repository count independently of its
+reviews. `j`/`k` navigate workspace, repository and review rows; Enter toggles a
+workspace's inventory or opens a review. Inventory rows show the daemon-side
+checkout path; `y` copies that path. The center shows the selected workspace's
+complete membership and each review's repository subset with base → head refs.
+`N` opens a new review in the selected workspace, and `R` refreshes membership.
+These bindings and the copy/navigation tooltips derive from the shared keymap.
+
+Review headers retain the workspace, selected daemon context, target repository
+names (even for one target), and active repository with the sidebar hidden.
+`g W` returns to that workspace. Duplicate repository names include checkout
+paths and short IDs; duplicate workspace names include short IDs. Paths belong
+to the displayed daemon, including when it is remote. At narrow widths home
+stacks the workspace list over its details, and review identity wraps.

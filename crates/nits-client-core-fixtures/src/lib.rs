@@ -130,6 +130,10 @@ macro_rules! registry {
 }
 
 registry!(
+    HomeView,
+    HomeRow,
+    HomeRowKind,
+    DaemonContext,
     ViewModel,
     VisualView,
     ScrollIntent,
@@ -709,6 +713,20 @@ enum_fixture!(
         Action::Connect,
         Action::Disconnect,
         Action::ListWorkspaces,
+        Action::ToggleWorkspace {
+            workspace_id: proto::<Workspace>()?.id
+        },
+        Action::SelectWorkspace {
+            workspace_id: proto::<Workspace>()?.id
+        },
+        Action::StartReview {
+            workspace_id: proto::<Workspace>()?.id
+        },
+        Action::CancelNewReview,
+        Action::CopyCheckout {
+            repo_id: repo_id()?
+        },
+        Action::GoHome,
         Action::ListReviews {
             workspace_id: proto::<Workspace>()?.id,
         },
@@ -965,6 +983,11 @@ enum_fixture!(
             last_error: Some(proto_named::<RpcError>("NotFound")?),
         },
         ViewPatch::ReviewList {
+            home: HomeView::default(),
+            daemon_context: Some(DaemonContext::Named {
+                name: "review-box".into()
+            }),
+            active_repo: Some(repo_id()?),
             workspaces: vec![proto::<Workspace>()?],
             reviews: vec![proto::<Review>()?],
             open_review: Some(proto::<Review>()?.id),
@@ -1012,6 +1035,7 @@ enum_fixture!(
             },
             tab: Tab::FilesChanged,
             scroll: Some(local::<ScrollIntent>()?),
+            copy_checkout: Some("/srv/atlas".into()),
             copy_target: Some(path("src/lib.rs")?),
             copy_reference: Some(reference(ReferenceTarget::Review)?),
             focused_comment: Some(comment_id()?),
@@ -1062,6 +1086,12 @@ struct_fixture!(
     ViewModel,
     "ViewModel",
     ViewModel {
+        home: HomeView::default(),
+        daemon_context: Some(DaemonContext::Named {
+            name: "review-box".into()
+        }),
+        active_repo: Some(repo_id()?),
+        copy_checkout: None,
         prefs: local::<ViewPrefs>()?,
         tree: local::<TreeView>()?,
         progress: local::<Progress>()?,
@@ -1109,5 +1139,59 @@ struct_fixture!(
         review: Some(local::<OpenReview>()?),
         draft: Some(local::<Draft>()?),
         pending_refresh: true,
+    }
+);
+
+enum_fixture!(
+    HomeRowKind,
+    HomeRowKindKind,
+    "HomeRowKind",
+    [
+        HomeRowKind::Workspace,
+        HomeRowKind::Repository {
+            repo_id: repo_id()?
+        },
+        HomeRowKind::Review {
+            review_id: review_id()?
+        },
+    ]
+);
+enum_fixture!(
+    DaemonContext,
+    DaemonContextKind,
+    "DaemonContext",
+    [
+        DaemonContext::Named {
+            name: "review-box".into()
+        },
+        DaemonContext::Socket {
+            path: "/run/nits/daemon.sock".into()
+        },
+        DaemonContext::WebSocket {
+            url: "wss://reviews.example.com/daemon".into()
+        },
+    ]
+);
+struct_fixture!(
+    HomeRow,
+    "HomeRow",
+    HomeRow {
+        workspace_id: proto::<Workspace>()?.id,
+        kind: HomeRowKind::Repository {
+            repo_id: repo_id()?
+        },
+    }
+);
+struct_fixture!(
+    HomeView,
+    "HomeView",
+    HomeView {
+        rows: vec![HomeRow {
+            workspace_id: proto::<Workspace>()?.id,
+            kind: HomeRowKind::Workspace
+        }],
+        selected_workspace: Some(proto::<Workspace>()?.id),
+        expanded: vec![proto::<Workspace>()?.id],
+        creating: None,
     }
 );

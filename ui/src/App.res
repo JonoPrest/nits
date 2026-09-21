@@ -231,12 +231,15 @@ module Shell = {
             answered &&
             model.lastKey
             ->Option.flatMap(k => k.command)
-            ->Option.mapOr(false, command => command == CopyPath || command == CopyReference)
+            ->Option.mapOr(false, command =>
+              command == CopyPath || command == CopyReference || command == CopyCheckout
+            )
           ) {
-            let target =
-              model.lastKey->Option.flatMap(k => k.command) == Some(CopyReference)
-                ? model.copyReference
-                : model.copyTarget
+            let target = switch model.lastKey->Option.flatMap(k => k.command) {
+            | Some(CopyReference) => model.copyReference
+            | Some(CopyCheckout) => model.copyCheckout
+            | _ => model.copyTarget
+            }
             switch target {
             | Some(path) => copy(path)
             | None => ()
@@ -266,13 +269,18 @@ module Shell = {
             let before = sent.current
             sent.current = before + 1
             switch outcome {
-            | Runs((CopyPath | CopyReference) as command) =>
+            | Runs((CopyPath | CopyReference | CopyCheckout) as command) =>
               if seqOf(m) >= before {
                 // The core has accounted for every key before this one,
                 // so this view is the one this key acts on, and its
                 // context is the one the key lands in: copy inside the
                 // gesture, which is the only place the browser allows it.
-                switch command == CopyReference ? m.copyReference : m.copyTarget {
+                let target = switch command {
+                | CopyReference => m.copyReference
+                | CopyCheckout => m.copyCheckout
+                | _ => m.copyTarget
+                }
+                switch target {
                 | Some(path) => copy(path)
                 | None => ()
                 }
@@ -361,22 +369,27 @@ module Shell = {
       // Inside the click, for the same reason as the key press above.
       | CopyPath({path}) => copy(path)
       | CopyReference({reference}) => copy(reference)
+      | CopyCheckout({repoId}) =>
+        model.workspaces
+        ->Array.findMap(w => w.repos->Array.find(r => r.id == repoId))
+        ->Option.forEach(repo => copy(repo.path))
       | _ => ()
       }
       core.dispatch(action)
     }
-    let left = if Array.length(model.tree.roots) > 0 {
+    let left = if model.openReview != None {
       let home =
         model.openReview
         ->Option.flatMap(id => model.reviews->Array.find(r => r.id == id))
         ->Option.flatMap(r => model.workspaces->Array.find(w => w.id == r.workspaceId))
         ->Option.map(w => w.name)
-      <Tree tree=model.tree focus=model.focus ?home dispatch />
+      <Tree tree=model.tree focus=model.focus ?home chrome=model.chrome dispatch />
     } else {
       <ReviewList
         reviews=model.reviews
         workspaces=model.workspaces
-        connection=model.connection
+        home=model.home
+        chrome=model.chrome
         focus=model.focus
         dispatch
       />
@@ -389,7 +402,12 @@ module Shell = {
     }
     let sidebarAction = model.prefs.sidebarHidden ? "Show file tree" : "Hide file tree"
     <main className="app-shell">
-      <div className={"app-body" ++ (model.prefs.sidebarHidden ? " sidebar-hidden" : "")}>
+      <div
+        className={"app-body" ++
+        (model.openReview == None ? " app-home" : "") ++ (
+          model.prefs.sidebarHidden ? " sidebar-hidden" : ""
+        )}
+      >
         <div className="sidebar-toggle">
           <UI.Button
             label={model.prefs.sidebarHidden ? "◨" : "◧"}
@@ -419,6 +437,8 @@ module Shell = {
             workspaces=model.workspaces
             resolvedTargets=model.resolvedTargets
             openReview=model.openReview
+            daemonContext=?model.daemonContext
+            activeRepo=?model.activeRepo
             prefs=model.prefs
             scope=model.scope
             chrome=model.chrome
@@ -433,153 +453,163 @@ module Shell = {
             <p role="alert"> {React.string("Reference target was not found: " ++ id)} </p>
           | _ => React.null
           }}
-          <Tabs
-            tab=model.tab
-            fileCount=model.progress.total
-            threadCount={Threads.openFindings(model.threads)}
-            requestCount={Array.length(model.requests)}
-            deferredCount={Threads.deferredFindings(model.threads)}
-            chrome=model.chrome
-            dispatch
-          />
-          {switch model.tab {
-          | FilesChanged =>
-            <>
-              {switch model.tree.search {
-              | Some(search) => <SearchBox search dispatch />
-              | None => React.null
-              }}
-              {switch model.diff {
-              | Some(diff) if diff.original =>
-                <DiffView
-                  diff
-                  layout=model.prefs.layout
-                  focus=model.focus
-                  scroll=?model.scroll
+          {model.openReview == None
+            ? <WorkspaceHome model dispatch />
+            : <>
+                <Tabs
+                  tab=model.tab
+                  fileCount=model.progress.total
+                  threadCount={Threads.openFindings(model.threads)}
+                  requestCount={Array.length(model.requests)}
+                  deferredCount={Threads.deferredFindings(model.threads)}
                   chrome=model.chrome
-                  threads=model.threads
                   dispatch
                 />
-              | _ =>
-                Array.length(model.diffs) > 0
-                  ? <div className="diff-stack">
-                      {model.diffs
-                      ->Array.map(diff =>
-                        <FileDiff
-                          key={diff.file.repoId ++ diff.file.path}
-                          diff
-                          layout=model.prefs.layout
-                          focus=model.focus
-                          threads=model.threads
-                          draft=model.draft
-                          pendingRefresh=model.pendingRefresh
-                          chrome=model.chrome
-                          visual=?model.visual
-                          isOpen={switch model.diff {
-                          | Some(open_) => open_.file == diff.file
-                          | None => false
-                          }}
-                          dispatch
-                        />
-                      )
-                      ->React.array}
-                    </div>
-                  : <div className="diff-empty"> {React.string("No changed files")} </div>
-              }}
-              {switch model.draft {
-              | Some(draft) if View.Draft.isDocked(draft) =>
-                <Composer chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch />
-              | Some(_) | None => React.null
-              }}
-            </>
-          | Conversation =>
-            // Every thread of the review, chronologically (GitHub-style):
-            // file/line threads and review-level ones together.
-            <>
-              <UI.Box>
-                <UI.Button
-                  label="Add informational note"
-                  title=?{Chrome.tip(model.chrome, InformationalNote)}
-                  onClick={() => dispatch(RunCommand({command: InformationalNote}))}
-                />
-                <UI.Button
-                  label="Add review-wide finding"
-                  title=?{Chrome.tip(model.chrome, ReviewFinding)}
-                  onClick={() => dispatch(RunCommand({command: ReviewFinding}))}
-                />
-              </UI.Box>
-              <ReviewCheckpoints
-                checkpoints=model.checkpoints
-                checkCurrentReady=model.checkCurrentReady
-                chrome=model.chrome
-                dispatch
-              />
-              <ReviewRequests
-                requests=model.requests focus=model.focus chrome=model.chrome dispatch
-              />
-              <UI.Box direction=Row gap=Sm>
-                <UI.Badge
-                  text={Int.toString(Threads.openFindings(model.threads)) ++ " open findings"}
-                />
-                <UI.Badge
-                  text={Int.toString(
-                    Threads.deferredFindings(model.threads),
-                  ) ++ " deferred · unfixed"}
-                />
-              </UI.Box>
-              <Threads
-                title="Conversation"
-                focusedComment=?model.focusedComment
-                threads=model.threads
-                focus=model.focus
-                indexOffset=0
-                dispatch
-                chrome=model.chrome
-                draft=?model.draft
-                pendingRefresh=model.pendingRefresh
-              />
-              {switch model.draft {
-              | Some(draft) if View.Draft.thread(draft) == None =>
-                <Composer chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch />
-              | Some(_) | None => React.null
-              }}
-            </>
-          | Browse =>
-            <>
-              <BrowseBar
-                browseRef=model.browseRef
-                repoId={model.resolvedTargets->Array.get(0)->Option.map(t => t.repoId)}
-                dispatch
-              />
-              {switch model.tree.search {
-              | Some(search) => <SearchBox search dispatch />
-              | None => React.null
-              }}
-              {switch model.diff {
-              | Some(diff) =>
-                <DiffView
-                  diff
-                  layout=model.prefs.layout
-                  visual=?model.visual
-                  focus=model.focus
-                  scroll=?model.scroll
-                  chrome=model.chrome
-                  threads=model.threads
-                  draft=?model.draft
-                  pendingRefresh=model.pendingRefresh
-                  dispatch
-                />
-              | None => <div className="diff-empty"> {React.string("Open a file")} </div>
-              }}
-              {switch model.draft {
-              // Browse composes inline too; only a draft with no row of
-              // its own docks here.
-              | Some(draft) if View.Draft.isDocked(draft) =>
-                <Composer chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch />
-              | Some(_) | None => React.null
-              }}
-            </>
-          }}
+                {switch model.tab {
+                | FilesChanged =>
+                  <>
+                    {switch model.tree.search {
+                    | Some(search) => <SearchBox search dispatch />
+                    | None => React.null
+                    }}
+                    {switch model.diff {
+                    | Some(diff) if diff.original =>
+                      <DiffView
+                        diff
+                        layout=model.prefs.layout
+                        focus=model.focus
+                        scroll=?model.scroll
+                        chrome=model.chrome
+                        threads=model.threads
+                        dispatch
+                      />
+                    | _ =>
+                      Array.length(model.diffs) > 0
+                        ? <div className="diff-stack">
+                            {model.diffs
+                            ->Array.map(diff =>
+                              <FileDiff
+                                key={diff.file.repoId ++ diff.file.path}
+                                diff
+                                layout=model.prefs.layout
+                                focus=model.focus
+                                threads=model.threads
+                                draft=model.draft
+                                pendingRefresh=model.pendingRefresh
+                                chrome=model.chrome
+                                visual=?model.visual
+                                isOpen={switch model.diff {
+                                | Some(open_) => open_.file == diff.file
+                                | None => false
+                                }}
+                                dispatch
+                              />
+                            )
+                            ->React.array}
+                          </div>
+                        : <div className="diff-empty"> {React.string("No changed files")} </div>
+                    }}
+                    {switch model.draft {
+                    | Some(draft) if View.Draft.isDocked(draft) =>
+                      <Composer
+                        chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch
+                      />
+                    | Some(_) | None => React.null
+                    }}
+                  </>
+                | Conversation =>
+                  // Every thread of the review, chronologically (GitHub-style):
+                  // file/line threads and review-level ones together.
+                  <>
+                    <UI.Box>
+                      <UI.Button
+                        label="Add informational note"
+                        title=?{Chrome.tip(model.chrome, InformationalNote)}
+                        onClick={() => dispatch(RunCommand({command: InformationalNote}))}
+                      />
+                      <UI.Button
+                        label="Add review-wide finding"
+                        title=?{Chrome.tip(model.chrome, ReviewFinding)}
+                        onClick={() => dispatch(RunCommand({command: ReviewFinding}))}
+                      />
+                    </UI.Box>
+                    <ReviewCheckpoints
+                      checkpoints=model.checkpoints
+                      checkCurrentReady=model.checkCurrentReady
+                      chrome=model.chrome
+                      dispatch
+                    />
+                    <ReviewRequests
+                      requests=model.requests focus=model.focus chrome=model.chrome dispatch
+                    />
+                    <UI.Box direction=Row gap=Sm>
+                      <UI.Badge
+                        text={Int.toString(Threads.openFindings(model.threads)) ++ " open findings"}
+                      />
+                      <UI.Badge
+                        text={Int.toString(
+                          Threads.deferredFindings(model.threads),
+                        ) ++ " deferred · unfixed"}
+                      />
+                    </UI.Box>
+                    <Threads
+                      title="Conversation"
+                      focusedComment=?model.focusedComment
+                      threads=model.threads
+                      focus=model.focus
+                      indexOffset=0
+                      dispatch
+                      chrome=model.chrome
+                      draft=?model.draft
+                      pendingRefresh=model.pendingRefresh
+                    />
+                    {switch model.draft {
+                    | Some(draft) if View.Draft.thread(draft) == None =>
+                      <Composer
+                        chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch
+                      />
+                    | Some(_) | None => React.null
+                    }}
+                  </>
+                | Browse =>
+                  <>
+                    <BrowseBar
+                      browseRef=model.browseRef
+                      repoId={model.resolvedTargets->Array.get(0)->Option.map(t => t.repoId)}
+                      dispatch
+                    />
+                    {switch model.tree.search {
+                    | Some(search) => <SearchBox search dispatch />
+                    | None => React.null
+                    }}
+                    {switch model.diff {
+                    | Some(diff) =>
+                      <DiffView
+                        diff
+                        layout=model.prefs.layout
+                        visual=?model.visual
+                        focus=model.focus
+                        scroll=?model.scroll
+                        chrome=model.chrome
+                        threads=model.threads
+                        draft=?model.draft
+                        pendingRefresh=model.pendingRefresh
+                        dispatch
+                      />
+                    | None => <div className="diff-empty"> {React.string("Open a file")} </div>
+                    }}
+                    {switch model.draft {
+                    // Browse composes inline too; only a draft with no row of
+                    // its own docks here.
+                    | Some(draft) if View.Draft.isDocked(draft) =>
+                      <Composer
+                        chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch
+                      />
+                    | Some(_) | None => React.null
+                    }}
+                  </>
+                }}
+              </>}
         </div>
       </div>
       <Toast message=toast />

@@ -137,7 +137,7 @@ pub fn visible_nodes(view: &ViewModel) -> Vec<&TreeNode> {
 /// Number of entries the focus of `context` ranges over.
 fn extent(view: &ViewModel, context: Context) -> usize {
     match context {
-        Context::ReviewList => view.reviews.len(),
+        Context::ReviewList => view.home.rows.len(),
         Context::Tree => visible_nodes(view).len(),
         Context::Diff => view.diff.as_ref().map_or(0, |d| match d.content {
             nits_protocol::RenderContent::Text { total_rows, .. } => total_rows as usize,
@@ -234,7 +234,14 @@ pub fn clamp(view: &ViewModel, focus: Focus) -> Focus {
     let fallback = if view.review.is_some() {
         Focus::Tree { index: 0 }
     } else {
-        Focus::ReviewList { index: 0 }
+        Focus::ReviewList {
+            index: view
+                .home
+                .rows
+                .iter()
+                .position(|row| Some(row.workspace_id) == view.home.selected_workspace)
+                .unwrap_or(0),
+        }
     };
     match focus {
         Focus::Composer => {
@@ -590,6 +597,9 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 | Command::TabConversation
                 | Command::TabBrowse
                 | Command::CopyPath
+                | Command::CopyCheckout
+                | Command::NewReview
+                | Command::GoHome
                 | Command::CopyReference
                 | Command::NextReply
                 | Command::PrevReply
@@ -730,9 +740,18 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
         }
         Command::Open => match focus {
             Focus::ReviewList { index } => view
-                .reviews
+                .home
+                .rows
                 .get(index)
-                .map(|r| Action::OpenReview { review_id: r.id })
+                .map(|row| match row.kind {
+                    crate::HomeRowKind::Workspace => Action::ToggleWorkspace {
+                        workspace_id: row.workspace_id,
+                    },
+                    crate::HomeRowKind::Repository { .. } => Action::SelectWorkspace {
+                        workspace_id: row.workspace_id,
+                    },
+                    crate::HomeRowKind::Review { review_id } => Action::OpenReview { review_id },
+                })
                 .ok_or_else(nothing),
             Focus::Tree { index } => match visible_nodes(view).get(index) {
                 Some(TreeNode::File { repo_id, path, .. }) => {
@@ -868,6 +887,9 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             Focus::Composer | Focus::Help => Err(nothing()),
         },
         Command::Back => {
+            if view.home.creating.is_some() {
+                return Ok(Action::CancelNewReview);
+            }
             if in_visual {
                 return Ok(Action::LeaveVisual);
             }
@@ -1253,6 +1275,20 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
         Command::Connect => Ok(Action::Connect),
         Command::Disconnect => Ok(Action::Disconnect),
         Command::Refresh => Ok(Action::ListWorkspaces),
+        Command::GoHome => Ok(Action::GoHome),
+        Command::NewReview => view
+            .home
+            .selected_workspace
+            .map(|workspace_id| Action::StartReview { workspace_id })
+            .ok_or_else(nothing),
+        Command::CopyCheckout => crate::home::focused(view)
+            .and_then(|row| match row.kind {
+                crate::HomeRowKind::Repository { repo_id } => {
+                    Some(Action::CopyCheckout { repo_id })
+                }
+                crate::HomeRowKind::Workspace | crate::HomeRowKind::Review { .. } => None,
+            })
+            .ok_or_else(nothing),
         Command::ContentSearch => {
             if view.review.is_none() {
                 return Err(NoTarget::NoOpenReview);
@@ -1462,6 +1498,32 @@ fn nearest_gap(
         return None;
     };
     gaps.nearest(row, up)
+}
+
+/// Repository currently under the cursor, falling back to the open file and
+/// then an unambiguous single review target when there is no file yet.
+pub(crate) fn target_repo_of(view: &ViewModel, focus: Focus) -> Option<nits_protocol::RepoId> {
+    target_file_of(view, focus)
+        .map(|file| file.repo_id)
+        .or_else(|| match focus {
+            Focus::Tree { index } => visible_nodes(view).get(index).map(|node| match node {
+                TreeNode::Dir { repo_id, .. } | TreeNode::File { repo_id, .. } => *repo_id,
+            }),
+            Focus::ReviewList { .. }
+            | Focus::Diff { .. }
+            | Focus::Thread { .. }
+            | Focus::ReviewRequest { .. }
+            | Focus::Composer
+            | Focus::CommitStepper { .. }
+            | Focus::Help => None,
+        })
+        .or_else(|| view.diff.as_ref().map(|diff| diff.file.repo_id))
+        .or_else(|| {
+            view.review.as_ref().and_then(|review| {
+                let targets = review.snapshot.review.targets.as_slice();
+                (targets.len() == 1).then(|| targets[0].repo_id)
+            })
+        })
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 {
   "action_palette": false,
+  "active_repo": "01HF7YAT000000000000000002",
   "bindings": [
     {
       "command": "NextFile",
@@ -104,8 +105,13 @@
     "truncated": false
   },
   "conversation": [],
+  "copy_checkout": null,
   "copy_reference": "nits://context/review-box/review/01HF7YATZ80000000000000004",
   "copy_target": "src/lib.rs",
+  "daemon_context": {
+    "name": "review-box",
+    "type": "Named"
+  },
   "diff": {
     "collapsed": false,
     "content": {
@@ -337,6 +343,12 @@
       "label": "next file"
     }
   ],
+  "home": {
+    "creating": null,
+    "expanded": [],
+    "rows": [],
+    "selected_workspace": null
+  },
   "last_error": null,
   "last_key": {
     "command": "CopyPath",

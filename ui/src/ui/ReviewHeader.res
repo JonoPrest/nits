@@ -39,6 +39,8 @@ let make = (
   ~workspaces: array<Domain.Workspace.t>,
   ~resolvedTargets: array<Domain.ResolvedTarget.t>,
   ~openReview: option<Ids.reviewId>,
+  ~daemonContext: option<View.DaemonContext.t>=?,
+  ~activeRepo: option<Ids.repoId>=?,
   ~prefs: View.ViewPrefs.t,
   ~scope: Domain.DiffScope.t=Domain.DiffScope.All({}),
   ~chrome: array<View.Hint.t>=[],
@@ -100,10 +102,11 @@ let make = (
   switch openReview->Option.flatMap(id => reviews->Array.find(r => r.id == id)) {
   | None => React.null
   | Some(review) => {
-      let repoName = (id: Ids.repoId) =>
-        workspaces
-        ->Array.findMap(ws => ws.repos->Array.find(r => r.id == id))
-        ->Option.mapOr(id, r => r.displayName)
+      let workspace = workspaces->Array.find(w => w.id == review.workspaceId)
+      let repoName = id =>
+        workspace->Option.mapOr(RepositoryIdentity.shortId(id), w =>
+          RepositoryIdentity.repoLabel(w, id)
+        )
       let headText = (t: Domain.ReviewTarget.t) =>
         switch t.head {
         | WorkingTree(_) =>
@@ -113,7 +116,6 @@ let make = (
           }
         | _ => RefSpecText.print(t.head)
         }
-      let many = Array.length(review.targets) > 1
       let allish = switch scope {
       | All(_) | Committed(_) => true
       | Commit(_) | Worktree(_) | Requested(_) | SinceCheckpoint(_) => false
@@ -125,6 +127,31 @@ let make = (
       | Rejected(_) => "rejected"
       }
       <header className="review-header" ariaLabel="review targets">
+        <div className="review-identity" ariaLabel="Review location">
+          <UI.Button
+            label={"⌂ " ++
+            workspace->Option.mapOr(
+              "Workspace " ++ RepositoryIdentity.shortId(review.workspaceId),
+              w => RepositoryIdentity.workspaceLabel(workspaces, w),
+            )}
+            kind=Ghost
+            title=?{Chrome.tip(chrome, GoHome)}
+            onClick={() => dispatch(GoHome({}))}
+          />
+          <RepositoryIdentity.Context context=daemonContext />
+          {switch activeRepo {
+          | Some(repoId) =>
+            <span className="active-repository">
+              {React.string("Active repository: " ++ repoName(repoId))}
+            </span>
+          | None =>
+            <span className="active-repository">
+              {React.string(
+                Int.toString(Array.length(review.targets)) ++ " repositories in this review",
+              )}
+            </span>
+          }}
+        </div>
         <div className="review-header-main">
           <span className="review-header-title"> {React.string(review.title)} </span>
           {switch scope {
@@ -146,11 +173,9 @@ let make = (
           {review.targets
           ->Array.map(t =>
             <span key=t.repoId className="review-header-target">
-              {many
-                ? <span className="review-header-repo">
-                    {React.string(repoName(t.repoId) ++ ":")}
-                  </span>
-                : React.null}
+              <span className="review-header-repo">
+                {React.string(repoName(t.repoId) ++ ":")}
+              </span>
               <span className="review-header-side-label"> {React.string("Base")} </span>
               <UI.Button
                 label={RefSpecText.print(t.base) ++ " ▾"}

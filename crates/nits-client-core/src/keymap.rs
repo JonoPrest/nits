@@ -130,6 +130,9 @@ pub enum Command {
     /// Copy the focused file's repo-relative path to the clipboard (the
     /// shell performs the copy; the core records the intent).
     CopyPath,
+    CopyCheckout,
+    NewReview,
+    GoHome,
     /// Copy the focused thread or selected reply's portable reference.
     CopyReference,
     NextReply,
@@ -599,6 +602,7 @@ impl Keymap {
             b(X::Global, keys!("esc"), C::Back, false),
             b(X::Global, keys!("ctrl+shift+c"), C::Connect, false),
             b(X::Global, keys!("ctrl+shift+d"), C::Disconnect, false),
+            b(X::Global, keys!("g W"), C::GoHome, false),
             // Review list
             b(X::ReviewList, keys!("j"), C::MoveDown, true),
             b(X::ReviewList, keys!("k"), C::MoveUp, true),
@@ -608,6 +612,8 @@ impl Keymap {
             b(X::ReviewList, keys!("G"), C::GoBottom, false),
             b(X::ReviewList, keys!("enter"), C::Open, true),
             b(X::ReviewList, keys!("R"), C::Refresh, false),
+            b(X::ReviewList, keys!("y"), C::CopyCheckout, true),
+            b(X::ReviewList, keys!("N"), C::NewReview, true),
             // Tree
             b(X::Tree, keys!("j"), C::MoveDown, true),
             b(X::Tree, keys!("k"), C::MoveUp, true),
@@ -1098,6 +1104,9 @@ pub fn label(command: Command) -> &'static str {
         Command::ContentSearch => "find in files",
         Command::ActionPalette => "actions",
         Command::CopyPath => "copy path",
+        Command::CopyCheckout => "copy checkout path",
+        Command::NewReview => "new review",
+        Command::GoHome => "workspaces",
         Command::CopyReference => "copy reference",
         Command::NextReply => "next reply",
         Command::PrevReply => "previous reply",
@@ -1178,6 +1187,9 @@ pub fn modes_of(command: Command) -> &'static [Mode] {
         | Command::ContentSearch
         | Command::ActionPalette
         | Command::CopyPath
+        | Command::CopyCheckout
+        | Command::NewReview
+        | Command::GoHome
         | Command::CopyReference
         | Command::NextReply
         | Command::PrevReply

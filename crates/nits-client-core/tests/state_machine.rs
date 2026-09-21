@@ -2195,3 +2195,237 @@ fn pending_repository_selection_survives_provenance_refresh() {
         "automatic refresh must preserve the user's pending repository selection"
     );
 }
+
+/// Home rows are tested through the public sans-I/O boundary, including
+/// workspaces that have no review and two repositories with the same name.
+fn home_workspaces(core: &mut ClientCore, workspaces: Vec<nits_protocol::Workspace>) {
+    let effects = core.handle(Input::User(Action::ListWorkspaces)).unwrap();
+    let (id, _) = sent_request(&effects).unwrap();
+    core.handle(Input::Server(ServerMsg::Response {
+        id,
+        response: Response::Workspaces { workspaces },
+    }))
+    .unwrap();
+}
+
+fn home_key(core: &mut ClientCore, sequence: &str) -> Vec<Effect> {
+    let sequence: nits_client_core::KeySeq = sequence.parse().unwrap();
+    sequence
+        .chords()
+        .iter()
+        .flat_map(|chord| core.handle(Input::Key(*chord)).unwrap())
+        .collect()
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One home session covers navigation through membership changes.
+fn home_inventory_navigation_copies_daemon_checkout_and_preserves_row_identity() {
+    use nits_client_core::{Command, Focus, HomeRowKind};
+    let mut core = subscribed(0);
+    let product = nits_protocol::Workspace {
+        id: WorkspaceId::from_parts(10, 1),
+        name: "Product".into(),
+        repos: vec![
+            nits_protocol::Repo {
+                id: RepoId::from_parts(11, 1),
+                display_name: "Atlas".into(),
+                path: "/srv/one/atlas".into(),
+            },
+            nits_protocol::Repo {
+                id: RepoId::from_parts(11, 2),
+                display_name: "Atlas".into(),
+                path: "/srv/two/atlas".into(),
+            },
+        ],
+    };
+    let empty = nits_protocol::Workspace {
+        id: WorkspaceId::from_parts(10, 2),
+        name: "Empty".into(),
+        repos: vec![],
+    };
+    home_workspaces(&mut core, vec![product.clone(), empty.clone()]);
+    assert_eq!(core.view().home.rows.len(), 2);
+    assert_eq!(core.view().home.selected_workspace, Some(product.id));
+    assert_eq!(core.view().copy_checkout, None);
+    let effects = home_key(&mut core, "enter");
+    assert_eq!(
+        effects,
+        vec![Effect::Render(ViewDelta::new(&[
+            ViewSection::ReviewList,
+            ViewSection::Focus,
+            ViewSection::Hints,
+        ]))]
+    );
+    assert_eq!(core.view().home.rows.len(), 4);
+    home_key(&mut core, "j");
+    assert_eq!(core.view().copy_checkout.as_deref(), Some("/srv/one/atlas"));
+    assert_eq!(
+        core.view().copy_target,
+        None,
+        "absolute paths never become RepoPath"
+    );
+    assert_eq!(
+        nits_client_core::resolve_command(&core, Command::CopyCheckout),
+        Ok(Action::CopyCheckout {
+            repo_id: product.repos[0].id
+        })
+    );
+    assert!(
+        home_key(&mut core, "y")
+            .iter()
+            .all(|effect| matches!(effect, Effect::Render(_)))
+    );
+    home_key(&mut core, "j");
+    assert_eq!(core.view().copy_checkout.as_deref(), Some("/srv/two/atlas"));
+    let config = nits_client_core::KeysConfig {
+        leader: None,
+        bindings: [(
+            nits_client_core::Mode::Normal,
+            [("copy_checkout".into(), vec!["g y".into()])].into(),
+        )]
+        .into(),
+        groups: std::collections::BTreeMap::default(),
+    };
+    core.handle(Input::Stored {
+        key: nits_client_core::Keymap::KEY.into(),
+        value: Some(serde_json::to_vec(&config).unwrap()),
+    })
+    .unwrap();
+    assert!(
+        core.view()
+            .chrome
+            .iter()
+            .any(|hint| hint.command == Command::CopyCheckout && hint.keys == "g y")
+    );
+    assert!(
+        core.handle(Input::Key(nits_client_core::KeyChord::char('y')))
+            .is_err()
+    );
+    home_key(&mut core, "g y");
+    assert_eq!(
+        core.view().last_key.and_then(|key| key.command),
+        Some(Command::CopyCheckout)
+    );
+    let row = core.view().home.rows[2];
+    home_workspaces(&mut core, vec![empty.clone(), product.clone()]);
+    let Focus::ReviewList { index } = core.view().focus else {
+        panic!("home focus")
+    };
+    assert_eq!(
+        core.view().home.rows[index],
+        row,
+        "refresh reorders without changing the selected checkout"
+    );
+    assert_eq!(
+        row.kind,
+        HomeRowKind::Repository {
+            repo_id: product.repos[1].id
+        }
+    );
+    core.handle(Input::User(Action::ToggleWorkspace {
+        workspace_id: product.id,
+    }))
+    .unwrap();
+    assert_eq!(core.view().copy_checkout, None);
+    assert_eq!(core.view().home.selected_workspace, Some(product.id));
+    home_key(&mut core, "g g");
+    assert_eq!(core.view().home.selected_workspace, Some(empty.id));
+    home_key(&mut core, "enter");
+    assert_eq!(
+        core.view().home.rows.len(),
+        2,
+        "empty inventory has no phantom repository"
+    );
+    home_key(&mut core, "N");
+    assert_eq!(core.view().home.creating, Some(empty.id));
+    home_key(&mut core, "esc");
+    assert_eq!(core.view().home.creating, None);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One session crosses review, sidebar and asynchronous home navigation.
+fn review_subset_and_daemon_identity_survive_sidebar_toggle_and_return_home() {
+    use nits_client_core::{DaemonContext, HomeRowKind};
+    let mut core = subscribed(0);
+    let workspace_id = review(ReviewId::from_parts(4, 1)).workspace_id;
+    let other = nits_protocol::Workspace {
+        id: WorkspaceId::from_parts(8, 1),
+        name: "Other".into(),
+        repos: vec![],
+    };
+    let product = nits_protocol::Workspace {
+        id: workspace_id,
+        name: "Product".into(),
+        repos: vec![
+            nits_protocol::Repo {
+                id: repo_id(),
+                display_name: "Atlas".into(),
+                path: "/srv/atlas".into(),
+            },
+            nits_protocol::Repo {
+                id: RepoId::from_parts(2, 3),
+                display_name: "Beacon".into(),
+                path: "/srv/beacon".into(),
+            },
+        ],
+    };
+    home_workspaces(&mut core, vec![other, product.clone()]);
+    core.handle(Input::User(Action::SetReferenceContext {
+        context: nits_protocol::ReferenceContext::named("remote-build").unwrap(),
+    }))
+    .unwrap();
+    let id = ReviewId::from_parts(4, 1);
+    core.handle(Input::Server(ServerMsg::Event {
+        event: event(1, EventBody::ReviewCreated { review: review(id) }),
+    }))
+    .unwrap();
+    let index = core
+        .view()
+        .home
+        .rows
+        .iter()
+        .position(|row| row.kind == HomeRowKind::Review { review_id: id })
+        .unwrap();
+    core.handle(Input::User(Action::SetFocus {
+        focus: nits_client_core::Focus::ReviewList { index },
+    }))
+    .unwrap();
+    assert_eq!(core.view().home.selected_workspace, Some(workspace_id));
+    open(&mut core, id);
+    assert_eq!(
+        core.view().active_repo,
+        Some(repo_id()),
+        "single repo remains identifiable with no changed files"
+    );
+    core.handle(Input::User(Action::ToggleSidebar)).unwrap();
+    assert!(core.view().prefs.sidebar_hidden);
+    assert_eq!(core.view().home.selected_workspace, Some(workspace_id));
+    assert_eq!(
+        core.view().daemon_context,
+        Some(DaemonContext::Named {
+            name: "remote-build".into()
+        })
+    );
+    home_key(&mut core, "g W");
+    assert_eq!(core.view().open_review, None);
+    assert_eq!(core.view().home.selected_workspace, Some(workspace_id));
+    assert_eq!(core.view().workspaces[1].repos.len(), 2);
+    assert_eq!(core.view().reviews[0].targets.len(), 1);
+    let effects = core
+        .handle(Input::User(Action::OpenReview { review_id: id }))
+        .unwrap();
+    let (request, _) = sent_request(&effects).unwrap();
+    core.handle(Input::User(Action::GoHome)).unwrap();
+    core.handle(Input::Server(ServerMsg::StreamItem {
+        id: request,
+        item: StreamItem::ReviewSnapshot {
+            snapshot: snapshot(id, Seq::new(2)),
+        },
+    }))
+    .unwrap();
+    assert_eq!(
+        core.view().open_review,
+        None,
+        "returning home cancels an unfinished review navigation"
+    );
+}

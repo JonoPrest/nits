@@ -20,6 +20,7 @@ let make = (
   ~tree: TreeView.t,
   ~focus: Focus.t,
   ~home: option<string>=?,
+  ~chrome: array<Hint.t>=[],
   ~dispatch: Action.t => unit,
 ) => {
   let rows = []
@@ -37,8 +38,8 @@ let make = (
         <button
           type_="button"
           className="tree-home"
-          title="back to reviews (esc esc)"
-          onClick={_ => dispatch(CloseReview({}))}
+          title=?{Chrome.tip(chrome, GoHome)}
+          onClick={_ => dispatch(GoHome({}))}
         >
           {React.string("⌂ " ++ name)}
         </button>

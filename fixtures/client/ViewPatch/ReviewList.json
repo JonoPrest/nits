@@ -1,7 +1,18 @@
 {
+  "active_repo": "01HF7YAT000000000000000002",
   "browse_ref": {
     "name": "main",
     "type": "Branch"
+  },
+  "daemon_context": {
+    "name": "review-box",
+    "type": "Named"
+  },
+  "home": {
+    "creating": null,
+    "expanded": [],
+    "rows": [],
+    "selected_workspace": null
   },
   "open_review": "01HF7YATZ80000000000000004",
   "resolved_targets": [

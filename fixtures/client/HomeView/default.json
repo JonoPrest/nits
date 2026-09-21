@@ -1,0 +1,15 @@
+{
+  "creating": null,
+  "expanded": [
+    "01HF7YAT000000000000000001"
+  ],
+  "rows": [
+    {
+      "kind": {
+        "type": "Workspace"
+      },
+      "workspace_id": "01HF7YAT000000000000000001"
+    }
+  ],
+  "selected_workspace": "01HF7YAT000000000000000001"
+}

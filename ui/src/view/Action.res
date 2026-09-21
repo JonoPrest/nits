@@ -30,6 +30,12 @@ type t =
   | @as("Connect") Connect({})
   | @as("Disconnect") Disconnect({})
   | @as("ListWorkspaces") ListWorkspaces({})
+  | @as("ToggleWorkspace") ToggleWorkspace({@as("workspace_id") workspaceId: workspaceId})
+  | @as("SelectWorkspace") SelectWorkspace({@as("workspace_id") workspaceId: workspaceId})
+  | @as("StartReview") StartReview({@as("workspace_id") workspaceId: workspaceId})
+  | @as("CancelNewReview") CancelNewReview({})
+  | @as("CopyCheckout") CopyCheckout({@as("repo_id") repoId: repoId})
+  | @as("GoHome") GoHome({})
   | @as("ListReviews") ListReviews({@as("workspace_id") workspaceId: workspaceId})
   | @as("CreateReview")
   CreateReview({

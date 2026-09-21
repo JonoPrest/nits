@@ -32,6 +32,9 @@ pub enum ViewPatch {
         last_error: Option<RpcError>,
     },
     ReviewList {
+        home: crate::HomeView,
+        daemon_context: Option<crate::DaemonContext>,
+        active_repo: Option<nits_protocol::RepoId>,
         workspaces: Vec<Workspace>,
         reviews: Vec<Review>,
         open_review: Option<ReviewId>,
@@ -85,6 +88,7 @@ pub enum ViewPatch {
         /// gesture that asks for it.
         #[serde(default)]
         copy_target: Option<nits_protocol::RepoPath>,
+        copy_checkout: Option<String>,
         copy_reference: Option<nits_protocol::ReviewReference>,
         focused_comment: Option<nits_protocol::CommentId>,
     },
@@ -149,6 +153,9 @@ impl ViewModel {
                 last_error: self.last_error.clone(),
             },
             ViewSection::ReviewList => ViewPatch::ReviewList {
+                home: self.home.clone(),
+                daemon_context: self.daemon_context.clone(),
+                active_repo: self.active_repo,
                 workspaces: self.workspaces.clone(),
                 reviews: self.reviews.clone(),
                 open_review: self.open_review,
@@ -188,6 +195,7 @@ impl ViewModel {
                 tab: self.tab,
                 scroll: self.scroll,
                 copy_target: self.copy_target.clone(),
+                copy_checkout: self.copy_checkout.clone(),
                 copy_reference: self.copy_reference.clone(),
                 focused_comment: self.focused_comment,
             },
@@ -229,6 +237,8 @@ impl ViewModel {
     }
 
     /// Install a patch into this model (the UI-side copy).
+    // A flat exhaustive field transfer keeps the section contract visible.
+    #[allow(clippy::too_many_lines)]
     pub fn apply(&mut self, patch: ViewPatch) {
         match patch {
             ViewPatch::Connection {
@@ -239,6 +249,9 @@ impl ViewModel {
                 self.last_error = last_error;
             }
             ViewPatch::ReviewList {
+                home,
+                daemon_context,
+                active_repo,
                 workspaces,
                 reviews,
                 open_review,
@@ -246,6 +259,9 @@ impl ViewModel {
                 scope,
                 browse_ref,
             } => {
+                self.home = home;
+                self.daemon_context = daemon_context;
+                self.active_repo = active_repo;
                 self.workspaces = workspaces;
                 self.reviews = reviews;
                 self.open_review = open_review;
@@ -285,6 +301,7 @@ impl ViewModel {
                 tab,
                 scroll,
                 copy_target,
+                copy_checkout,
                 copy_reference,
                 focused_comment,
             } => {
@@ -292,6 +309,7 @@ impl ViewModel {
                 self.tab = tab;
                 self.scroll = scroll;
                 self.copy_target = copy_target;
+                self.copy_checkout = copy_checkout;
                 self.copy_reference = copy_reference;
                 self.focused_comment = focused_comment;
             }

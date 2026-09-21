@@ -29,6 +29,7 @@ mod diff;
 mod events;
 mod explorer;
 mod focus;
+mod home;
 mod ids;
 mod keymap;
 mod patch;
@@ -66,6 +67,7 @@ pub use focus::{
     Focus, FocusKind, NoTarget, PAGE_ROWS, Realign, VisualAnchor, clamp as clamp_focus,
     target_file_of, visible_nodes,
 };
+pub use home::{DaemonContext, DaemonContextKind, HomeRow, HomeRowKind, HomeRowKindKind, HomeView};
 pub use ids::IdSeed;
 pub use keymap::{
     Binding, Command, Conflict, Context, HelpEntry, HelpGroup, HelpView, Hint, KeyChord, KeyCode,
@@ -149,6 +151,21 @@ pub enum Action {
     /// Refresh the workspace list (and, on its answer, every review list).
     /// Done automatically on subscribe.
     ListWorkspaces,
+    ToggleWorkspace {
+        workspace_id: WorkspaceId,
+    },
+    SelectWorkspace {
+        workspace_id: WorkspaceId,
+    },
+    StartReview {
+        workspace_id: WorkspaceId,
+    },
+    CancelNewReview,
+    /// Copy a daemon-side checkout path; repo-relative `RepoPath` is a different type.
+    CopyCheckout {
+        repo_id: RepoId,
+    },
+    GoHome,
     ListReviews {
         workspace_id: WorkspaceId,
     },
@@ -898,6 +915,43 @@ impl ClientCore {
     #[allow(clippy::too_many_lines)]
     fn derive(&mut self) -> Vec<ViewSection> {
         let mut sections = Vec::new();
+        let previous_row = home::focused(&self.view);
+        let rows = home::rows(&self.view);
+        if rows != self.view.home.rows {
+            self.view.home.rows = rows;
+            if let Some(row) = previous_row {
+                let index = self
+                    .view
+                    .home
+                    .rows
+                    .iter()
+                    .position(|r| *r == row)
+                    .or_else(|| {
+                        self.view
+                            .home
+                            .rows
+                            .iter()
+                            .position(|r| r.workspace_id == row.workspace_id)
+                    })
+                    .unwrap_or(0);
+                self.view.focus = Focus::ReviewList { index };
+                sections.push(ViewSection::Focus);
+            }
+            sections.push(ViewSection::ReviewList);
+        }
+        let selected = self
+            .view
+            .review
+            .as_ref()
+            .map(|r| r.snapshot.review.workspace_id)
+            .or_else(|| home::focused(&self.view).map(|row| row.workspace_id))
+            .or(self.view.home.selected_workspace)
+            .filter(|id| self.view.workspaces.iter().any(|w| w.id == *id))
+            .or_else(|| self.view.workspaces.first().map(|w| w.id));
+        if selected != self.view.home.selected_workspace {
+            self.view.home.selected_workspace = selected;
+            sections.push(ViewSection::ReviewList);
+        }
         let ref_selector = self
             .ref_selector
             .as_ref()
@@ -1161,6 +1215,25 @@ impl ClientCore {
         if copy_target != self.view.copy_target {
             self.view.copy_target = copy_target;
             sections.push(ViewSection::Focus);
+        }
+        let copy_checkout = home::focused(&self.view).and_then(|row| match row.kind {
+            HomeRowKind::Repository { repo_id } => self
+                .view
+                .workspaces
+                .iter()
+                .find(|w| w.id == row.workspace_id)
+                .and_then(|w| w.repos.iter().find(|r| r.id == repo_id))
+                .map(|repo| repo.path.clone()),
+            HomeRowKind::Workspace | HomeRowKind::Review { .. } => None,
+        });
+        if copy_checkout != self.view.copy_checkout {
+            self.view.copy_checkout = copy_checkout;
+            sections.push(ViewSection::Focus);
+        }
+        let active_repo = focus::target_repo_of(&self.view, focus);
+        if active_repo != self.view.active_repo {
+            self.view.active_repo = active_repo;
+            sections.push(ViewSection::ReviewList);
         }
         let copy_reference = self.focused_reference();
         if copy_reference != self.view.copy_reference {
@@ -1872,6 +1945,62 @@ impl ClientCore {
                     InFlight::ListWorkspaces,
                 )])
             }
+            Action::SelectWorkspace { workspace_id } => {
+                let index = self
+                    .view
+                    .home
+                    .rows
+                    .iter()
+                    .position(|row| row.workspace_id == workspace_id)
+                    .ok_or(CoreError::NoTarget(NoTarget::Nothing(Command::Open)))?;
+                self.view.focus = Focus::ReviewList { index };
+                Ok(vec![render(&[ViewSection::Focus])])
+            }
+            Action::ToggleWorkspace { workspace_id } => {
+                if !self.view.workspaces.iter().any(|w| w.id == workspace_id) {
+                    return Err(CoreError::NoTarget(NoTarget::Nothing(Command::Open)));
+                }
+                if self.view.home.expanded.contains(&workspace_id) {
+                    self.view.home.expanded.retain(|id| *id != workspace_id);
+                } else {
+                    self.view.home.expanded.push(workspace_id);
+                }
+                Ok(vec![render(&[ViewSection::ReviewList])])
+            }
+            Action::StartReview { workspace_id } => {
+                if !self.view.workspaces.iter().any(|w| w.id == workspace_id) {
+                    return Err(CoreError::NoTarget(NoTarget::Nothing(Command::NewReview)));
+                }
+                self.view.home.creating = Some(workspace_id);
+                Ok(vec![render(&[ViewSection::ReviewList])])
+            }
+            Action::CancelNewReview => {
+                self.view.home.creating = None;
+                Ok(vec![render(&[ViewSection::ReviewList])])
+            }
+            Action::GoHome => {
+                self.pending_reference = None;
+                self.latest_open = None;
+                let workspace_id = self.view.home.selected_workspace;
+                let mut effects = Vec::new();
+                if self.view.review.is_some() {
+                    self.close_review(&mut effects);
+                }
+                let index = self
+                    .view
+                    .home
+                    .rows
+                    .iter()
+                    .position(|row| Some(row.workspace_id) == workspace_id)
+                    .unwrap_or(0);
+                self.view.focus = Focus::ReviewList { index };
+                effects.push(render(&[
+                    ViewSection::ReviewList,
+                    ViewSection::Focus,
+                    ViewSection::Draft,
+                ]));
+                Ok(effects)
+            }
             Action::ListReviews { workspace_id } => {
                 self.require_subscribed()?;
                 Ok(vec![self.request(
@@ -1902,8 +2031,19 @@ impl ClientCore {
                 )])
             }
             Action::SetReferenceContext { context } => {
+                self.view.daemon_context = context.locator().ok().map(|locator| match locator {
+                    nits_protocol::ReferenceLocator::Named(name) => DaemonContext::Named { name },
+                    nits_protocol::ReferenceLocator::Socket(path) => DaemonContext::Socket { path },
+                    nits_protocol::ReferenceLocator::WebSocket(url) => {
+                        DaemonContext::WebSocket { url }
+                    }
+                });
                 self.reference_context = Some(context);
-                Ok(vec![render(&[ViewSection::Focus, ViewSection::Threads])])
+                Ok(vec![render(&[
+                    ViewSection::Focus,
+                    ViewSection::Threads,
+                    ViewSection::ReviewList,
+                ])])
             }
             Action::OpenReference { reference } => self.open_reference(&reference),
             Action::FocusComment { comment_id } => self.focus_comment(comment_id),
@@ -2276,7 +2416,9 @@ impl ClientCore {
             // which is this same decision made here. The action stays so
             // the command is binding-reachable and other hosts can send
             // it; there is nothing left for the core to do with it.
-            Action::CopyPath { path: _ } | Action::CopyReference { reference: _ } => Ok(Vec::new()),
+            Action::CopyCheckout { repo_id: _ }
+            | Action::CopyPath { path: _ }
+            | Action::CopyReference { reference: _ } => Ok(Vec::new()),
             Action::ScrollView { align } => {
                 let Focus::Diff { row, .. } = self.view.focus else {
                     return Err(CoreError::NoTarget(focus::NoTarget::Nothing(

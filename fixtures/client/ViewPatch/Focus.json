@@ -1,4 +1,5 @@
 {
+  "copy_checkout": "/srv/atlas",
   "copy_reference": "nits://context/review-box/review/01HF7YATZ80000000000000004",
   "copy_target": "src/lib.rs",
   "focus": {
