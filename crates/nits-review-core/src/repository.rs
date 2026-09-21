@@ -227,6 +227,13 @@ impl Core {
         self.lookup_repo(&mut registry, id)
     }
 
+    /// The canonical checkout currently owned by this ID. Filesystem adapters
+    /// must use the same ownership validation as Git-backed reads, including
+    /// legacy ambiguity and unavailable memberships.
+    pub fn repo_checkout_path(&self, id: RepoId) -> Result<PathBuf, CoreError> {
+        Ok(self.repo(id)?.workdir().to_path_buf())
+    }
+
     pub(crate) fn workspace_repo(
         &self,
         workspace_id: WorkspaceId,
