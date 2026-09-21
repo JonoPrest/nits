@@ -519,7 +519,7 @@ Tailwind v4 via `@tailwindcss/vite`; no CSS-in-JS, no runtime style computation.
   Agents can subscribe to subsequent requests addressed to them (`awaiting_agent`)
   starting from the snapshot's cursor.
 - The exact `author.name` returned by the identity tools is the routing key for `request_review.agent` and `subscribe_events.awaiting_agent`. Choose distinct names for collaborating agents and keep them stable; changing a name does not rename already addressed requests or saved subscription cursors. A model update can keep the same name. Names are labels, not unique session IDs or authentication credentials.
-- **Suggestions**: a comment kind carrying a unified diff against a specific `blob_oid`. The UI renders "apply", which writes to the working tree and records `SuggestionApplied`.
+- **Suggestions**: a comment kind carrying unified diff hunks against a specific `blob_oid` (an optional `---`/`+++` file-header pair is accepted). The UI renders "apply", which writes to the working tree and records `SuggestionApplied`. Both old/new hunk ranges and body counts must agree. Context and removed lines match exact bytes, including CRLF; added lines carry their literal terminators. Use the standard `\ No newline at end of file` marker after an unterminated old/new/context line. A LF-only patch against CRLF content is rejected, not normalized; binary/full multi-file diffs and truncated body lines are unsupported. Invalid patches leave the file and event log unchanged.
 - Threads keep agent `session_id`, so a human reply to an agent comment can be routed back to that session.
 
 ## 8. Remote / SSH
