@@ -391,7 +391,7 @@ async fn acknowledge_shutdown(upstream: UnixStream) {
 }
 
 #[tokio::test]
-async fn ssh_stop_and_status_finish_when_the_probe_connection_resets() {
+async fn ssh_stop_and_status_finish_without_claiming_stopped_when_the_probe_resets() {
     for operation in ["stop", "status"] {
         let proxy = Proxy::new();
         let mut child = proxy.ssh_command(operation).spawn().unwrap();
@@ -408,12 +408,20 @@ async fn ssh_stop_and_status_finish_when_the_probe_connection_resets() {
         unread(&upstream).await;
         drop(upstream);
         let result = output(&mut child).await;
-        assert!(result.status.success(), "{operation}: {result:?}");
-        let stdout = String::from_utf8(result.stdout).unwrap();
+        // EOF is still prompt, but a failed SSH proxy cannot certify that
+        // the daemon released its store. Only the typed absent exit can.
         if operation == "stop" {
-            assert_eq!(stdout.trim(), "stopping");
+            assert!(!result.status.success(), "{operation}: {result:?}");
+            assert!(result.stdout.is_empty());
+            assert!(
+                String::from_utf8_lossy(&result.stderr).contains("SSH process exited"),
+                "{result:?}"
+            );
         } else {
-            assert!(stdout.trim().ends_with("stopped"), "{stdout}");
+            assert!(result.status.success(), "{operation}: {result:?}");
+            let stdout = String::from_utf8(result.stdout).unwrap();
+            assert!(stdout.contains("unreachable:"), "{stdout}");
+            assert!(!stdout.trim().ends_with("stopped"), "{stdout}");
         }
     }
 }
