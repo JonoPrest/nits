@@ -9,10 +9,10 @@ use anyhow::{Context as _, bail};
 use clap::{Args, FromArgMatches, Parser, Subcommand, ValueEnum};
 use nits_config::{Context, ContextName, Selection, SelectionOrigin};
 use nits_protocol::{
-    AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, DirectoryReviewOutcome, Event,
-    EventBody, LineNo, LineRange, Mutation, RefSpec, RenderOpts, ReplayCursor, ReplayPosition,
-    ReplayProgress, RepoId, RepoPath, Review, ReviewId, ReviewTarget, Seq, Side, Since,
-    SubscribeScope, ThreadId, Workspace, WorkspaceId,
+    AgentVia, Anchor, Author, BaseRefSpec, BuildInfo, ClientId, CommentId, CommentKind,
+    DirectoryReviewOutcome, Event, EventBody, LineNo, LineRange, Mutation, RefSpec, RenderOpts,
+    ReplayCursor, ReplayPosition, ReplayProgress, RepoId, RepoPath, Review, ReviewId, ReviewStatus,
+    ReviewTarget, Seq, Side, Since, SubscribeScope, ThreadId, Workspace, WorkspaceId,
 };
 use nitsd::client::Identity;
 use nitsd::contexts::{self, Status};
@@ -288,6 +288,12 @@ struct ServeArgs {
 
 #[derive(Debug, Subcommand)]
 enum WorkspaceCmd {
+    /// Rename a workspace without changing its repositories or reviews.
+    Rename {
+        #[arg(value_name = "WORKSPACE")]
+        workspace_id: WorkspaceId,
+        name: String,
+    },
     /// Create a workspace; prints its id.
     Add {
         name: String,
@@ -315,6 +321,31 @@ enum WorkspaceCmd {
 
 #[derive(Debug, Subcommand)]
 enum ReviewCmd {
+    /// Rename a review, preserving its open/archived status and targets.
+    Rename {
+        review: ReviewId,
+        title: String,
+    },
+    /// Archive a review; keeps its comments and history and can be reopened.
+    Archive {
+        review: ReviewId,
+    },
+    /// Reopen an archived review after checking its current refs resolve.
+    Reopen {
+        review: ReviewId,
+    },
+    /// Delete this review from listings; retains event history, with no undelete.
+    Delete {
+        review: ReviewId,
+    },
+    /// Change one repository's base, preserving its head and review identity.
+    SetBase {
+        review: ReviewId,
+        /// Branch, tag:NAME, full commit OID, HEAD, or upstream; never worktree.
+        reference: String,
+        #[arg(long)]
+        repo: RepoId,
+    },
     /// Explicitly select a new head before requesting the next review round.
     SetHead {
         review: ReviewId,
@@ -372,6 +403,18 @@ enum ReviewCmd {
 
 #[derive(Debug, Subcommand)]
 enum CommentCmd {
+    /// Edit your own comment's prose; preserves its anchor and suggestion patch.
+    Edit {
+        review: ReviewId,
+        comment: CommentId,
+        #[arg(long)]
+        body: String,
+    },
+    /// Delete your own comment; leaves a tombstone and retains event history.
+    Delete {
+        review: ReviewId,
+        comment: CommentId,
+    },
     /// Start a thread on the review, a file, or a line range.
     Add(AddComment),
     Reply {
@@ -546,6 +589,20 @@ fn parse_ref(s: &str) -> anyhow::Result<RefSpec> {
                 RefSpec::Branch { name: s.into() }
             }
         }
+    })
+}
+
+/// Parse the shared ref syntax into the narrower base-side domain type.
+fn parse_base_ref(s: &str) -> anyhow::Result<BaseRefSpec> {
+    Ok(match parse_ref(s)? {
+        RefSpec::Branch { name } => BaseRefSpec::Branch { name },
+        RefSpec::Commit { oid } => BaseRefSpec::Commit { oid },
+        RefSpec::Tag { name } => BaseRefSpec::Tag { name },
+        RefSpec::Upstream => BaseRefSpec::Upstream,
+        RefSpec::Head => BaseRefSpec::Head,
+        RefSpec::WorkingTree => bail!(
+            "a review base cannot be worktree; select a branch, tag, commit, HEAD or upstream"
+        ),
     })
 }
 
@@ -896,17 +953,39 @@ fn event_line(e: &Event) -> String {
         EventBody::WorkspaceCreated { workspace, .. } => {
             format!("workspace created {}", workspace.name)
         }
-        EventBody::WorkspaceUpdated { .. } => "workspace updated".into(),
+        EventBody::WorkspaceUpdated { workspace_id, name } => {
+            format!("workspace renamed {workspace_id}: {name}")
+        }
         EventBody::RepoAttached { repo, .. } => format!("repo attached {}", repo.path),
-        EventBody::RepoDetached { repo_id, .. } => format!("repo detached {repo_id}"),
+        EventBody::RepoDetached {
+            workspace_id,
+            repo_id,
+        } => {
+            format!(
+                "repo detached {repo_id} from workspace {workspace_id}; checkout and history kept"
+            )
+        }
         EventBody::ReviewCreated { review } => {
             format!("review created {} {}", review.id, review.title)
         }
-        EventBody::ReviewUpdated { review_id, .. } => format!("review updated {review_id}"),
-        EventBody::ReviewTargetUpdated { review_id, target } => {
-            format!("review target updated {review_id} repo {}", target.repo_id)
+        EventBody::ReviewUpdated {
+            review_id,
+            title,
+            status,
+        } => {
+            format!("review updated {review_id}: {title} [{status:?}]")
         }
-        EventBody::ReviewDeleted { review_id } => format!("review deleted {review_id}"),
+        EventBody::ReviewTargetUpdated { review_id, target } => {
+            format!(
+                "review target updated {review_id} repo {}: {}..{}",
+                target.repo_id,
+                ref_label(&target.base),
+                ref_label(&target.head)
+            )
+        }
+        EventBody::ReviewDeleted { review_id } => {
+            format!("review deleted {review_id}; removed from listings, event history kept")
+        }
         EventBody::ReviewTargetsResolved { review_id, .. } => {
             format!("targets resolved {review_id}")
         }
@@ -916,8 +995,21 @@ fn event_line(e: &Event) -> String {
             anchor_text(&comment.anchor),
             comment.body
         ),
-        EventBody::CommentEdited { comment_id, .. } => format!("comment edited {comment_id}"),
-        EventBody::CommentDeleted { comment_id, .. } => format!("comment deleted {comment_id}"),
+        EventBody::CommentEdited {
+            review_id,
+            comment_id,
+            ..
+        } => {
+            format!("comment edited {comment_id} in review {review_id}")
+        }
+        EventBody::CommentDeleted {
+            review_id,
+            comment_id,
+        } => {
+            format!(
+                "comment deleted {comment_id} in review {review_id}; tombstone and event history kept"
+            )
+        }
         EventBody::CommentReanchored { .. } => "comments re-anchored".into(),
         EventBody::ThreadDeferred {
             thread_id, reason, ..
@@ -1330,6 +1422,12 @@ async fn workspace(ops: &mut Ops, cmd: WorkspaceCmd, json: bool) -> anyhow::Resu
                     .join("\n")
             })
         }
+        WorkspaceCmd::Rename { workspace_id, name } => {
+            let event = ops
+                .mutate(Mutation::RenameWorkspace { workspace_id, name })
+                .await?;
+            emit(json, &event, || event_line(&event))
+        }
         WorkspaceCmd::Attach {
             workspace_id,
             path,
@@ -1353,7 +1451,7 @@ async fn workspace(ops: &mut Ops, cmd: WorkspaceCmd, json: bool) -> anyhow::Resu
             repo_id,
         } => {
             let event = ops.detach_repo(workspace_id, repo_id).await?;
-            emit(json, &event, || format!("detached {repo_id}"))
+            emit(json, &event, || event_line(&event))
         }
     }
 }
@@ -1398,6 +1496,34 @@ fn review_text(review: &Review, workspaces: &[Workspace]) -> String {
     out
 }
 
+/// The full `UpdateReview` RPC requires both metadata fields. Read the current
+/// record and preserve the field this CLI command does not change.
+enum ReviewMetadataEdit {
+    Title(String),
+    Status(ReviewStatus),
+}
+
+async fn edit_review_metadata(
+    ops: &mut Ops,
+    review_id: ReviewId,
+    edit: ReviewMetadataEdit,
+    json: bool,
+) -> anyhow::Result<()> {
+    let review = ops.snapshot(review_id).await?.review;
+    let (title, status) = match edit {
+        ReviewMetadataEdit::Title(title) => (title, review.status),
+        ReviewMetadataEdit::Status(status) => (review.title, status),
+    };
+    let event = ops
+        .mutate(Mutation::UpdateReview {
+            review_id,
+            title,
+            status,
+        })
+        .await?;
+    emit(json, &event, || event_line(&event))
+}
+
 // One arm per review subcommand keeps the CLI mapping visible.
 #[allow(clippy::too_many_lines)]
 async fn review(
@@ -1407,6 +1533,50 @@ async fn review(
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
+        ReviewCmd::Rename { review, title } => {
+            edit_review_metadata(ops, review, ReviewMetadataEdit::Title(title), json).await
+        }
+        ReviewCmd::Archive { review } => {
+            edit_review_metadata(
+                ops,
+                review,
+                ReviewMetadataEdit::Status(ReviewStatus::Archived),
+                json,
+            )
+            .await
+        }
+        ReviewCmd::Reopen { review } => {
+            edit_review_metadata(
+                ops,
+                review,
+                ReviewMetadataEdit::Status(ReviewStatus::Open),
+                json,
+            )
+            .await
+        }
+        ReviewCmd::Delete { review } => {
+            let event = ops
+                .mutate(Mutation::DeleteReview { review_id: review })
+                .await?;
+            emit(json, &event, || event_line(&event))
+        }
+        ReviewCmd::SetBase {
+            review,
+            reference,
+            repo,
+        } => {
+            let ref_spec = parse_base_ref(&reference)?;
+            let event = ops
+                .mutate(Mutation::UpdateReviewTarget {
+                    review_id: review,
+                    update: nits_protocol::ReviewTargetUpdate {
+                        repo_id: repo,
+                        revision: nits_protocol::TargetRevision::Base { ref_spec },
+                    },
+                })
+                .await?;
+            emit(json, &event, || event_line(&event))
+        }
         ReviewCmd::SetHead {
             review,
             reference,
@@ -1711,6 +1881,29 @@ async fn content(ops: &Ops, cmd: Cmd, json: bool) -> anyhow::Result<()> {
 #[allow(clippy::too_many_lines)] // keep the typed comment subcommands together
 async fn comment(ops: &mut Ops, cmd: CommentCmd, json: bool) -> anyhow::Result<()> {
     match cmd {
+        CommentCmd::Edit {
+            review,
+            comment,
+            body,
+        } => {
+            let event = ops
+                .mutate(Mutation::EditComment {
+                    review_id: review,
+                    comment_id: comment,
+                    body,
+                })
+                .await?;
+            emit(json, &event, || event_line(&event))
+        }
+        CommentCmd::Delete { review, comment } => {
+            let event = ops
+                .mutate(Mutation::DeleteComment {
+                    review_id: review,
+                    comment_id: comment,
+                })
+                .await?;
+            emit(json, &event, || event_line(&event))
+        }
         CommentCmd::Add(a) => {
             let lines = a.line.map(LineRange::single).or(a.lines);
             let anchor = match a.path {

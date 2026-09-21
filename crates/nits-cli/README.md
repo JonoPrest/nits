@@ -79,6 +79,39 @@ both. Commands with a second positional (a path or thread) take `<REVIEW>` first
 `START-END` and `START:END`; both are inclusive and require positive, ordered
 line numbers. `--json` retains the protocol values for scripting.
 
+Routine maintenance uses the same daemon mutations and author checks as the other
+clients. All IDs belong to the selected context; use `workspace list`, `review
+list`, and `comment list` to find them.
+
+```sh
+nits review rename <REVIEW> 'Updated title'
+nits review archive <REVIEW>
+nits review reopen <REVIEW>
+nits review set-base <REVIEW> main --repo <REPO>
+nits review set-head <REVIEW> feature --repo <REPO>
+nits comment edit <REVIEW> <COMMENT> --body 'Corrected explanation'
+nits comment delete <REVIEW> <COMMENT>
+nits workspace rename <WORKSPACE> 'Updated workspace'
+nits workspace detach <WORKSPACE> <REPO>
+nits review delete <REVIEW>
+```
+
+Archive preserves discussion and can be reopened; reopening first checks that the
+current refs resolve. Rename keeps open/archived status, and base/head updates
+keep the other ref and review ID. A base cannot be `worktree`. Review deletion
+removes the record from listings with no undelete command; its event history
+remains accessible with `events --review <REVIEW> --since 0`. Comment deletion
+leaves a tombstone. Detach keeps checkout files and review history. These explicit
+commands execute without an interactive confirmation; inspect the selected IDs
+first. `--json` returns the committed primary Event receipt, and human output
+identifies the affected record and action.
+
+Only a comment's complete original author can edit or delete it. For human CLI
+comments this includes name and machine. With `--agent`, retain the same agent
+name, `NITS_AGENT_MODEL`, `NITS_SESSION_ID`, and invoking human; matching the agent
+name alone is insufficient. Editing prose preserves anchors, suggestion patches
+and any applied receipt. Historical events remain unchanged.
+
 For scripts, `nits --json . --headless` creates or reuses the directory's
 working-tree review and prints one JSON object with `review_id`, `workspace_id`,
 `repo_id`, `outcome` (`"Created"` or `"Reused"`), and `base`/`head`. The latter are
