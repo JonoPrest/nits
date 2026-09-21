@@ -901,3 +901,39 @@ async fn newly_attached_external_submodule_metadata_is_watched() {
     h.repo.git(&["-C", "dep", "checkout", "-q", &new]).unwrap();
     assert_submodule_pointer(&h.client, old.parse().unwrap(), new.parse().unwrap()).await;
 }
+
+#[tokio::test]
+async fn absorbing_submodule_metadata_keeps_pointer_watches() {
+    let SubmoduleRepo {
+        superproject,
+        _dependency: dependency,
+        _external,
+        old,
+        alternate,
+    } = submodule_repo(SubmoduleLayout::OldForm);
+    superproject
+        .git(&["config", "-f", ".gitmodules", "submodule.dep.path", "dep"])
+        .unwrap();
+    superproject
+        .git(&[
+            "config",
+            "-f",
+            ".gitmodules",
+            "submodule.dep.url",
+            dependency.path().to_str().unwrap(),
+        ])
+        .unwrap();
+    superproject.git(&["add", ".gitmodules"]).unwrap();
+    superproject
+        .git(&["commit", "-qm", "register old-form submodule"])
+        .unwrap();
+    let h = start_repo(superproject, RefSpec::Head, Checkout::Main).await;
+    collect(&h.client, Duration::from_millis(400)).await;
+    h.repo.git(&["submodule", "absorbgitdirs", "dep"]).unwrap();
+    assert!(h.checkout.join("dep/.git").is_file());
+    collect(&h.client, Duration::from_millis(600)).await;
+    h.repo
+        .git(&["-C", "dep", "checkout", "-q", &alternate.to_string()])
+        .unwrap();
+    assert_submodule_pointer(&h.client, old, alternate).await;
+}
