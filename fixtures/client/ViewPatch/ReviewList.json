@@ -1,8 +1,24 @@
 {
   "active_repo": "01HF7YAT000000000000000002",
-  "browse_ref": {
-    "name": "main",
-    "type": "Branch"
+  "browse": {
+    "attempt": {
+      "status": {
+        "type": "Loading"
+      },
+      "target": {
+        "ref_spec": {
+          "type": "Head"
+        },
+        "repo_id": "01HF7YAT000000000000000002"
+      }
+    },
+    "repo_id": "01HF7YAT000000000000000002",
+    "selection": {
+      "ref_spec": {
+        "type": "Head"
+      },
+      "repo_id": "01HF7YAT000000000000000002"
+    }
   },
   "daemon_context": {
     "name": "review-box",

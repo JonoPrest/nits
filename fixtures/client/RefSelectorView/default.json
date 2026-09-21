@@ -13,11 +13,15 @@
       "subject": null
     }
   ],
+  "purpose": {
+    "side": "Head",
+    "type": "Review"
+  },
   "query": "sel",
   "repo_id": "01HF7YAT000000000000000002",
   "repo_name": "nits",
+  "request_id": 42,
   "selected": 0,
-  "side": "Head",
   "status": {
     "type": "Ready"
   }

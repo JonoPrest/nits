@@ -157,9 +157,9 @@ safety, and informational notes have no defer action.
 
 A third tab for reading code without a diff: full file tree (every file,
 not just changed), plain syntax-highlighted file view, comments on any
-line. A `viewing: <ref> ▾` picker accepts any ref — branch, tag, commit,
-working tree (the daemon's tree snapshots already take an arbitrary
-`RefSpec`).
+line. The controls show `Viewing: <repository> · <ref>` and an explicit
+repository selector. The searchable revision picker accepts branches, tags,
+commits and the working tree; failed lookups keep the prior file visible.
 
 ## Search
 
@@ -390,3 +390,16 @@ remain visible in expanded context and Browse; paired ending changes also label
 `LF`. Annotations are unnumbered and excluded from source selection. A bare
 carriage-return character is displayed as ␍ while keeping its original source
 character separate from the visual glyph.
+
+Browse revision controls name the repository explicitly. The repository choice follows
+an opened file or focused tree; a native selector also chooses any review repository.
+`g b` opens its searchable revision picker, `] r` / `[ r` cycle repositories, and
+`g B` restores review heads. Controls derive tooltips from the configured keymap.
+Typing in the picker searches normally (including j/k); Down enters results, where
+j/k or arrows move, Enter selects, and Escape cancels. Explicit branch/tag/commit
+forms can resolve revisions beyond the recent catalog.
+
+The visible repository/ref and a loading or failed candidate are separate. A failed
+lookup leaves the previous file and comment provenance usable; only a successful
+matching lookup replaces the tree. Reset, repository changes, and cancellation
+invalidate late candidates. Browse selection never edits review targets.

@@ -3246,7 +3246,10 @@ fn browse_tab_shows_a_picked_ref_and_opens_blobs() {
     }))
     .unwrap();
     assert_eq!(
-        core.view().browse_ref,
+        core.view().browse.as_ref().and_then(|browse| browse
+            .selection
+            .as_ref()
+            .map(|target| target.ref_spec.clone())),
         Some(RefSpec::Tag { name: "v1".into() })
     );
     core.handle(Input::User(Action::SetTab {
@@ -3331,7 +3334,13 @@ fn browse_tab_shows_a_picked_ref_and_opens_blobs() {
         ref_spec: None,
     }))
     .unwrap();
-    assert_eq!(core.view().browse_ref, None);
+    assert_eq!(
+        core.view().browse.as_ref().and_then(|browse| browse
+            .selection
+            .as_ref()
+            .map(|target| target.ref_spec.clone())),
+        None
+    );
 }
 
 fn visible_files(view: &nits_client_core::ViewModel) -> Vec<String> {
@@ -3544,13 +3553,13 @@ fn browse_single_lines_use_visible_blob_and_capture_every_ref_kind() {
             core.view().diff.as_ref().unwrap().rows[1].threads[0].thread,
             id
         );
-        // Changing ref cannot display this thread over the same path's different blob.
+        // A candidate preserves the committed blob and its thread until it resolves.
         core.handle(Input::User(Action::SetBrowseRef {
             repo_id: repo_id(),
             ref_spec: Some(RefSpec::Head),
         }))
         .unwrap();
-        assert!(core.view().diff.is_none());
+        assert!(core.view().diff.is_some());
         core.handle(Input::User(Action::SetTab {
             tab: nits_client_core::Tab::Conversation,
         }))
@@ -3698,7 +3707,10 @@ fn browse_superseded_tree_response_cannot_retarget_content() {
     }))
     .unwrap();
     assert_eq!(
-        core.view().browse_ref,
+        core.view().browse.as_ref().and_then(|browse| browse
+            .selection
+            .as_ref()
+            .map(|target| target.ref_spec.clone())),
         Some(RefSpec::Tag { name: "new".into() })
     );
 }
@@ -3999,14 +4011,13 @@ fn browse_file_comments_reject_pending_absent_and_non_blob_tree_entries() {
             ref_spec: Some(RefSpec::WorkingTree),
         }))
         .unwrap();
-    // The old head's a.rs is still cached, but cannot stand in for the pending ref.
-    assert_eq!(
-        core.handle(Input::User(Action::CommentFile {
-            file: file_ref("a.rs")
-        })),
-        Err(CoreError::UnknownFile(file_ref("a.rs")))
-    );
-    assert!(core.view().draft.is_none());
+    // The current head remains visible and commentable while a candidate loads.
+    core.handle(Input::User(Action::CommentFile {
+        file: file_ref("a.rs"),
+    }))
+    .unwrap();
+    assert!(core.view().draft.is_some());
+    core.handle(Input::User(Action::DraftDiscarded)).unwrap();
     core.handle(Input::User(Action::ToggleDir {
         repo_id: repo_id(),
         path: None,
@@ -4020,11 +4031,9 @@ fn browse_file_comments_reject_pending_absent_and_non_blob_tree_entries() {
         focus: Focus::Tree { index },
     }))
     .unwrap();
-    assert_eq!(
-        core.handle(Input::Key(KeyChord::char('c'))),
-        Err(CoreError::UnknownFile(file_ref("a.rs")))
-    );
-    assert!(core.view().draft.is_none());
+    core.handle(Input::Key(KeyChord::char('c'))).unwrap();
+    assert!(core.view().draft.is_some());
+    core.handle(Input::User(Action::DraftDiscarded)).unwrap();
     let mut picked = tree(7, &[]);
     picked.entries = vec![
         TreeEntry {
@@ -4103,9 +4112,17 @@ fn superseded_browse_headers_cannot_change_review_files_totals_or_tree() {
                 .find(|(_, request)| matches!(request, Request::BlobRender { .. }))
                 .unwrap()
                 .0;
-            core.handle(Input::User(Action::SetBrowseRef {
-                repo_id: repo_id(),
-                ref_spec: Some(RefSpec::Head),
+            let selected = core
+                .handle(Input::User(Action::SetBrowseRef {
+                    repo_id: repo_id(),
+                    ref_spec: Some(RefSpec::Head),
+                }))
+                .unwrap();
+            core.handle(Input::Server(ServerMsg::Response {
+                id: requests(&selected)[0].0,
+                response: Response::TreeSnapshot {
+                    snapshot: tree(8, &[]),
+                },
             }))
             .unwrap();
             if switch_tab {
@@ -4386,3 +4403,6 @@ fn portable_reply_link_preserves_deferred_browse_source_and_inflight_review_requ
 
 #[path = "cache_flow/shared_trees.rs"]
 mod shared_trees;
+
+#[path = "cache_flow/browse_selection.rs"]
+mod browse_selection;

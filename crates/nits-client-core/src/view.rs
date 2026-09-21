@@ -419,17 +419,17 @@ pub struct ViewModel {
     /// `All` when no review is open.
     #[serde(default)]
     pub scope: DiffScope,
-    /// The Browse tab's picked ref (UI-DESIGN §Browse); `None` browses the
-    /// review's head trees.
+    /// Browse repository choice, committed revision, and any pending/failed
+    /// candidate. Absent only when no review is open.
     #[serde(default)]
-    pub browse_ref: Option<nits_protocol::RefSpec>,
+    pub browse: Option<crate::BrowseView>,
     /// The content-search palette while open (UI-DESIGN §Search).
     #[serde(default)]
     pub content_search: Option<ContentSearchView>,
     /// The actions palette (`:`) while open; its entries are `chrome`.
     #[serde(default)]
     pub action_palette: bool,
-    /// Base/head selector while open.
+    /// Review-target or read-only Browse revision selector while open.
     #[serde(default)]
     pub ref_selector: Option<RefSelectorView>,
     /// Rows of the open file selected in Visual mode (`V`), when it is on.

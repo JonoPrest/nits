@@ -596,6 +596,10 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 | Command::TabFiles
                 | Command::TabConversation
                 | Command::TabBrowse
+                | Command::BrowseRevision
+                | Command::ResetBrowse
+                | Command::NextBrowseRepo
+                | Command::PrevBrowseRepo
                 | Command::CopyPath
                 | Command::CopyCheckout
                 | Command::NewReview
@@ -1154,6 +1158,41 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             tab: Tab::Conversation,
         }),
         Command::TabBrowse => Ok(Action::SetTab { tab: Tab::Browse }),
+        Command::BrowseRevision
+        | Command::ResetBrowse
+        | Command::NextBrowseRepo
+        | Command::PrevBrowseRepo => {
+            if view.tab != Tab::Browse || view.draft.is_some() {
+                return Err(nothing());
+            }
+            let browse = view.browse.as_ref().ok_or(nothing())?;
+            if command == Command::BrowseRevision {
+                Ok(Action::OpenBrowseRefSelector {
+                    repo_id: browse.repo_id,
+                })
+            } else if command == Command::ResetBrowse {
+                Ok(Action::ResetBrowse)
+            } else {
+                let targets = &view
+                    .review
+                    .as_ref()
+                    .ok_or(nothing())?
+                    .snapshot
+                    .review
+                    .targets;
+                let current = targets
+                    .iter()
+                    .position(|target| target.repo_id == browse.repo_id)
+                    .ok_or(nothing())?;
+                let index = if command == Command::NextBrowseRepo {
+                    (current + 1) % targets.len()
+                } else {
+                    (current + targets.len() - 1) % targets.len()
+                };
+                let repo_id = targets.iter().nth(index).ok_or(nothing())?.repo_id;
+                Ok(Action::SelectBrowseRepo { repo_id })
+            }
+        }
         Command::ToggleSidebar => Ok(Action::ToggleSidebar),
         Command::CopyReference => {
             let reference = view.copy_reference.clone().ok_or(nothing())?;

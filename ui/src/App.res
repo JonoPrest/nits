@@ -565,11 +565,20 @@ module Shell = {
                   </>
                 | Browse =>
                   <>
-                    <BrowseBar
-                      browseRef=model.browseRef
-                      repoId={model.resolvedTargets->Array.get(0)->Option.map(t => t.repoId)}
-                      dispatch
-                    />
+                    {switch model.browse {
+                    | Some(browse) =>
+                      <BrowseBar
+                        browse
+                        targets={model.openReview
+                        ->Option.flatMap(id => model.reviews->Array.find(review => review.id == id))
+                        ->Option.mapOr([], review => review.targets)}
+                        repositories
+                        chrome=model.chrome
+                        disabled={model.draft != None}
+                        dispatch
+                      />
+                    | None => React.null
+                    }}
                     {switch model.tree.search {
                     | Some(search) => <SearchBox search repositories dispatch />
                     | None => React.null

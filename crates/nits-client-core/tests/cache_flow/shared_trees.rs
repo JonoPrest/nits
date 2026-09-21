@@ -3,7 +3,7 @@ use super::*;
 use nits_client_core::{SearchKind, Tab, TreeNode};
 use nits_protocol::{Anchor, Mutation};
 
-fn repos() -> [RepoId; 2] {
+pub(super) fn repos() -> [RepoId; 2] {
     [repo_id(), RepoId::from_parts(2, 3)]
 }
 
@@ -33,7 +33,7 @@ fn shared_snapshot(base: u8, head: u8) -> ReviewSnapshot {
     snapshot
 }
 
-fn scoped_tree(repo_id: RepoId, root: u8, files: &[&str]) -> TreeSnapshot {
+pub(super) fn scoped_tree(repo_id: RepoId, root: u8, files: &[&str]) -> TreeSnapshot {
     TreeSnapshot {
         repo_id,
         ..tree(root, files)
@@ -49,7 +49,7 @@ fn scoped_key(repo_id: RepoId, root: u8) -> CacheKey {
     }
 }
 
-fn open_shared(core: &mut ClientCore, order: [RepoId; 2], changed: bool) {
+pub(super) fn open_shared(core: &mut ClientCore, order: [RepoId; 2], changed: bool) {
     let effects = core
         .handle(Input::User(Action::OpenReview {
             review_id: review_id(),

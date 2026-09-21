@@ -845,6 +845,26 @@ expression: core.view()
       "label": "browse"
     },
     {
+      "keys": "g b",
+      "command": "BrowseRevision",
+      "label": "browse revision"
+    },
+    {
+      "keys": "g B",
+      "command": "ResetBrowse",
+      "label": "return to review heads"
+    },
+    {
+      "keys": "] r",
+      "command": "NextBrowseRepo",
+      "label": "next Browse repository"
+    },
+    {
+      "keys": "[ r",
+      "command": "PrevBrowseRepo",
+      "label": "previous Browse repository"
+    },
+    {
       "keys": "s",
       "command": "ToggleLayout",
       "label": "split/unified"
@@ -1227,6 +1247,26 @@ expression: core.view()
       "label": "browse"
     },
     {
+      "keys": "g b",
+      "command": "BrowseRevision",
+      "label": "browse revision"
+    },
+    {
+      "keys": "g B",
+      "command": "ResetBrowse",
+      "label": "return to review heads"
+    },
+    {
+      "keys": "] r",
+      "command": "NextBrowseRepo",
+      "label": "next Browse repository"
+    },
+    {
+      "keys": "[ r",
+      "command": "PrevBrowseRepo",
+      "label": "previous Browse repository"
+    },
+    {
       "keys": "s",
       "command": "ToggleLayout",
       "label": "split/unified"
@@ -1557,6 +1597,34 @@ expression: core.view()
             "overridden": false
           },
           {
+            "keys": "g b",
+            "command": "BrowseRevision",
+            "label": "browse revision",
+            "primary": false,
+            "overridden": false
+          },
+          {
+            "keys": "g B",
+            "command": "ResetBrowse",
+            "label": "return to review heads",
+            "primary": false,
+            "overridden": false
+          },
+          {
+            "keys": "] r",
+            "command": "NextBrowseRepo",
+            "label": "next Browse repository",
+            "primary": false,
+            "overridden": false
+          },
+          {
+            "keys": "[ r",
+            "command": "PrevBrowseRepo",
+            "label": "previous Browse repository",
+            "primary": false,
+            "overridden": false
+          },
+          {
             "keys": "s",
             "command": "ToggleLayout",
             "label": "split/unified",
@@ -1783,7 +1851,11 @@ expression: core.view()
   "scope": {
     "type": "All"
   },
-  "browse_ref": null,
+  "browse": {
+    "repo_id": "00000000020000000000000002",
+    "selection": null,
+    "attempt": null
+  },
   "content_search": null,
   "action_palette": false,
   "ref_selector": null,

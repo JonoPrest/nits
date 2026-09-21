@@ -153,6 +153,11 @@ registry!(
     ScrollAlign,
     Landing,
     ContentSearchView,
+    BrowseTarget,
+    BrowseStatus,
+    BrowseAttemptView,
+    BrowseView,
+    RefSelectorPurpose,
     RefSelectorSide,
     RefSelectorStatus,
     RefOption,
@@ -380,6 +385,53 @@ struct_fixture!(
         selected: 0,
     }
 );
+struct_fixture!(
+    BrowseTarget,
+    "BrowseTarget",
+    BrowseTarget {
+        repo_id: repo_id()?,
+        ref_spec: RefSpec::Head
+    }
+);
+enum_fixture!(
+    BrowseStatus,
+    BrowseStatusKind,
+    "BrowseStatus",
+    [
+        BrowseStatus::Loading,
+        BrowseStatus::Failed {
+            message: "unknown revision".into()
+        }
+    ]
+);
+struct_fixture!(
+    BrowseAttemptView,
+    "BrowseAttemptView",
+    BrowseAttemptView {
+        target: local::<BrowseTarget>()?,
+        status: BrowseStatus::Loading
+    }
+);
+struct_fixture!(
+    BrowseView,
+    "BrowseView",
+    BrowseView {
+        repo_id: repo_id()?,
+        selection: Some(local::<BrowseTarget>()?),
+        attempt: Some(local::<BrowseAttemptView>()?)
+    }
+);
+enum_fixture!(
+    RefSelectorPurpose,
+    RefSelectorPurposeKind,
+    "RefSelectorPurpose",
+    [
+        RefSelectorPurpose::Review {
+            side: RefSelectorSide::Head
+        },
+        RefSelectorPurpose::Browse
+    ]
+);
 unit_enum_fixture!(RefSelectorSide, "RefSelectorSide");
 enum_fixture!(
     RefSelectorStatus,
@@ -412,9 +464,12 @@ struct_fixture!(
     RefSelectorView,
     "RefSelectorView",
     RefSelectorView {
+        request_id: RequestId::new(42),
         repo_id: repo_id()?,
         repo_name: "nits".into(),
-        side: RefSelectorSide::Head,
+        purpose: RefSelectorPurpose::Review {
+            side: RefSelectorSide::Head
+        },
         current: RefSpec::Branch {
             name: "main".into()
         },
@@ -918,6 +973,13 @@ enum_fixture!(
             gap: Gap::new(1),
             dir: ExpandDir::Up
         },
+        Action::SelectBrowseRepo {
+            repo_id: repo_id()?
+        },
+        Action::OpenBrowseRefSelector {
+            repo_id: repo_id()?
+        },
+        Action::ResetBrowse,
         Action::SetBrowseRef {
             repo_id: repo_id()?,
             ref_spec: Some(RefSpec::Branch {
@@ -1036,9 +1098,7 @@ enum_fixture!(
             open_review: Some(proto::<Review>()?.id),
             resolved_targets: vec![proto::<ResolvedTarget>()?],
             scope: DiffScope::All,
-            browse_ref: Some(RefSpec::Branch {
-                name: "main".into()
-            }),
+            browse: Some(local::<BrowseView>()?),
         },
         ViewPatch::Search {
             content_search: Some(local::<ContentSearchView>()?),
@@ -1174,7 +1234,7 @@ struct_fixture!(
         open_review: Some(proto::<Review>()?.id),
         resolved_targets: vec![proto::<ResolvedTarget>()?],
         scope: DiffScope::All,
-        browse_ref: None,
+        browse: Some(local::<BrowseView>()?),
         content_search: Some(local::<ContentSearchView>()?),
         action_palette: false,
         ref_selector: Some(local::<RefSelectorView>()?),

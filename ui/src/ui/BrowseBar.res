@@ -1,47 +1,65 @@
-// The Browse tab's ref picker (UI-DESIGN §Browse): `viewing: <ref>`
-// accepts any RefSpecText form; empty (or reset) returns to the review's
-// head trees.
-
+// The candidate repository is explicit; the visible revision changes only
+// after the core successfully resolves it.
 @react.component
 let make = (
-  ~browseRef: option<Domain.RefSpec.t>,
-  ~repoId: option<Ids.repoId>,
+  ~browse: View.BrowseView.t,
+  ~targets: array<Domain.ReviewTarget.t>,
+  ~repositories: RepositoryIdentity.context,
+  ~chrome: array<View.Hint.t>,
+  ~disabled=false,
   ~dispatch: Action.t => unit,
 ) => {
-  let (text, setText) = React.useState(() => "")
-  let (bad, setBad) = React.useState(() => false)
-  let view = () =>
-    switch (repoId, RefSpecText.parse(String.trim(text))) {
-    | (Some(repoId), Some(spec)) => {
-        setBad(_ => false)
-        dispatch(SetBrowseRef({repoId, refSpec: Some(spec)}))
-      }
-    | (_, None) | (None, _) => setBad(_ => true)
-    }
+  let label = (target: View.BrowseTarget.t) =>
+    RepositoryIdentity.title(repositories, target.repoId) ++
+    " · " ++
+    RefSpecText.print(target.refSpec)
+  let visible = switch browse.selection {
+  | Some(target) => label(target)
+  | None =>
+    targets
+    ->Array.map(target =>
+      RepositoryIdentity.title(repositories, target.repoId) ++
+      " · " ++
+      RefSpecText.print(target.head)
+    )
+    ->Array.join(", ")
+  }
   <div className="browse-bar">
-    <span className="browse-viewing">
-      {React.string("viewing: ")}
-      <span className="review-header-ref">
-        {React.string(browseRef->Option.mapOr("review head", RefSpecText.print))}
-      </span>
-    </span>
-    <UI.TextInput
-      value=text
-      placeholder="branch, tag:v1, commit:<oid>, worktree…"
-      onChange={v => setText(_ => v)}
-      onKey={k =>
-        if k == "Enter" {
-          view()
-        }}
-    />
-    <UI.Button label="view" onClick=view />
-    {switch (browseRef, repoId) {
-    | (Some(_), Some(repoId)) =>
-      <UI.Button
-        label="head" kind=Ghost onClick={() => dispatch(SetBrowseRef({repoId, refSpec: None}))}
+    <span className="browse-viewing"> {React.string("Viewing: " ++ visible)} </span>
+    <label title=?{Chrome.tip(chrome, NextBrowseRepo)}>
+      <span> {React.string("Repository ")} </span>
+      <UI.Select
+        value=browse.repoId
+        options={targets->Array.map(target => (
+          target.repoId,
+          RepositoryIdentity.description(repositories, target.repoId),
+        ))}
+        ariaLabel="Browse repository"
+        disabled
+        onChange={repoId => dispatch(SelectBrowseRepo({repoId: repoId}))}
       />
-    | (Some(_), None) | (None, _) => React.null
+    </label>
+    <UI.Button
+      label="Choose revision…"
+      title=?{Chrome.tip(chrome, BrowseRevision)}
+      disabled
+      onClick={() => dispatch(RunCommand({command: BrowseRevision}))}
+    />
+    <UI.Button
+      label="Review heads"
+      kind=Ghost
+      title=?{Chrome.tip(chrome, ResetBrowse)}
+      disabled
+      onClick={() => dispatch(ResetBrowse({}))}
+    />
+    {switch browse.attempt {
+    | None => React.null
+    | Some({target, status: Loading(_)}) =>
+      <span role="status"> {React.string("Loading " ++ label(target) ++ "…")} </span>
+    | Some({target, status: Failed({message})}) =>
+      <span className="browse-bad" role="alert">
+        {React.string("Could not open " ++ label(target) ++ ": " ++ message)}
+      </span>
     }}
-    {bad ? <span className="browse-bad"> {React.string("unrecognised ref")} </span> : React.null}
   </div>
 }
