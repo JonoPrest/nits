@@ -102,6 +102,16 @@ pub struct ReviewCreation {
     pub status: CreationStatus,
 }
 
+impl crate::ViewModel {
+    /// Only the visible home form owns creation commands. A retained draft must
+    /// not capture the composer of an open review, or keys after success.
+    pub(crate) fn active_creation(&self) -> Option<&ReviewCreation> {
+        self.home.creating.as_ref().filter(|creation| {
+            self.open_review.is_none() && creation.status != CreationStatus::Succeeded
+        })
+    }
+}
+
 impl ReviewCreation {
     #[must_use]
     pub fn editable(&self) -> bool {
@@ -192,10 +202,10 @@ impl ClientCore {
     ) -> Result<Vec<Effect>, CoreError> {
         if let Some(current) = &self.view.home.creating {
             if !current.editable() && current.status != CreationStatus::Succeeded {
-                return Ok(Vec::new());
+                return Ok(self.show_creation());
             }
             if current.workspace_id == workspace_id && current.status != CreationStatus::Succeeded {
-                return Ok(vec![changed()]);
+                return Ok(self.show_creation());
             }
         }
         let workspace = self
@@ -228,10 +238,25 @@ impl ClientCore {
             selected: None,
             status: CreationStatus::Editing,
         });
-        self.view.focus = crate::Focus::Composer;
         let mut effects = self.creation_defaults();
-        effects.push(changed());
+        effects.extend(self.show_creation());
         Ok(effects)
+    }
+
+    fn show_creation(&mut self) -> Vec<Effect> {
+        self.pending_reference = None;
+        self.latest_open = None;
+        let mut effects = Vec::new();
+        if self.view.review.is_some() {
+            self.close_review(&mut effects);
+        }
+        self.view.focus = crate::Focus::Composer;
+        effects.push(crate::render(&[
+            ViewSection::ReviewList,
+            ViewSection::Focus,
+            ViewSection::Draft,
+        ]));
+        effects
     }
 
     pub(crate) fn creation_defaults(&mut self) -> Vec<Effect> {
@@ -375,12 +400,12 @@ impl ClientCore {
         let Some(creation) = &mut self.view.home.creating else {
             return Vec::new();
         };
-        if creation.review_id != review_id
-            || !creation.editable()
-            || creation.context != self.view.daemon_context
-        {
+        if creation.review_id != review_id || creation.context != self.view.daemon_context {
             return Vec::new();
         }
+        // Cache replies even during a manual submission: a rejected attempt
+        // can return to automatic defaults without issuing a stale second read.
+        // The frozen submission never reads this cache again.
         let Some(default) = creation.defaults.iter_mut().find(|d| d.repo_id == repo_id) else {
             return Vec::new();
         };

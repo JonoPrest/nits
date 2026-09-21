@@ -245,13 +245,7 @@ pub fn clamp(view: &ViewModel, focus: Focus) -> Focus {
     };
     match focus {
         Focus::Composer => {
-            if view.draft.is_some()
-                || view
-                    .home
-                    .creating
-                    .as_ref()
-                    .is_some_and(|c| c.status != crate::CreationStatus::Succeeded)
-            {
+            if view.draft.is_some() || view.active_creation().is_some() {
                 focus
             } else {
                 fallback
@@ -896,7 +890,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             Focus::Composer | Focus::Help => Err(nothing()),
         },
         Command::Back => {
-            if view.home.creating.is_some() {
+            if view.active_creation().is_some() {
                 return Ok(Action::CancelNewReview);
             }
             if in_visual {
@@ -1279,9 +1273,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
         // The composer lives in the host, which handles the submit chord
         // itself; the binding exists for hints and tooltips only.
         Command::Submit => view
-            .home
-            .creating
-            .as_ref()
+            .active_creation()
             .map(|creation| match creation.status {
                 crate::CreationStatus::Interrupted { .. } => Action::RetryReviewCreation {
                     review_id: creation.review_id,
@@ -1296,25 +1288,19 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             })
             .ok_or_else(nothing),
         Command::AddReviewTarget => view
-            .home
-            .creating
-            .as_ref()
+            .active_creation()
             .map(|creation| Action::AddCreationTarget {
                 review_id: creation.review_id,
             })
             .ok_or_else(nothing),
         Command::RemoveReviewTarget => view
-            .home
-            .creating
-            .as_ref()
+            .active_creation()
             .map(|creation| Action::RemoveCreationTarget {
                 review_id: creation.review_id,
             })
             .ok_or_else(nothing),
         Command::ReconnectReviewCreation => view
-            .home
-            .creating
-            .as_ref()
+            .active_creation()
             .map(|_| Action::Connect)
             .ok_or_else(nothing),
         Command::Connect => Ok(Action::Connect),

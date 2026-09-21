@@ -890,11 +890,11 @@ impl ClientCore {
         let mut effects = match input {
             Input::User(action) => self.user(action)?,
             Input::InvalidAction { reason } => {
-                if let Some(creation) = &self.view.home.creating {
-                    self.creation_failure(creation.review_id, reason)
-                } else if let Some(draft) = &mut self.view.draft {
+                if let Some(draft) = &mut self.view.draft {
                     draft.submission_error = Some(reason);
                     vec![render(&[ViewSection::Draft])]
+                } else if let Some(creation) = self.view.active_creation() {
+                    self.creation_failure(creation.review_id, reason)
                 } else {
                     Vec::new()
                 }

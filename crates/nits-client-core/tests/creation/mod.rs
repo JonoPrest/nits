@@ -419,3 +419,117 @@ fn form_commands_use_the_keymap_and_disconnected_submit_is_visible() {
     home_key(&mut core, "esc");
     assert!(core.view().home.creating.is_none());
 }
+
+#[test]
+fn default_reply_during_pending_manual_submission_remains_available_after_rejection() {
+    let (mut core, id, default_request) = begin();
+    edit(&mut core, |draft| {
+        draft.title = "retained manual attempt".into();
+        draft.targets[0].base = CreationBase::Manual {
+            text: "missing-ref".into(),
+        };
+    });
+    let (write_request, attempted) = submit(&mut core, id);
+    answer(
+        &mut core,
+        default_request,
+        Response::DefaultBase {
+            base: RefSpec::Branch {
+                name: "develop".into(),
+            },
+        },
+    );
+    assert!(matches!(
+        &creation(&core).status,
+        CreationStatus::Pending { submission } if submission.targets == attempted.targets
+    ));
+    let effects = error(
+        &mut core,
+        write_request,
+        RpcError::Internal {
+            message: "missing revision".into(),
+        },
+    );
+    let (lookup, request) = sent_request(&effects).unwrap();
+    assert_eq!(request, Request::GetReview { review_id: id });
+    error(&mut core, lookup, missing(id));
+    assert!(matches!(
+        creation(&core).status,
+        CreationStatus::Failed { .. }
+    ));
+    // Selecting this repository again uses its cached automatic default. The
+    // reply must not have been discarded while the manual write was pending.
+    edit(&mut core, |draft| {
+        draft.targets[0].base = CreationBase::Automatic;
+    });
+    let (_, retried) = submit(&mut core, id);
+    assert_eq!(
+        retried.targets.first().base,
+        RefSpec::Branch {
+            name: "develop".into()
+        }
+    );
+}
+
+#[test]
+fn retained_or_completed_creation_does_not_capture_review_composer_actions() {
+    for completed in [false, true] {
+        let (mut core, id) = ready();
+        if completed {
+            let (request, created) = submit(&mut core, id);
+            answer(
+                &mut core,
+                request,
+                Response::Committed {
+                    event: event(1, EventBody::ReviewCreated { review: created }),
+                },
+            );
+        }
+        let retained = creation(&core).clone();
+        open(&mut core, ReviewId::from_parts(40, 1));
+        core.handle(Input::User(Action::DraftOpened {
+            anchor: Anchor::Review,
+        }))
+        .unwrap();
+        core.handle(Input::InvalidAction {
+            reason: "Correct this comment".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            core.view()
+                .draft
+                .as_ref()
+                .unwrap()
+                .submission_error
+                .as_deref(),
+            Some("Correct this comment")
+        );
+        core.handle(Input::User(Action::RunCommand {
+            command: nits_client_core::Command::Back,
+        }))
+        .unwrap();
+        assert_eq!(
+            core.view().draft,
+            None,
+            "Escape dismisses the visible comment composer"
+        );
+        assert_eq!(
+            creation(&core),
+            &retained,
+            "the hidden creation remains unchanged"
+        );
+        core.handle(Input::User(Action::StartReview {
+            workspace_id: workspace(1).id,
+        }))
+        .unwrap();
+        assert_eq!(
+            core.view().open_review,
+            None,
+            "New review brings its form into view"
+        );
+        assert_eq!(core.view().focus, nits_client_core::Focus::Composer);
+        if !completed {
+            assert_eq!(creation(&core), &retained);
+        }
+    }
+}
