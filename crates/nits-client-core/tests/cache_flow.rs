@@ -499,6 +499,7 @@ fn daemon_answers(core: &mut ClientCore, effects: &[Effect]) -> Vec<Effect> {
             | Request::ListCommits { .. }
             | Request::BlobRender { .. }
             | Request::Subscribe { .. }
+            | Request::ReplayEvents { .. }
             | Request::Unsubscribe { .. }
             | Request::Mutate { .. }
             | Request::Shutdown => None,
@@ -671,6 +672,7 @@ fn viewport_requests_only_the_window_and_bounds_in_flight() {
             | Request::ListCommits { .. }
             | Request::BlobRender { .. }
             | Request::Subscribe { .. }
+            | Request::ReplayEvents { .. }
             | Request::Unsubscribe { .. }
             | Request::Mutate { .. }
             | Request::Shutdown => None,
@@ -1162,6 +1164,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
                 | Request::ResolveTargets { .. }
                 | Request::BlobRender { .. }
                 | Request::Subscribe { .. }
+                | Request::ReplayEvents { .. }
                 | Request::Unsubscribe { .. }
                 | Request::Mutate { .. }
                 | Request::Shutdown => panic!("unexpected {r:?}"),
@@ -1283,6 +1286,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
             | Request::ListCommits { .. }
             | Request::BlobRender { .. }
             | Request::Subscribe { .. }
+            | Request::ReplayEvents { .. }
             | Request::Unsubscribe { .. }
             | Request::Mutate { .. }
             | Request::Shutdown => panic!("unexpected {r:?}"),
@@ -1829,6 +1833,7 @@ fn comments_are_placed_on_rows_by_anchor_and_listed_as_threads() {
             | Request::ListCommits { .. }
             | Request::BlobRender { .. }
             | Request::Subscribe { .. }
+            | Request::ReplayEvents { .. }
             | Request::Unsubscribe { .. }
             | Request::Mutate { .. }
             | Request::Shutdown => None,
