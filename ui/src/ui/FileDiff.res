@@ -125,7 +125,7 @@ let make = (
             ? <button
                 type_="button"
                 className="btn btn-ghost"
-                title=?{Chrome.tip(chrome, Comment)}
+                title=?{Chrome.tip(chrome, CommentOnFile)}
                 ariaLabel={"Comment on " ++ RepositoryIdentity.fileText(repositories, diff.file)}
                 onClick={_ => dispatch(CommentFile({file: diff.file}))}
               >
@@ -137,7 +137,7 @@ let make = (
             <UI.Button
               label="expand file"
               kind=Ghost
-              title=?{Chrome.tip(chrome, ExpandContext)}
+              title=?{Chrome.tip(chrome, ExpandFile)}
               ariaLabel={"Expand context for " ++
               RepositoryIdentity.fileText(repositories, diff.file)}
               onClick={() => dispatch(ExpandContext({file: diff.file, full: true}))}

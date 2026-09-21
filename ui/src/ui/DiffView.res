@@ -134,7 +134,7 @@ let make = (
         <UI.Button
           label="expand file"
           kind=Ghost
-          title=?{Chrome.tip(chrome, ExpandContext)}
+          title=?{Chrome.tip(chrome, ExpandFile)}
           ariaLabel={"Expand context for " ++ title}
           onClick={() => dispatch(ExpandContext({file: diff.file, full: true}))}
         />

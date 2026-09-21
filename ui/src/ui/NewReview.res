@@ -1,5 +1,14 @@
 // Editable text stays responsive locally; the core owns defaults, validation,
 // pending writes, errors and reconciliation. Echoes never overwrite later edits.
+@val @scope("document") external activeElement: Nullable.t<Dom.element> = "activeElement"
+let restoreFocus: Dom.element => unit = %raw(`element => {
+  // Disabling the submitted input moves native focus to body. A user who
+  // deliberately focused another control while waiting keeps that choice.
+  if (document.activeElement === document.body && element.isConnected && !element.disabled) {
+    element.focus({preventScroll: true});
+  }
+}`)
+
 @react.component
 let make = (
   ~creation: View.ReviewCreation.t,
@@ -12,6 +21,7 @@ let make = (
   let local = React.useRef(CreationRecovery.make())
   let (draft, setDraft) = React.useState(() => creation.draft)
   let (submitted, setSubmitted) = React.useState(() => false)
+  let returnFocus = React.useRef(Nullable.null)
   let pendingKeys = React.useRef(KeySequence.make())
   React.useEffect1(() => {
     CreationRecovery.observe(local.current, Some(creation))
@@ -34,6 +44,13 @@ let make = (
     None
   }, [creation])
   let editable = View.ReviewCreation.editable(creation) && !submitted
+  React.useEffect1(() => {
+    if editable {
+      returnFocus.current->Nullable.toOption->Option.forEach(restoreFocus)
+      returnFocus.current = Nullable.null
+    }
+    None
+  }, [editable])
   let workspace = workspaces->Array.find(w => w.id == creation.workspaceId)
   let available =
     workspace
@@ -72,6 +89,7 @@ let make = (
   let run = (command: View.Command.t) => {
     if command != Submit || (!submitted && (editable || retry) && !waitingDefaults) {
       if command == Submit {
+        returnFocus.current = activeElement
         setSubmitted(_ => true)
       }
       send(Action.RunCommand({command: command}))

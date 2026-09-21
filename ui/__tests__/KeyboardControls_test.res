@@ -194,3 +194,38 @@ test("tree rows retain repository/path identity when a preceding directory expan
     ),
   )->toBe(false)
 })
+
+test("file header controls advertise the precise full-file commands after rebinding", () => {
+  let diff = Fixtures.parse(View.DiffView.schema, "client", "DiffView", "default")
+  let chrome: array<View.Hint.t> = [
+    {keys: "c", command: Comment, label: "line comment"},
+    {keys: "alt+f", command: CommentOnFile, label: "file comment"},
+    {keys: "x", command: ExpandContext, label: "more context"},
+    {keys: "alt+x", command: ExpandFile, label: "whole file"},
+  ]
+  let dispatch = fn()
+  let {container} = render(
+    <FileDiff
+      diff
+      chrome
+      layout=Unified
+      focus={Diff({row: 0, side: Head})}
+      threads=[]
+      draft=None
+      pendingRefresh=false
+      isOpen=true
+      dispatch
+    />,
+  )
+  let comment = select(container, "[title='file comment (alt+f)']")
+  FireEvent.click(comment)
+  expect(dispatch)->toHaveBeenLastCalledWith(Action.CommentFile({file: diff.file}))
+  FireEvent.click(select(container, "[title='whole file (alt+x)']"))
+  expect(dispatch)->toHaveBeenLastCalledWith(Action.ExpandContext({file: diff.file, full: true}))
+  cleanup()
+  let {container} = render(
+    <DiffView diff chrome layout=Unified focus={Diff({row: 0, side: Head})} dispatch />,
+  )
+  FireEvent.click(select(container, "[title='whole file (alt+x)']"))
+  expect(dispatch)->toHaveBeenLastCalledWith(Action.ExpandContext({file: diff.file, full: true}))
+})

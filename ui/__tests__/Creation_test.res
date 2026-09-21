@@ -438,3 +438,36 @@ test("one repo is exhausted immediately and restored duplicates remain correctab
     }),
   )
 })
+
+@send external blur: element => unit = "blur"
+
+[false, true]->Array.forEach(movedElsewhere => {
+  test(
+    "failed submission restores its editor only when native focus was lost: " ++
+    Bool.toString(movedElsewhere),
+    () => {
+      let dispatch = fn()
+      let creation = CreationFixtures.make()
+      let element = creation =>
+        <div>
+          {view(creation, dispatch)}
+          <button> {React.string("elsewhere")} </button>
+        </div>
+      let {rerender} = render(element(creation))
+      let input = Screen.getByLabelText("Base revision")
+      Element.focus(input)
+      FireEvent.keyDown(input, {"key": "u", "ctrlKey": true})
+      expect(Element.hasAttribute(input, "disabled"))->toBe(true)
+      // jsdom does not implement the browser's blur-on-disable behavior.
+      blur(input)
+      let other = Screen.getByText("elsewhere")
+      if movedElsewhere {
+        Element.focus(other)
+      }
+      let acknowledged = {...lastCreation(dispatch), status: Failed({message: "invalid ref"})}
+      rerender(element(acknowledged))
+      expect(Document.activeElement)->toEqual(Nullable.make(movedElsewhere ? other : input))
+      expect(Element.value(input))->toBe("develop")
+    },
+  )
+})
