@@ -88,7 +88,12 @@ fn open_shared(core: &mut ClientCore, order: [RepoId; 2], changed: bool) {
                     header: FileRenderHeader {
                         repo_id,
                         target: RenderTarget::Diff {
-                            change: ChangeKind::Added { new: nits_protocol::BlobEntry { oid: blob_oid(1), mode: nits_protocol::BlobMode::Regular } },
+                            change: ChangeKind::Added {
+                                new: nits_protocol::BlobEntry {
+                                    oid: blob_oid(1),
+                                    mode: nits_protocol::BlobMode::Regular,
+                                },
+                            },
                         },
                         content: RenderContent::Binary,
                         ..header("same.txt", 1, 1)
@@ -115,7 +120,13 @@ fn finish_blob_requests(core: &mut ClientCore, effects: &[Effect]) {
         } = request
         {
             assert_eq!(file_path, path("same.txt"));
-            assert_eq!(entry, nits_protocol::BlobEntry { oid: blob_oid(1), mode: nits_protocol::BlobMode::Regular });
+            assert_eq!(
+                entry,
+                nits_protocol::BlobEntry {
+                    oid: blob_oid(1),
+                    mode: nits_protocol::BlobMode::Regular
+                }
+            );
             assert_eq!(first_chunk, ChunkIndex::FIRST);
             item(
                 core,
