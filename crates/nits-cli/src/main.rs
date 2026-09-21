@@ -218,13 +218,9 @@ enum ContextCmd {
     Use {
         name: ContextName,
     },
-    /// A daemon on this machine.
+    /// A daemon on this machine. Save its endpoint with --data-dir / --socket.
     AddLocal {
         name: ContextName,
-        #[arg(long)]
-        data_dir: Option<PathBuf>,
-        #[arg(long)]
-        socket: Option<PathBuf>,
     },
     /// A daemon on another machine via `ssh HOST nits daemon stdio`.
     AddSsh {
@@ -364,7 +360,9 @@ enum ReviewCmd {
     /// Capture the current resolved revisions and request a review.
     Request {
         review: ReviewId,
-        agent: String,
+        /// Agent to invite; independent of the global --agent requester identity.
+        #[arg(value_name = "AGENT")]
+        recipient: String,
         #[arg(long, default_value = "")]
         note: String,
     },
@@ -1611,13 +1609,13 @@ async fn review(
         }
         ReviewCmd::Request {
             review,
-            agent,
+            recipient,
             note,
         } => {
             let event = ops
                 .mutate(Mutation::RequestReview {
                     review_id: review,
-                    agent,
+                    agent: recipient,
                     note,
                 })
                 .await?;
@@ -2116,11 +2114,16 @@ fn context_cmd(
                 )
             })
         }
-        ContextCmd::AddLocal {
-            name,
-            data_dir,
-            socket,
-        } => add(cfg, path, &name, &Context::Local { data_dir, socket }, json),
+        ContextCmd::AddLocal { name } => add(
+            cfg,
+            path,
+            &name,
+            &Context::Local {
+                data_dir: cli.data_dir.clone(),
+                socket: cli.socket.clone(),
+            },
+            json,
+        ),
         ContextCmd::AddSsh {
             name,
             host,
@@ -2464,6 +2467,46 @@ mod tests {
     #[test]
     fn the_command_definition_is_valid() {
         <Cli as clap::CommandFactory>::command().debug_assert();
+    }
+
+    /// Before clap propagates globals, every descendant declaration must have
+    /// its own ID: a collision can silently replace the invoking principal.
+    #[test]
+    fn local_arguments_never_shadow_ancestor_globals() {
+        fn inspect(command: &clap::Command, ancestors: &[clap::Id], path: &str) {
+            let path = format!("{path} {}", command.get_name());
+            let mut globals = ancestors.to_vec();
+            for argument in command.get_arguments() {
+                assert!(
+                    !ancestors.contains(argument.get_id()),
+                    "{path}: local argument {} shadows an ancestor global",
+                    argument.get_id()
+                );
+                if argument.is_global_set() {
+                    globals.push(argument.get_id().clone());
+                }
+            }
+            for child in command.get_subcommands() {
+                inspect(child, &globals, &path);
+            }
+        }
+        inspect(&<Cli as clap::CommandFactory>::command(), &[], "");
+    }
+
+    #[test]
+    fn requester_identity_does_not_supply_the_required_recipient() {
+        let review = ReviewId::from_parts(1, 1).to_string();
+        let error = Cli::try_parse_from([
+            "nits",
+            "--agent",
+            "requester",
+            "review",
+            "request",
+            &review,
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert!(error.to_string().contains("<AGENT>"));
     }
 
     #[test]

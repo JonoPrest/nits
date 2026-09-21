@@ -2328,3 +2328,5 @@ fn event_scopes_keep_review_workspace_recipient_and_all_filters() {
 mod duplicates;
 
 mod maintenance;
+
+mod attribution;
