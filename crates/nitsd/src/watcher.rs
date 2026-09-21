@@ -151,10 +151,7 @@ fn watch_one(
     let callback_paths = paths.clone();
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(ev) = res else { return };
-        // Reads while resolving must not schedule another resolution.
-        if !matches!(ev.kind, notify::EventKind::Access(_))
-            && (ev.need_rescan() || ev.paths.iter().any(|p| callback_paths.relevant(p)))
-        {
+        if callback_paths.relevant_event(&ev) {
             let _ = tx.send(id);
         }
     })?;
@@ -247,6 +244,30 @@ impl WatchPaths {
             return false;
         }
         path.starts_with(&self.root)
+    }
+
+    fn relevant_event(&self, event: &notify::Event) -> bool {
+        // Reads while resolving must not schedule another resolution.
+        if matches!(event.kind, notify::EventKind::Access(_)) {
+            return false;
+        }
+        // `absorbgitdirs` replaces an old-form .git directory with a gitfile.
+        // Observe metadata-root lifecycle events without admitting directory
+        // content notifications caused by our own index/object writes.
+        let relocated = matches!(
+            event.kind,
+            notify::EventKind::Create(_)
+                | notify::EventKind::Remove(_)
+                | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+        );
+        event.need_rescan()
+            || event.paths.iter().any(|path| {
+                self.relevant(path)
+                    || (relocated
+                        && self
+                            .all_metadata()
+                            .any(|metadata| path == &metadata.worktree || path == &metadata.common))
+            })
     }
 }
 
@@ -361,6 +382,29 @@ mod tests {
         for checkout in [repo.path(), checkout.as_path()] {
             let paths = WatchPaths::discover(checkout).unwrap();
             for metadata in paths.all_metadata() {
+                for root in [&metadata.worktree, &metadata.common] {
+                    for kind in [
+                        notify::EventKind::Create(notify::event::CreateKind::Any),
+                        notify::EventKind::Remove(notify::event::RemoveKind::Any),
+                        notify::EventKind::Modify(notify::event::ModifyKind::Name(
+                            notify::event::RenameMode::Any,
+                        )),
+                    ] {
+                        assert!(
+                            paths.relevant_event(&notify::Event::new(kind).add_path(root.clone()))
+                        );
+                    }
+                    for kind in [
+                        notify::EventKind::Access(notify::event::AccessKind::Any),
+                        notify::EventKind::Modify(notify::event::ModifyKind::Data(
+                            notify::event::DataChange::Any,
+                        )),
+                    ] {
+                        assert!(
+                            !paths.relevant_event(&notify::Event::new(kind).add_path(root.clone()))
+                        );
+                    }
+                }
                 for path in ["HEAD", "index", "config.worktree"] {
                     assert!(paths.relevant(&metadata.worktree.join(path)), "{path}");
                 }
