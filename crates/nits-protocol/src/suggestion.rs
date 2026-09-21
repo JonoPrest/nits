@@ -7,7 +7,7 @@ use crate::{
     RepoId, RepoPath, ReviewId, Seq, Timestamp,
 };
 
-/// Captured from CommentCreated, independent of subsequent comment reanchoring.
+/// Captured from `CommentCreated`, independent of subsequent comment reanchoring.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]

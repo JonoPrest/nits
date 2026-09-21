@@ -355,7 +355,7 @@ impl Core {
 
     /// Apply a suggestion's patch to the working tree. The file must still
     /// be at the original blob. The immutable review/comment identity binds
-    /// both this check and PreviewSuggestion to the same anchor and patch.
+    /// both this check and `PreviewSuggestion` to the same anchor and patch.
     pub fn apply_suggestion(
         &self,
         ctx: &Ctx,

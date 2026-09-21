@@ -204,7 +204,7 @@ Goal: usable desktop app.
 - File explorer over any ref: instant expand/collapse from the snapshot, fuzzy file search, file-level comments.
 - Review conversation panel (review-level comments, agent request cards).
 - Commit stepper with commit panel: subject, full body, author and committer with relative + absolute times, parent links.
-- Suggestions with apply.
+- Per-comment suggestion previews from the strict patch parser, with original repo/path/blob, keyboard preview/apply, retained failures and durable applied receipts. Reconnect checks outcomes without replaying writes.
 - Tests: ReScript component tests for row rendering (each `Row` variant in both unified and split layout), placeholder → chunk swap, composer state; Playwright smoke against the Tauri dev build for the core flow, including opening a 10k-line file and scrolling end-to-end without a long task > 100 ms.
 
 ### 4.5 Keyboard UI
