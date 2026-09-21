@@ -304,6 +304,7 @@ impl Connection {
             }
             Request::Shutdown => {
                 tracing::info!(client = %self.negotiated.client_id, "shutdown requested");
+                self.daemon.set_phase(crate::ownership::Phase::Stopping);
                 let token = self.daemon.shutdown().clone();
                 // Let the reply reach the client before the accept loop
                 // drops every connection.

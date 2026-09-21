@@ -835,6 +835,8 @@ struct Row<'a> {
     target: &'a str,
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<nitsd::ownership::Phase>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     daemon: Option<&'a BuildInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a str>,
@@ -1952,6 +1954,21 @@ fn add(
     })
 }
 
+fn daemon_status_text(s: &Status) -> String {
+    match s {
+        Status::Running { daemon } => {
+            format!("running ({} {})", daemon.name, daemon.version)
+        }
+        Status::Stopped => "stopped".into(),
+        Status::Transitioning { phase } => match phase {
+            nitsd::ownership::Phase::Starting => "starting (store still owned)".into(),
+            nitsd::ownership::Phase::Serving => "unavailable (store still owned)".into(),
+            nitsd::ownership::Phase::Stopping => "stopping (store still owned)".into(),
+        },
+        Status::Unreachable { reason } => format!("unreachable: {reason}"),
+    }
+}
+
 async fn daemon_cmd(
     cfg: &nits_config::Config,
     name: &str,
@@ -1974,7 +1991,10 @@ async fn daemon_cmd(
             match nitsd::serve::stdio(opts, start == contexts::StartPolicy::StartIfNeeded).await? {
                 nitsd::serve::StdioOutcome::Proxied => Ok(()),
                 // Not an error: the caller asked whether one was running.
-                nitsd::serve::StdioOutcome::NotRunning => std::process::exit(3),
+                outcome @ (nitsd::serve::StdioOutcome::NotRunning
+                | nitsd::serve::StdioOutcome::Transitioning { .. }) => {
+                    std::process::exit(outcome.exit_code())
+                }
             }
         }
         DaemonCmd::Status { all } => {
@@ -2003,7 +2023,14 @@ async fn daemon_cmd(
                     status: match s {
                         Status::Running { .. } => "running",
                         Status::Stopped => "stopped",
+                        Status::Transitioning { .. } => "transitioning",
                         Status::Unreachable { .. } => "unreachable",
+                    },
+                    phase: match s {
+                        Status::Transitioning { phase } => Some(*phase),
+                        Status::Running { .. } | Status::Stopped | Status::Unreachable { .. } => {
+                            None
+                        }
                     },
                     daemon: match s {
                         Status::Running { daemon } => Some(daemon),
@@ -2018,13 +2045,7 @@ async fn daemon_cmd(
             emit(json, &json_rows, || {
                 rows.iter()
                     .map(|(n, t, s)| {
-                        let st = match s {
-                            Status::Running { daemon } => {
-                                format!("running ({} {})", daemon.name, daemon.version)
-                            }
-                            Status::Stopped => "stopped".into(),
-                            Status::Unreachable { reason } => format!("unreachable: {reason}"),
-                        };
+                        let st = daemon_status_text(s);
                         format!("{n}\t{t}\t{st}")
                     })
                     .collect::<Vec<_>>()

@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 use tokio::net::UnixStream;
 
+use crate::ownership::{self, Ownership, Phase};
+
 pub mod stdio;
 
 /// How long to wait for a freshly started daemon to listen.
@@ -115,6 +117,35 @@ pub async fn is_listening(socket: &Path) -> bool {
     UnixStream::connect(socket).await.is_ok()
 }
 
+/// A closed endpoint is not stopped while background Core users own its store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Availability {
+    Listening,
+    Transitioning { phase: Phase },
+    Stopped,
+}
+
+pub async fn availability(spec: &DaemonSpec) -> std::io::Result<Availability> {
+    let owner = ownership::probe(&spec.data_dir)?;
+    if matches!(
+        owner,
+        Ownership::Held {
+            phase: Phase::Stopping
+        }
+    ) {
+        return Ok(Availability::Transitioning {
+            phase: Phase::Stopping,
+        });
+    }
+    if is_listening(&spec.socket).await {
+        return Ok(Availability::Listening);
+    }
+    Ok(match owner {
+        Ownership::Free => Availability::Stopped,
+        Ownership::Held { phase } => Availability::Transitioning { phase },
+    })
+}
+
 /// Start a daemon detached from this process: no inherited stdio, and
 /// immune to the `SIGHUP` an ending ssh session sends (via `nohup` when
 /// available). Its log goes to `<data_dir>/nitsd.log`.
@@ -148,17 +179,22 @@ pub fn spawn_detached(spec: &DaemonSpec) -> std::io::Result<()> {
 /// Make sure a daemon answers on `spec.socket`, starting one if needed.
 /// Returns whether one was started.
 pub async fn ensure_daemon(spec: &DaemonSpec) -> std::io::Result<bool> {
-    if is_listening(&spec.socket).await {
-        return Ok(false);
-    }
-    spawn_detached(spec)?;
     let start = Instant::now();
-    while !is_listening(&spec.socket).await {
+    let mut spawned = false;
+    loop {
+        match availability(spec).await? {
+            Availability::Listening => return Ok(spawned),
+            Availability::Stopped if !spawned => {
+                spawn_detached(spec)?;
+                spawned = true;
+            }
+            Availability::Stopped | Availability::Transitioning { .. } => {}
+        }
         if start.elapsed() > START_TIMEOUT {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!(
-                    "daemon did not start listening on {} (see {})",
+                    "daemon did not become ready on {}; an existing owner may still be stopping (see {})",
                     spec.socket.display(),
                     spec.data_dir.join("nitsd.log").display()
                 ),
@@ -166,7 +202,6 @@ pub async fn ensure_daemon(spec: &DaemonSpec) -> std::io::Result<bool> {
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
-    Ok(true)
 }
 
 /// Pipe this process's stdin/stdout to the daemon socket. Stdin EOF closes
