@@ -42,7 +42,7 @@ module ShellKeys = {
   @react.component
   let make = (~core: Core.t, ~children) => {
     React.useEffect0(() => {
-      let handler = event => App.onKeyDown(core, ~onChord=_ => (), event)
+      let handler = event => App.onKeyDown(core, ~onChord=_ => App.Pending.Runs(NextPanel), event)
       App.KeyEvent.listen("keydown", handler)
       Some(() => App.KeyEvent.unlisten("keydown", handler))
     })

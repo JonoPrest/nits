@@ -1,3 +1,8 @@
+let editorBindings: array<View.Hint.t> = [
+  {keys: "ctrl+enter", command: Submit, label: "submit"},
+  {keys: "esc", command: Back, label: "back"},
+]
+
 open Vitest
 open TestingLibrary
 
@@ -76,7 +81,9 @@ test("Browse cells focus Head and the comment mouse alias opens the typed line a
   let dispatch = fn()
   let diff = base()
   let {container} = render(
-    <DiffView diff layout=Split focus={Diff({row: 0, side: Head})} chrome dispatch />,
+    <DiffView
+      bindings=editorBindings diff layout=Split focus={Diff({row: 0, side: Head})} chrome dispatch
+    />,
   )
   FireEvent.click(Screen.getByText("source 2"))
   expect(dispatch)->toHaveBeenLastCalledWith(Action.SetFocus({focus: Diff({row: 1, side: Head})}))
@@ -95,6 +102,7 @@ test("Browse drag and visual ranges mark source cells on their starting side", (
   let diff = base()
   let {container} = render(
     <DiffView
+      bindings=editorBindings
       diff
       layout=Unified
       focus={Diff({row: 2, side: Head})}
@@ -127,7 +135,14 @@ test("Browse composes below the range, focuses the editor, cancels and submits",
     }),
   }
   let {container, rerender} = render(
-    <DiffView diff=drafted layout=Unified focus={Composer({})} draft={draft(diff)} dispatch />,
+    <DiffView
+      bindings=editorBindings
+      diff=drafted
+      layout=Unified
+      focus={Composer({})}
+      draft={draft(diff)}
+      dispatch
+    />,
   )
   let textarea = Screen.getByPlaceholderText("Finding…")
   expect(Document.activeElement->Nullable.getExn)->toBe(textarea)
@@ -136,10 +151,21 @@ test("Browse composes below the range, focuses the editor, cancels and submits",
   expect(Element.querySelectorAll(container, ".cell-drafting")->Array.length)->toBe(2)
   FireEvent.keyDown(textarea, {"key": "Escape", "ctrlKey": false})
   expect(dispatch)->toHaveBeenLastCalledWith(Action.DraftDiscarded({}))
-  rerender(<DiffView diff layout=Unified focus={Diff({row: 1, side: Head})} dispatch />)
+  rerender(
+    <DiffView
+      bindings=editorBindings diff layout=Unified focus={Diff({row: 1, side: Head})} dispatch
+    />,
+  )
   expect(Element.querySelector(container, ".composer"))->toBeNull
   rerender(
-    <DiffView diff=drafted layout=Unified focus={Composer({})} draft={draft(diff)} dispatch />,
+    <DiffView
+      bindings=editorBindings
+      diff=drafted
+      layout=Unified
+      focus={Composer({})}
+      draft={draft(diff)}
+      dispatch
+    />,
   )
   let textarea = Screen.getByPlaceholderText("Finding…")
   FireEvent.change(textarea, {"target": {"value": "reviewed this revision"}})
@@ -165,7 +191,12 @@ test(
     }
     let {container} = render(
       <DiffView
-        diff=placed layout=Unified focus={Diff({row: 1, side: Head})} threads=[thread] dispatch
+        bindings=editorBindings
+        diff=placed
+        layout=Unified
+        focus={Diff({row: 1, side: Head})}
+        threads=[thread]
+        dispatch
       />,
     )
     let anchor = Element.querySelector(container, "[data-row-index='1']")->Nullable.getExn
@@ -174,7 +205,12 @@ test(
     cleanup()
     let _ = render(
       <Threads
-        title="Conversation" threads=[thread] focus={Thread({index: 0})} indexOffset=0 dispatch
+        bindings=editorBindings
+        title="Conversation"
+        threads=[thread]
+        focus={Thread({index: 0})}
+        indexOffset=0
+        dispatch
       />,
     )
     FireEvent.click(Screen.getByText("browse @tag:v1"))
@@ -191,13 +227,21 @@ test("Browse loading and non-source content never expose comment targets", () =>
     missing: [0],
   }
   let {container, rerender} = render(
-    <DiffView diff=invalid layout=Unified focus={Diff({row: 0, side: Head})} chrome dispatch />,
+    <DiffView
+      bindings=editorBindings
+      diff=invalid
+      layout=Unified
+      focus={Diff({row: 0, side: Head})}
+      chrome
+      dispatch
+    />,
   )
   expect(Element.querySelectorAll(container, ".cell-comment")->Array.length)->toBe(0)
   expect(Element.querySelectorAll(container, ".row-placeholder")->Array.length)->toBe(2)
   let binary = Fixtures.parse(Render.RenderContent.schema, "protocol", "RenderContent", "Binary")
   rerender(
     <DiffView
+      bindings=editorBindings
       diff={{...diff, content: binary, rows: []}}
       layout=Unified
       focus={Diff({row: 0, side: Head})}
@@ -259,7 +303,7 @@ test("a linked deferred Browse reply opens its pinned source and a visible inlin
   }
   let {container} = render(<App.Shell core />)
   expect(Screen.getByText("Deferred · unfixed"))->toBeTruthy
-  FireEvent.click(Screen.getByText("Open original diff (enter)"))
+  FireEvent.click(Screen.getByText("Open original diff"))
   expect(dispatch)->toHaveBeenCalledWith(Action.OpenOriginalDiff({threadId: thread.id}))
   let diff = {...base(), original: true}
   let original = {...selected, tab: Browse, focus: Diff({row: 1, side: Head}), diff: Some(diff)}
@@ -287,6 +331,7 @@ test("a linked deferred Browse reply opens its pinned source and a visible inlin
     push.contents({
       ...original,
       focus: Composer({}),
+      bindings: editorBindings,
       draft: Some(draft),
       diff: Some({
         ...diff,

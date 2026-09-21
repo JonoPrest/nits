@@ -55,7 +55,7 @@ let make = (
         let item = switch node {
         | Dir({name, repoId, path, expanded, changedBelow}) =>
           <li
-            key={Int.toString(i)}
+            key={repoId ++ ":dir:" ++ path->Option.getOr("")}
             className="tree-dir"
             role="treeitem"
             style
@@ -70,9 +70,9 @@ let make = (
               ? <span className="tree-badge"> {React.string(Int.toString(changedBelow))} </span>
               : React.null}
           </li>
-        | File({name, viewed, open_, additions, deletions, threads}) =>
+        | File({name, repoId, path, viewed, open_, additions, deletions, threads}) =>
           <li
-            key={Int.toString(i)}
+            key={repoId ++ ":file:" ++ path}
             className={"tree-file" ++
             (open_ ? " tree-open" : "") ++ (viewed == Viewed ? " tree-viewed-done" : "")}
             role="treeitem"

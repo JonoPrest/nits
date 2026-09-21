@@ -3147,3 +3147,65 @@ fn rejected_action_keeps_the_draft_and_only_renders_correction_feedback() {
     assert_eq!(core.view(), &expected);
     assert_eq!(core.pending_count(), 0);
 }
+
+#[test]
+fn back_closes_help_before_underlying_search_and_composer() {
+    let mut core = ready();
+    core.handle(Input::User(Action::FileSearch {
+        query: Some("a".into()),
+    }))
+    .unwrap();
+    let search = core.view().tree.search.clone();
+    press(&mut core, "?").unwrap();
+    press(&mut core, "esc").unwrap();
+    assert!(core.view().help.is_none());
+    assert_eq!(core.view().tree.search, search);
+    press(&mut core, "esc").unwrap();
+    assert!(core.view().tree.search.is_none());
+    core.handle(Input::User(Action::DraftOpened {
+        anchor: Anchor::Review,
+    }))
+    .unwrap();
+    let draft = core.view().draft.clone();
+    core.handle(Input::User(Action::ToggleHelp)).unwrap();
+    press(&mut core, "esc").unwrap();
+    assert!(core.view().help.is_none());
+    assert_eq!(core.view().draft, draft);
+    press(&mut core, "esc").unwrap();
+    assert!(core.view().draft.is_none());
+}
+
+#[test]
+fn active_file_collapse_is_the_same_core_state_as_the_stacked_file() {
+    let mut core = ready();
+    assert!(!core.view().diff.as_ref().unwrap().collapsed);
+    press(&mut core, "C").unwrap();
+    let active = core.view().diff.as_ref().unwrap();
+    assert!(active.collapsed);
+    assert!(
+        core.view()
+            .diffs
+            .iter()
+            .find(|d| d.file == active.file)
+            .unwrap()
+            .collapsed
+    );
+    press(&mut core, "enter").unwrap();
+    assert!(!core.view().diff.as_ref().unwrap().collapsed);
+}
+
+#[test]
+fn help_keeps_visual_selection_and_returns_to_its_exact_row() {
+    let mut core = on_row(4, Side::Head);
+    press(&mut core, "V j").unwrap();
+    let selection = core.view().visual.clone();
+    let focus = core.view().focus;
+    assert!(selection.is_some());
+    core.handle(Input::User(Action::ToggleHelp)).unwrap();
+    press(&mut core, "esc").unwrap();
+    assert!(core.view().help.is_none());
+    assert_eq!(core.view().focus, focus);
+    assert_eq!(core.view().visual, selection);
+    press(&mut core, "esc").unwrap();
+    assert!(core.view().visual.is_none());
+}

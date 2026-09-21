@@ -1,6 +1,6 @@
 // The comment editor (§5.3): its text never enters the core; only
 // comment submission, deferral details and discard cross the boundary.
-// Ctrl/Cmd+Enter submits, Esc discards.
+// Submit and discard follow the configured insert-mode bindings.
 
 @react.component
 let make = (
@@ -8,6 +8,7 @@ let make = (
   ~pendingRefresh: bool,
   ~dispatch: Action.t => unit,
   ~chrome: array<View.Hint.t>=[],
+  ~bindings: array<View.Hint.t>=[],
 ) => {
   let (body, setBody) = React.useState(() => "")
   let (trackingUrl, setTrackingUrl) = React.useState(() => "")
@@ -25,20 +26,20 @@ let make = (
       | Comment(_) | Reply(_) => dispatch(DraftSubmitted({body: body}))
       }
     }
-  let onKeyDown = (ev: ReactEvent.Keyboard.t) => {
-    let key = ReactEvent.Keyboard.key(ev)
-    let submitChord =
-      key == "Enter" && (ReactEvent.Keyboard.ctrlKey(ev) || ReactEvent.Keyboard.metaKey(ev))
-    if submitChord {
-      ReactEvent.Keyboard.preventDefault(ev)
-      submit()
-    } else if key == "Escape" {
-      ReactEvent.Keyboard.preventDefault(ev)
-      dispatch(DraftDiscarded({}))
-    }
-    // Everything else is text; never forwarded to the keymap.
-    ReactEvent.Keyboard.stopPropagation(ev)
-  }
+  let pending = React.useRef(KeySequence.make())
+  let onKeyDown = ev =>
+    EditorKeys.handle(
+      ~pending=pending.current,
+      ~bindings,
+      ~allowed=command => command == Submit || command == Back,
+      ~run=command =>
+        switch command {
+        | Submit => submit()
+        | Back => dispatch(DraftDiscarded({}))
+        | _ => ()
+        },
+      ev,
+    )
   let placeholder = switch draft.purpose {
   | Reply(_) => "Reply…"
   | Comment({intent: Informational}) => "Summary or status note…"

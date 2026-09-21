@@ -10,9 +10,6 @@ let chooseCore = (): Core.t =>
   | None => CoreWs.make(~url=CoreWs.defaultUrl())
   }
 
-/// Keys the browser would otherwise act on when they reach the keymap.
-let swallowed = ["Tab", " ", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"]
-
 module KeyEvent = {
   type t
   @get external key: t => string = "key"
@@ -21,7 +18,6 @@ module KeyEvent = {
   @get external shiftKey: t => bool = "shiftKey"
   @get external metaKey: t => bool = "metaKey"
   @get external target: t => Nullable.t<Dom.element> = "target"
-  @get external tagName: Dom.element => string = "tagName"
   @send external preventDefault: t => unit = "preventDefault"
   @val @scope("window") external listen: (string, t => unit) => unit = "addEventListener"
   @val @scope("window") external unlisten: (string, t => unit) => unit = "removeEventListener"
@@ -35,44 +31,7 @@ let chordText = Keys.text
 /// typed the instant it happens; `pendingKeys` in the view is the core's
 /// answer to the *previous* key and arrives a round trip later, which is
 /// exactly one keystroke too late to decide anything about this one.
-module Pending = {
-  type t = {mutable keys: array<string>}
-
-  let make = (): t => {keys: []}
-
-  /// What the core will make of `chord`, resolved against the same
-  /// bindings it uses: a command, the start of a longer one, or nothing
-  /// at all — which the core reports as an unbound key and does not
-  /// count, so neither does the shell.
-  type outcome =
-    | Runs(View.Command.t)
-    | Prefix
-    | Unbound
-
-  let step = (p: t, bindings: array<View.Hint.t>, chord: Keys.KeyChord.t): outcome => {
-    let typed = Array.concat(p.keys, [chordText(chord)])
-    let text = typed->Array.join(" ")
-    let exact = bindings->Array.find(h => h.keys == text)
-    let prefix = bindings->Array.some(h => h.keys->String.startsWith(text ++ " "))
-    switch (exact, prefix) {
-    | (Some(h), _) => {
-        p.keys = []
-        Runs(h.command)
-      }
-    | (None, true) => {
-        p.keys = typed
-        Prefix
-      }
-    | (None, false) => {
-        // A key that cancels a pending sequence is still one the core
-        // acts on; one typed with nothing pending is not.
-        let cancelled = Array.length(p.keys) > 0
-        p.keys = []
-        cancelled ? Prefix : Unbound
-      }
-    }
-  }
-}
+module Pending = KeySequence
 
 /// The bindings that apply where the focus is: the core's own applicable
 /// set, aliases included. Not `hints` (primary bindings only, so `y` is
@@ -82,33 +41,40 @@ let bindingsFor = (model: View.ViewModel.t): array<View.Hint.t> => model.binding
 
 /// Keys outside text inputs become chords for the core; text inputs handle
 /// their own keys and stop propagation.
-let onKeyDown = (core: Core.t, ~onChord: Keys.KeyChord.t => unit, ev: KeyEvent.t) => {
-  let key = KeyEvent.key(ev)
-  let editing = switch KeyEvent.target(ev)->Nullable.toOption {
-  | Some(el) => {
-      let tag = KeyEvent.tagName(el)
-      tag == "INPUT" || tag == "TEXTAREA"
-    }
-  | None => false
+// Native editing and activation stay in the browser. A checkbox is not a
+// text editor: other chords still reach the shared keymap after a click.
+let nativeKey: KeyEvent.t => bool = %raw(`event => {
+  const target = event.target;
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return true;
+  if (!target) return false;
+  if (target.isContentEditable || target.closest?.('[contenteditable="true"]')) return true;
+  if (target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return true;
+  if (target.tagName === 'INPUT') {
+    if (!['checkbox', 'radio', 'button', 'submit', 'reset'].includes(target.type)) return true;
+    if (event.key === ' ' || event.key === 'Enter') return true;
+    if (target.type === 'radio' && event.key.startsWith('Arrow')) return true;
   }
-  if !editing {
+  return (target.tagName === 'BUTTON' || (target.tagName === 'A' && target.hasAttribute('href')))
+    && (event.key === 'Enter' || event.key === ' ');
+}`)
+
+let onKeyDown = (core: Core.t, ~onChord: Keys.KeyChord.t => Pending.outcome, ev: KeyEvent.t) => {
+  if !nativeKey(ev) {
     switch Keys.ofBrowser({
-      key,
+      key: KeyEvent.key(ev),
       ctrlKey: KeyEvent.ctrlKey(ev),
       altKey: KeyEvent.altKey(ev),
       shiftKey: KeyEvent.shiftKey(ev),
       metaKey: KeyEvent.metaKey(ev),
     }) {
     | Some(chord) => {
-        let search = key == "p" && (KeyEvent.ctrlKey(ev) || KeyEvent.metaKey(ev))
-        // Printable chars are swallowed too: a chord that opens a text
-        // input (`t`, `F`, `:`) must not also type itself into it once
-        // the input autofocuses.
-        let printable = String.length(key) == 1 && !KeyEvent.ctrlKey(ev) && !KeyEvent.metaKey(ev)
-        if swallowed->Array.includes(key) || search || printable {
-          KeyEvent.preventDefault(ev)
+        // Use the same single resolution as gesture-timed copying. Unbound
+        // browser shortcuts keep their native behavior; sent-key accounting
+        // still includes every chord delivered to the core.
+        switch onChord(chord) {
+        | Runs(_) | Prefix => KeyEvent.preventDefault(ev)
+        | Unbound => ()
         }
-        onChord(chord)
         core.key(chord)
       }
     | None => ()
@@ -284,6 +250,7 @@ module Shell = {
               }
             | Runs(_) | Prefix | Unbound => ()
             }
+            outcome
           },
           ev,
         )
@@ -424,6 +391,7 @@ module Shell = {
             </aside>}
         <div className="app-center">
           <ReviewHeader
+            bindings=model.bindings
             reviews=model.reviews
             workspaces=model.workspaces
             resolvedTargets=model.resolvedTargets
@@ -458,12 +426,14 @@ module Shell = {
                 | FilesChanged =>
                   <>
                     {switch model.tree.search {
-                    | Some(search) => <SearchBox search repositories dispatch />
+                    | Some(search) =>
+                      <SearchBox bindings=model.bindings search repositories dispatch />
                     | None => React.null
                     }}
                     {switch model.diff {
                     | Some(diff) if diff.original =>
                       <DiffView
+                        bindings=model.bindings
                         repositories
                         diff
                         layout=model.prefs.layout
@@ -479,6 +449,7 @@ module Shell = {
                             {model.diffs
                             ->Array.map(diff =>
                               <FileDiff
+                                bindings=model.bindings
                                 repositories
                                 key={diff.file.repoId ++ diff.file.path}
                                 diff
@@ -503,7 +474,11 @@ module Shell = {
                     {switch model.draft {
                     | Some(draft) if View.Draft.isDocked(draft) =>
                       <Composer
-                        chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch
+                        bindings=model.bindings
+                        chrome=model.chrome
+                        draft
+                        pendingRefresh=model.pendingRefresh
+                        dispatch
                       />
                     | Some(_) | None => React.null
                     }}
@@ -544,6 +519,7 @@ module Shell = {
                       />
                     </UI.Box>
                     <Threads
+                      bindings=model.bindings
                       repositories
                       title="Conversation"
                       focusedComment=?model.focusedComment
@@ -558,7 +534,11 @@ module Shell = {
                     {switch model.draft {
                     | Some(draft) if View.Draft.thread(draft) == None =>
                       <Composer
-                        chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch
+                        bindings=model.bindings
+                        chrome=model.chrome
+                        draft
+                        pendingRefresh=model.pendingRefresh
+                        dispatch
                       />
                     | Some(_) | None => React.null
                     }}
@@ -580,12 +560,14 @@ module Shell = {
                     | None => React.null
                     }}
                     {switch model.tree.search {
-                    | Some(search) => <SearchBox search repositories dispatch />
+                    | Some(search) =>
+                      <SearchBox bindings=model.bindings search repositories dispatch />
                     | None => React.null
                     }}
                     {switch model.diff {
                     | Some(diff) =>
                       <DiffView
+                        bindings=model.bindings
                         repositories
                         diff
                         layout=model.prefs.layout
@@ -605,7 +587,11 @@ module Shell = {
                     // its own docks here.
                     | Some(draft) if View.Draft.isDocked(draft) =>
                       <Composer
-                        chrome=model.chrome draft pendingRefresh=model.pendingRefresh dispatch
+                        bindings=model.bindings
+                        chrome=model.chrome
+                        draft
+                        pendingRefresh=model.pendingRefresh
+                        dispatch
                       />
                     | Some(_) | None => React.null
                     }}
@@ -635,11 +621,12 @@ module Shell = {
         progress=model.progress
       />
       {switch model.help {
-      | Some(help) => <HelpOverlay help dispatch />
+      | Some(help) => <HelpOverlay bindings=model.bindings help dispatch />
       | None => React.null
       }}
       {model.contentSearch != None || model.actionPalette
         ? <Palette
+            bindings=model.bindings
             repositories
             contentSearch=model.contentSearch
             actionPalette=model.actionPalette

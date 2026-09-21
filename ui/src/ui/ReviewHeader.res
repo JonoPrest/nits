@@ -44,6 +44,7 @@ let make = (
   ~prefs: View.ViewPrefs.t,
   ~scope: Domain.DiffScope.t=Domain.DiffScope.All({}),
   ~chrome: array<View.Hint.t>=[],
+  ~bindings: array<View.Hint.t>=[],
   ~connection: View.ConnectionView.t=View.ConnectionView.Disconnected({}),
   ~progress: View.Progress.t=View.ViewModel.empty.progress,
   ~refSelector: option<View.RefSelectorView.t>=?,
@@ -298,7 +299,7 @@ let make = (
           <span className={"conn-dot conn-" ++ conn} title=conn />
         </div>
         {switch refSelector {
-        | Some(selector) => <RefSelector selector dispatch />
+        | Some(selector) => <RefSelector selector bindings dispatch />
         | None => React.null
         }}
       </header>

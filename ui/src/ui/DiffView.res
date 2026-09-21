@@ -24,6 +24,7 @@ let make = (
   ~visual: option<VisualView.t>=?,
   ~scroll: option<ScrollIntent.t>=?,
   ~chrome: array<View.Hint.t>=[],
+  ~bindings: array<View.Hint.t>=[],
   ~threads: array<ThreadView.t>=[],
   ~draft: option<Draft.t>=?,
   ~pendingRefresh: bool=false,
@@ -94,9 +95,8 @@ let make = (
     }
     None
   }, [scroll])
-  // A viewed file collapses (§4.4); the reader can expand it for this visit.
-  let (expanded, setExpanded) = React.useState(() => false)
-  let collapsed = diff.viewed == Viewed && !expanded && !diff.original
+  // Browse and stacked files use the same core-owned fold command.
+  let collapsed = diff.collapsed
   let key = DiffSeen.fileKey(diff)
   let prevKey = React.useRef("")
   let seen = React.useRef(Dict.make())
@@ -149,7 +149,7 @@ let make = (
             | Blob(_) => "Viewing the pinned original file; comments stay anchored to this source. "
             },
           )}
-          <UI.Kbd keys="esc" />
+          {Chrome.keys(chrome, Back)->Option.mapOr(React.null, keys => <UI.Kbd keys />)}
           {React.string(" back to the current diff")}
         </div>
       : React.null}
@@ -161,8 +161,13 @@ let make = (
     binary
     {collapsed
       ? <div className="diff-collapsed">
-          {React.string("Viewed — ")}
-          <UI.Button label="show anyway" kind=Ghost onClick={() => setExpanded(_ => true)} />
+          {React.string(diff.viewed == Viewed ? "Viewed — " : "Collapsed — ")}
+          <UI.Button
+            label="show anyway"
+            title=?{Chrome.tip(chrome, ToggleFileCollapse)}
+            kind=Ghost
+            onClick={() => dispatch(ToggleFileCollapse({file: diff.file}))}
+          />
         </div>
       : React.null}
     <div
@@ -245,7 +250,7 @@ let make = (
               />
               {switch (r.drafted, draft) {
               | (Some((Anchor, _)), Some({purpose: Comment(_)} as d)) =>
-                <Composer chrome draft=d pendingRefresh dispatch />
+                <Composer chrome bindings draft=d pendingRefresh dispatch />
               | (Some(_), _) | (None, _) => React.null
               }}
               {r.threads
@@ -256,7 +261,7 @@ let make = (
                 let thread = threads->Array.getUnsafe(ti)
                 let composer = switch (replyTo, draft) {
                 | (Some(id), Some(d)) if id == thread.id =>
-                  <Composer chrome draft=d pendingRefresh dispatch />
+                  <Composer chrome bindings draft=d pendingRefresh dispatch />
                 | _ => React.null
                 }
                 <InlineThread

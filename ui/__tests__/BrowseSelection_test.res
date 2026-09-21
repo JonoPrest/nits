@@ -1,3 +1,5 @@
+let searchBindings: array<View.Hint.t> = [{keys: "esc", command: Back, label: "back"}]
+
 open Vitest
 open TestingLibrary
 
@@ -88,7 +90,7 @@ test("Browse search types j/k normally and results navigate without review mutat
       {refSpec: Branch({name: "develop"}), subject: None, current: true},
     ],
   }
-  let {rerender} = render(<RefSelector selector dispatch />)
+  let {rerender} = render(<RefSelector bindings=searchBindings selector dispatch />)
   let input = Screen.getByPlaceholderText("Find a browse revision")
   let _ = Screen.getByText("Beacon · Browse")
   FireEvent.keyDown(input, {"key": "j", "ctrlKey": false})
@@ -96,17 +98,22 @@ test("Browse search types j/k normally and results navigate without review mutat
   expect(dispatch)->not_->toHaveBeenCalled
   FireEvent.change(input, {"target": {"value": "jack"}})
   expect(dispatch)->toHaveBeenLastCalledWith(Action.RefSelectorQuery({query: "jack"}))
-  rerender(<RefSelector selector={...selector, query: "jack"} dispatch />)
+  rerender(<RefSelector bindings=searchBindings selector={...selector, query: "jack"} dispatch />)
   FireEvent.keyDown(input, {"key": "ArrowDown", "ctrlKey": false})
   let results = Screen.getByLabelText("revisions")
   expect(Document.activeElement)->toEqual(Nullable.make(results))
   FireEvent.keyDown(results, {"key": "j", "ctrlKey": false})
   expect(dispatch)->toHaveBeenLastCalledWith(Action.RefSelectorStep({delta: 1}))
-  rerender(<RefSelector selector={...selector, query: "jack", selected: 1} dispatch />)
+  rerender(
+    <RefSelector
+      bindings=searchBindings selector={...selector, query: "jack", selected: 1} dispatch
+    />,
+  )
   FireEvent.keyDown(results, {"key": "Enter", "ctrlKey": false})
   expect(dispatch)->toHaveBeenLastCalledWith(Action.SelectCurrentRef({}))
   rerender(
     <RefSelector
+      bindings=searchBindings
       selector={...selector, query: "jack", status: InvalidRef({message: "branch disappeared"})}
       dispatch
     />,
@@ -162,16 +169,20 @@ test(
       "default",
     )
     let selector: View.RefSelectorView.t = {...fixture, query: "", purpose: Browse({})}
-    let {rerender} = render(<RefSelector selector dispatch />)
+    let {rerender} = render(<RefSelector bindings=searchBindings selector dispatch />)
     let input = Screen.getByPlaceholderText("Find a browse revision")
     FireEvent.change(input, {"target": {"value": "j"}})
     FireEvent.change(input, {"target": {"value": "jack"}})
-    rerender(<RefSelector selector={...selector, query: "j"} dispatch />)
+    rerender(<RefSelector bindings=searchBindings selector={...selector, query: "j"} dispatch />)
     expect(Element.value(input))->toBe("jack")
     expect(Screen.queryAllByText("main · current")->Array.length)->toBe(0)
     FireEvent.keyDown(input, {"key": "Enter", "ctrlKey": false})
     expect(dispatch)->toHaveBeenLastCalledWith(Action.SelectCurrentRef({}))
-    rerender(<RefSelector selector={...selector, requestId: selector.requestId +. 1.} dispatch />)
+    rerender(
+      <RefSelector
+        bindings=searchBindings selector={...selector, requestId: selector.requestId +. 1.} dispatch
+      />,
+    )
     expect(Element.value(Screen.getByPlaceholderText("Find a browse revision")))->toBe("")
   },
 )

@@ -786,11 +786,11 @@ pub struct ClientCore {
     /// Chords of a sequence in progress, and when it started.
     chords: Vec<KeyChord>,
     chord_started: Millis,
-    /// Context whose bindings the open help overlay describes. `None`
+    /// Focus whose context the open help overlay describes. `None`
     /// means help is closed; retaining the origin keeps moving focus into
     /// `Help` from replacing the commands the reader asked to inspect.
-    help_context: Option<keymap::Context>,
-    /// Focus to return to when the composer or help closes.
+    help_return: Option<Focus>,
+    /// Focus to return to when the composer closes.
     focus_return: Option<Focus>,
     /// `SetScope { ByCommit }` is waiting for its `ListCommits` answer.
     by_commit_pending: bool,
@@ -863,7 +863,7 @@ impl ClientCore {
             keymap: Keymap::default_table(),
             chords: Vec::new(),
             chord_started: 0,
-            help_context: None,
+            help_return: None,
             focus_return: None,
             by_commit_pending: false,
             file_collapse: std::collections::BTreeMap::new(),
@@ -1206,6 +1206,17 @@ impl ClientCore {
             }
             (_, d) => d,
         };
+        // The active Browse file and stacked sections share one fold state.
+        // Pinned originals remain readable regardless of the current file's fold.
+        let diff = diff.map(|mut d| {
+            d.collapsed = !d.original
+                && self
+                    .file_collapse
+                    .get(&(d.file.repo_id, d.file.path.clone()))
+                    .copied()
+                    .unwrap_or(d.viewed == explorer::ViewedState::Viewed);
+            d
+        });
         // The stacked view (UI-DESIGN §Layout, GitHub-style): one DiffView
         // per changed file. Patches stay viewport-bounded (§6.3): the open
         // file carries its viewport; every other file is capped at
@@ -1447,7 +1458,9 @@ impl ClientCore {
             self.view.leader = leader;
             sections.push(ViewSection::Hints);
         }
-        let help = self.help_context.map(|context| self.keymap.help(context));
+        let help = self
+            .help_return
+            .map(|focus| self.keymap.help(focus.context()));
         if help != self.view.help {
             self.view.help = help;
             sections.push(ViewSection::Help);
@@ -2467,8 +2480,9 @@ impl ClientCore {
                 let key = (file.repo_id, file.path.clone());
                 let effective = self.file_collapse.get(&key).copied().unwrap_or_else(|| {
                     self.view
-                        .diffs
+                        .diff
                         .iter()
+                        .chain(&self.view.diffs)
                         .find(|d| d.file == file)
                         .is_some_and(|d| d.viewed == explorer::ViewedState::Viewed)
                 });
@@ -2984,12 +2998,13 @@ impl ClientCore {
                 Ok(effects)
             }
             Action::ToggleHelp => {
-                if self.help_context.is_some() {
-                    self.help_context = None;
-                    self.leave();
+                // Help may cover a composer, which already has a return focus.
+                // Preserve that modal return while remembering Help's own origin.
+                if let Some(focus) = self.help_return.take() {
+                    self.view.focus = focus;
                 } else {
-                    self.help_context = Some(self.view.focus.context());
-                    self.enter(Focus::Help);
+                    self.help_return = Some(self.view.focus);
+                    self.view.focus = Focus::Help;
                 }
                 Ok(vec![render(&[ViewSection::Help, ViewSection::Focus])])
             }
@@ -3460,7 +3475,7 @@ impl ClientCore {
         self.suggestions.clear();
         self.stepper = None;
         self.focus_return = None;
-        self.help_context = None;
+        self.help_return = None;
         self.by_commit_pending = false;
         self.browse = None;
         self.browse_attempt = None;

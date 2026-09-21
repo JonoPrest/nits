@@ -13,6 +13,7 @@ let make = (
   ~contentSearch: option<ContentSearchView.t>,
   ~actionPalette: bool,
   ~chrome: array<Hint.t>,
+  ~bindings: array<View.Hint.t>=[],
   ~dispatch: Action.t => unit,
 ) => {
   let mode = actionPalette ? Actions : Content
@@ -135,10 +136,14 @@ let make = (
     resultsRef,
     toInput,
     onResultsFocus,
+    onResultsPointer,
+    onResultsBlur,
     onChange,
     onInputKey,
     onResultsKey,
+    onDialogKey,
   ) = SearchNavigation.useNavigation(
+    ~bindings,
     ~count,
     ~selected=current,
     ~first=() =>
@@ -158,10 +163,7 @@ let make = (
   let id = React.useId()
   let hitId = i => id ++ "-" ++ Int.toString(i)
   <div
-    className="palette-overlay"
-    role="dialog"
-    ariaLabel="palette"
-    onKeyDown={ev => SearchNavigation.onDialogKey(close, ev)}
+    className="palette-overlay" role="dialog" ariaLabel="palette" onKeyDown={ev => onDialogKey(ev)}
   >
     <div className="palette">
       <div className="palette-tabs">
@@ -197,6 +199,8 @@ let make = (
                 listRef={ReactDOM.Ref.domRef(resultsRef)}
                 onKey=onResultsKey
                 onFocus=onResultsFocus
+                onPointer=onResultsPointer
+                onBlur=onResultsBlur
                 activeId={selected->Option.map(hitId)}
               >
                 {c.hits
@@ -238,7 +242,7 @@ let make = (
                 type_="checkbox"
                 checked=allFiles
                 onKeyDown={ev => {
-                  SearchNavigation.onDialogKey(close, ev)
+                  onDialogKey(ev)
                   ReactEvent.Keyboard.stopPropagation(ev)
                 }}
                 onChange={_ =>
@@ -260,6 +264,8 @@ let make = (
           listRef={ReactDOM.Ref.domRef(resultsRef)}
           onKey=onResultsKey
           onFocus=onResultsFocus
+          onPointer=onResultsPointer
+          onBlur=onResultsBlur
           activeId={selected->Option.map(hitId)}
         >
           {actions
@@ -291,7 +297,7 @@ let make = (
           switchMode()
         }}
       />
-      <UI.Button label="close ⎋" kind=Ghost onClick=close />
+      <UI.Button label="Close" title=?{Chrome.tip(bindings, Back)} kind=Ghost onClick=close />
     </div>
   </div>
 }

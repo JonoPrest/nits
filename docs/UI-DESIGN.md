@@ -41,6 +41,29 @@ where they differ.
   unparsable chord fails loudly at load. Everything derived from the
   keymap (hints, help, tooltips) re-derives from the loaded map.
 
+## Keyboard boundary and control audit
+
+Controls dispatch the same typed commands/actions as the keymap. Workspace/home
+and creation use `NewReview`, `GoHome`, target add/remove, submit, back and reconnect;
+Browse uses its revision picker, reset and repository-cycle commands. Review settings,
+file folding/viewed/context, thread reply/original/resolve/defer, and suggestion
+preview/apply derive their hints from chrome. Copy commands preserve the browser's
+user gesture while the core selects the target. Search/picker/help close controls
+use the applicable configured `Back` binding, including inside their inputs.
+
+Comment and creation editors intercept only their allowed configured commands;
+removed defaults are not hidden aliases. IME, ordinary text, selection, and native
+select/button/checkbox activation stay local. Checkbox focus still permits global
+chords. Search widgets keep native Tab/Shift+Tab, arrow keys, Enter, and result-zone
+j/k navigation; those physical editing/navigation hints are distinct from product
+command shortcuts. Pointer entry never scrolls an earlier keyboard selection before
+the click lands, while keyboard navigation reveals the selected result.
+
+Help preserves its own return focus above the composer/form or visual selection.
+Back closes the overlay first. Browse and changed-file panes share core-owned fold
+state; a viewed file's “show anyway” control is the same fold command. File-tree DOM
+identity is repository plus node kind/path, independent of the visible keyboard index.
+
 ## Layout
 
 Claude-viewer anatomy, nits tokens (`ui/src/styles/app.css`; dark and

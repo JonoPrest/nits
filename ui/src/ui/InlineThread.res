@@ -72,7 +72,8 @@ let make = (
         <div className="inline-thread-actions" onClick={ev => ReactEvent.Mouse.stopPropagation(ev)}>
           <UI.CopyReference reference=thread.reference chrome dispatch />
           <UI.Button
-            label="Reply (r)"
+            label="Reply"
+            title=?{Chrome.tip(chrome, Reply)}
             kind=Primary
             onClick={() => dispatch(ReplyOpened({threadId: thread.id}))}
           />

@@ -940,3 +940,22 @@ fn restored_legacy_duplicate_attempt_is_inspected_but_never_replayed_as_a_write(
         matches!(&restored.view().last_error, Some(RpcError::Invalid { reason }) if reason.contains("one base/head pair"))
     );
 }
+
+#[test]
+fn help_back_preserves_creation_until_the_next_back() {
+    let (mut core, _, _) = begin();
+    edit(&mut core, |draft| draft.title = "Keep this draft".into());
+    let before = creation(&core).clone();
+    core.handle(Input::User(Action::ToggleHelp)).unwrap();
+    core.handle(Input::Key(nits_client_core::KeyChord::named(
+        nits_client_core::NamedKey::Esc,
+    )))
+    .unwrap();
+    assert!(core.view().help.is_none());
+    assert_eq!(creation(&core), &before);
+    core.handle(Input::Key(nits_client_core::KeyChord::named(
+        nits_client_core::NamedKey::Esc,
+    )))
+    .unwrap();
+    assert!(core.view().home.creating.is_none());
+}

@@ -365,7 +365,17 @@ module Markdown = {
 module SearchResults = {
   type kind = Files | Palette | Help
   @react.component
-  let make = (~kind, ~label, ~listRef, ~onKey, ~onFocus, ~activeId: option<string>, ~children) => {
+  let make = (
+    ~kind,
+    ~label,
+    ~listRef,
+    ~onKey,
+    ~onFocus,
+    ~onPointer,
+    ~onBlur,
+    ~activeId: option<string>,
+    ~children,
+  ) => {
     let className = switch kind {
     | Files => "search-hits"
     | Palette => "palette-results"
@@ -380,6 +390,8 @@ module SearchResults = {
       ref=listRef
       onKeyDown=onKey
       onFocus={_ => onFocus()}
+      onPointerDown={_ => onPointer()}
+      onBlur={_ => onBlur()}
     >
       children
     </div>

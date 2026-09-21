@@ -12,7 +12,7 @@ let make = (
   let local = React.useRef(CreationRecovery.make())
   let (draft, setDraft) = React.useState(() => creation.draft)
   let (submitted, setSubmitted) = React.useState(() => false)
-  let pendingKeys = React.useRef("")
+  let pendingKeys = React.useRef(KeySequence.make())
   React.useEffect1(() => {
     CreationRecovery.observe(local.current, Some(creation))
     let current =
@@ -77,39 +77,19 @@ let make = (
       send(Action.RunCommand({command: command}))
     }
   }
-  let onKey = (ev: ReactEvent.Keyboard.t) => {
-    switch Keys.ofBrowser({
-      key: ReactEvent.Keyboard.key(ev),
-      ctrlKey: ReactEvent.Keyboard.ctrlKey(ev),
-      altKey: ReactEvent.Keyboard.altKey(ev),
-      shiftKey: ReactEvent.Keyboard.shiftKey(ev),
-      metaKey: ReactEvent.Keyboard.metaKey(ev),
-    }) {
-    | None => ()
-    | Some(chord) =>
-      let text = (pendingKeys.current == "" ? "" : pendingKeys.current ++ " ") ++ Keys.text(chord)
-      let allowed = bindings->Array.filter(h =>
-        switch h.command {
+  let onKey = ev =>
+    EditorKeys.handle(
+      ~pending=pendingKeys.current,
+      ~bindings,
+      ~allowed=command =>
+        switch command {
         | Submit | Back | AddReviewTarget | RemoveReviewTarget | ReconnectReviewCreation => true
         | _ => false
-        }
-      )
-      switch allowed->Array.find(h => h.keys == text) {
-      | Some(hint) =>
-        pendingKeys.current = ""
-        ReactEvent.Keyboard.preventDefault(ev)
-        run(hint.command)
-      | None =>
-        if allowed->Array.some(h => h.keys->String.startsWith(text ++ " ")) {
-          pendingKeys.current = text
-          ReactEvent.Keyboard.preventDefault(ev)
-        } else {
-          pendingKeys.current = ""
-        }
-      }
-    }
-    ReactEvent.Keyboard.stopPropagation(ev)
-  }
+        },
+      ~run,
+      ev,
+    )
+
   <form
     className="new-review panel"
     ariaLabel="new review"

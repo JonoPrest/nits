@@ -21,7 +21,11 @@ let value = spec =>
 
 module Picker = {
   @react.component
-  let make = (~selector: View.RefSelectorView.t, ~dispatch: Action.t => unit) => {
+  let make = (
+    ~selector: View.RefSelectorView.t,
+    ~bindings: array<View.Hint.t>=[],
+    ~dispatch: Action.t => unit,
+  ) => {
     let side = switch selector.purpose {
     | Review({side: Base}) => "Base"
     | Review({side: Head}) => "Head"
@@ -42,10 +46,14 @@ module Picker = {
       resultsRef,
       toInput,
       onResultsFocus,
+      onResultsPointer,
+      onResultsBlur,
       onChange,
       onInputKey,
       onResultsKey,
+      onDialogKey,
     ) = SearchNavigation.useNavigation(
+      ~bindings,
       ~count=busy || !current ? 0 : Array.length(selector.options),
       ~selected=selector.selected,
       ~first=() => dispatch(Action.RefSelectorStep({delta: -selector.selected})),
@@ -68,7 +76,7 @@ module Picker = {
       className="palette-overlay"
       role="dialog"
       ariaLabel={side ++ " revision selector"}
-      onKeyDown={ev => SearchNavigation.onDialogKey(close, ev)}
+      onKeyDown={ev => onDialogKey(ev)}
     >
       <div className="palette ref-selector">
         <div className="palette-tabs">
@@ -78,7 +86,7 @@ module Picker = {
             {React.string(" results · ")}
             <UI.Kbd keys="enter" />
             {React.string(" select · ")}
-            <UI.Kbd keys="esc" />
+            {Chrome.keys(bindings, Back)->Option.mapOr(React.null, keys => <UI.Kbd keys />)}
             {React.string(" cancel")}
           </span>
         </div>
@@ -122,6 +130,8 @@ module Picker = {
               listRef={ReactDOM.Ref.domRef(resultsRef)}
               onKey=onResultsKey
               onFocus=onResultsFocus
+              onPointer=onResultsPointer
+              onBlur=onResultsBlur
               activeId={selected->Option.map(optionId)}
             >
               {selector.options
@@ -152,5 +162,8 @@ module Picker = {
 }
 
 @react.component
-let make = (~selector: View.RefSelectorView.t, ~dispatch: Action.t => unit) =>
-  <Picker key={Float.toString(selector.requestId)} selector dispatch />
+let make = (
+  ~selector: View.RefSelectorView.t,
+  ~bindings: array<View.Hint.t>=[],
+  ~dispatch: Action.t => unit,
+) => <Picker key={Float.toString(selector.requestId)} selector bindings dispatch />

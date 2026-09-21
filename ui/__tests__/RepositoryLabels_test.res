@@ -1,3 +1,5 @@
+let searchBindings: array<View.Hint.t> = [{keys: "esc", command: Back, label: "back"}]
+
 open Vitest
 open TestingLibrary
 
@@ -174,7 +176,7 @@ test(
     let search = Fixtures.parse(View.SearchView.schema, "client", "SearchView", "default")
     let hits = [0, 1]->Array.map(i => {...search.hits->Array.getUnsafe(0), file: file(i)})
     let {container, rerender} = render(
-      <SearchBox search={{...search, hits}} repositories dispatch />,
+      <SearchBox bindings=searchBindings search={{...search, hits}} repositories dispatch />,
     )
     FireEvent.click(Screen.getByLabelText("Atlas · src/common.txt"))
     expect(dispatch)->toHaveBeenLastCalledWith(
@@ -204,7 +206,14 @@ test(
       }),
     }
     rerender(
-      <Palette contentSearch=Some(content) repositories actionPalette=false chrome dispatch />,
+      <Palette
+        bindings=searchBindings
+        contentSearch=Some(content)
+        repositories
+        actionPalette=false
+        chrome
+        dispatch
+      />,
     )
     [0, 1]->Array.forEach(i => {
       FireEvent.click(
