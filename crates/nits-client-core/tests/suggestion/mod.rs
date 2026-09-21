@@ -29,7 +29,10 @@ fn ready() -> ClientCore {
             blob_oid: BlobOid::from_bytes([1; 20]),
         };
         core.handle(Input::Server(ServerMsg::Event {
-            event: event(n as u64 + 1, EventBody::CommentCreated { comment: c }),
+            event: event(
+                u64::try_from(n).unwrap() + 1,
+                EventBody::CommentCreated { comment: c },
+            ),
         }))
         .unwrap();
     }

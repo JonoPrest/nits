@@ -4425,10 +4425,11 @@ impl ClientCore {
             (waiting, _) => {
                 let expected = match waiting {
                     InFlight::PreviewSuggestion { .. } => "SuggestionPreview",
-                    InFlight::ApplySuggestion { .. } => "Committed",
                     InFlight::Subscribe => "Subscribed",
                     InFlight::CreationDefault { .. } => "DefaultBase",
-                    InFlight::CreateReview { .. } | InFlight::Mutate { .. } => "Committed",
+                    InFlight::CreateReview { .. }
+                    | InFlight::Mutate { .. }
+                    | InFlight::ApplySuggestion { .. } => "Committed",
                     InFlight::ReconcileCreation { .. } | InFlight::CheckFailedCreation { .. } => {
                         "Review"
                     }
