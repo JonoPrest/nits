@@ -3295,6 +3295,7 @@ dependencies = [
  "nits-test-support",
  "proptest",
  "redb",
+ "rustix",
  "serde",
  "serde_json",
  "syntect",

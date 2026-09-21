@@ -234,3 +234,91 @@ fn malformed_patches_leave_file_and_log_untouched_then_valid_suggestion_succeeds
         b"a\r\nB\r\nc\r\n"
     );
 }
+
+#[test]
+fn linked_suggestion_targets_never_modify_outside_bytes_or_append_success() {
+    use std::os::unix::fs::symlink;
+    for kind in ["file symlink", "parent symlink", "hard link"] {
+        let fixture = Suggestion::new(b"base\n");
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("file.txt");
+        std::fs::write(&victim, b"base\n").unwrap();
+        let path = if kind == "parent symlink" {
+            let dir = fixture.repo.path().join("dir");
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("file.txt"), b"base\n").unwrap();
+            RepoPath::new("dir/file.txt").unwrap()
+        } else {
+            RepoPath::new("file.txt").unwrap()
+        };
+        let id = CommentId::from_parts(5, 1);
+        fixture
+            .core
+            .add_comment(
+                &fixture.ctx,
+                fixture.review,
+                id,
+                CommentKind::Suggestion {
+                    patch: "@@ -1 +1 @@\n-base\n+changed\n".into(),
+                },
+                Anchor::File {
+                    repo_id: fixture.repo_id,
+                    path: path.clone(),
+                    blob_oid: fixture.blob,
+                },
+                "linked target".into(),
+                None,
+            )
+            .unwrap();
+        let target = fixture.repo.path().join(path.as_str());
+        if kind == "parent symlink" {
+            std::fs::remove_dir_all(fixture.repo.path().join("dir")).unwrap();
+            symlink(outside.path(), fixture.repo.path().join("dir")).unwrap();
+        } else {
+            std::fs::remove_file(&target).unwrap();
+            if kind == "file symlink" {
+                symlink(&victim, &target).unwrap();
+            } else {
+                std::fs::hard_link(&victim, &target).unwrap();
+            }
+        }
+        let before = fixture.core.last_seq().unwrap();
+        let error = fixture
+            .core
+            .apply_suggestion(&fixture.ctx, fixture.review, id)
+            .unwrap_err();
+        assert!(
+            matches!(error, CoreError::Invalid { .. }),
+            "{kind}: {error}"
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), b"base\n", "{kind}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"base\n", "{kind}");
+        assert_eq!(fixture.core.last_seq().unwrap(), before, "{kind}");
+        assert!(fixture.core.events_after(before).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn executable_suggestion_preserves_permissions_and_exact_unterminated_crlf_bytes() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let fixture = Suggestion::new(b"base\r\nlast");
+    let file = fixture.repo.path().join("file.txt");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o751)).unwrap();
+    let id = CommentId::from_parts(5, 1);
+    fixture.add(id, "@@ -1 +1 @@\n-base\r\n+changed\r\n");
+    fixture
+        .core
+        .apply_suggestion(&fixture.ctx, fixture.review, id)
+        .unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"changed\r\nlast");
+    assert_eq!(std::fs::metadata(&file).unwrap().mode() & 0o777, 0o751);
+    assert!(
+        !std::fs::read_dir(fixture.repo.path().join(".git"))
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("nits-suggestion-"))
+    );
+}
