@@ -451,19 +451,10 @@ async fn connect_endpoint(
     identity: Identity,
     protocol: ProtocolVersion,
 ) -> Result<Client, ContextError> {
-    let ssh_requires_running = matches!(
-        endpoint,
-        DaemonEndpoint::Ssh {
-            start: StartPolicy::RequireRunning,
-            ..
-        }
-    );
     let (read, write) = dial(endpoint).await?.into_parts();
-    match Client::handshake_framed(read, write, identity, protocol).await {
-        Ok(client) => Ok(client),
-        Err(ClientError::Closed) if ssh_requires_running => Err(ContextError::NotRunning),
-        Err(err) => Err(err.into()),
-    }
+    Client::handshake_framed(read, write, identity, protocol)
+        .await
+        .map_err(Into::into)
 }
 
 /// Probe without starting anything.
@@ -794,7 +785,6 @@ mod tests {
     async fn ssh_exit_outcomes_distinguish_ownership_from_absence_and_transport_failure() {
         let dir = tempfile::tempdir().unwrap();
         for (code, expected) in [
-            (0, Status::Stopped), // legacy EOF-only proxy
             (3, Status::Stopped),
             (
                 4,
@@ -825,7 +815,9 @@ mod tests {
                 phase: Phase::Unknown
             }
         );
-        for code in [1, 2, 8, 255] {
+        // A clean proxy EOF can follow a successful connection just before
+        // shutdown; only exit 3 proves the remote store is no longer owned.
+        for code in [0, 1, 2, 8, 255] {
             let context = scripted_ssh(dir.path(), &format!("exit {code}"));
             assert!(
                 matches!(status(&context).await, Status::Unreachable { .. }),

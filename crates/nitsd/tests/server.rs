@@ -1188,8 +1188,9 @@ async fn agent_cannot_mark_viewed_and_errors_carry_request_id() {
 #[tokio::test]
 async fn stale_socket_file_is_replaced_and_live_one_is_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let path = std::env::temp_dir().join(format!("nitsd-{}.sock", ulid_ish()));
-    std::fs::write(&path, b"stale").unwrap();
+    let path = dir.path().join("daemon.sock");
+    // A stale Unix socket is different from an unrelated regular file.
+    drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
     let daemon = Daemon::open(
         &DataDir::new(dir.path()),
         BuildInfo {
@@ -1200,13 +1201,17 @@ async fn stale_socket_file_is_replaced_and_live_one_is_refused() {
     .unwrap();
     let server = UnixServer::bind(&path).unwrap();
     let shutdown = CancellationToken::new();
-    tokio::spawn(server.run(Arc::clone(&daemon), shutdown.clone()));
+    let task = tokio::spawn(server.run(Arc::clone(&daemon), shutdown.clone()));
     assert!(Path::new(&path).exists());
     assert!(
         UnixServer::bind(&path).is_err(),
         "a live daemon is not replaced"
     );
     shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 /// Expand each listed `async fn name(t: Transport)` into a `#[tokio::test]`
