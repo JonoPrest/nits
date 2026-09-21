@@ -10,6 +10,7 @@
 //! the object database and every later read goes through OIDs like any other
 //! ref. Unchanged files keep their index OID.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -223,7 +224,7 @@ impl Repo {
     }
 
     /// Run `git` in the work dir with extra env; returns raw stdout.
-    fn git(&self, args: &[&str], env: &[(&str, &Path)]) -> Result<Vec<u8>, GitError> {
+    fn git(&self, args: &[&str], env: &[(&str, &OsStr)]) -> Result<Vec<u8>, GitError> {
         let out = Command::new("git")
             .args(args)
             .current_dir(&self.workdir)
@@ -961,7 +962,14 @@ impl Repo {
             std::io::copy(&mut source, &mut index)?;
             index.set_modified(modified)?;
         }
-        let env: &[(&str, &Path)] = &[("GIT_INDEX_FILE", tmp_path.as_path())];
+        // `add` can refresh submodule indexes even with our private index.
+        // Suppress those optional writes so background snapshots cannot lock
+        // the user's dependency checkout; our own index's mandatory writes
+        // and locks still occur normally.
+        let env: &[(&str, &OsStr)] = &[
+            ("GIT_INDEX_FILE", tmp_path.as_os_str()),
+            ("GIT_OPTIONAL_LOCKS", OsStr::new("0")),
+        ];
         self.git(&["add", "-A", "--ignore-errors", "--", "."], env)?;
         let out = self.git(&["write-tree"], env)?;
         let text = String::from_utf8_lossy(&out);
