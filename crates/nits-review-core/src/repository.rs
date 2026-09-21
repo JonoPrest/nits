@@ -7,12 +7,8 @@ use std::sync::Arc;
 
 use nits_protocol::{EntityKind, EventBody, Repo, RepoId, ReviewId, WorkspaceId};
 
-use crate::git::Repo as GitRepo;
+use crate::git::{CheckoutPath, Repo as GitRepo};
 use crate::{Core, CoreError, Ctx};
-
-/// A checkout root, not the common Git directory shared by linked worktrees.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CheckoutPath(PathBuf);
 
 #[derive(Debug, Clone)]
 struct OpenedRepo {
@@ -22,8 +18,8 @@ struct OpenedRepo {
 
 impl OpenedRepo {
     fn open(path: &Path) -> Result<Self, CoreError> {
-        let git = GitRepo::open_canonical(path)?;
-        let checkout = CheckoutPath(git.workdir().to_path_buf());
+        let checkout = CheckoutPath::resolve(path)?;
+        let git = GitRepo::open(checkout.as_path())?;
         Ok(Self {
             checkout,
             git: Arc::new(git),
@@ -54,7 +50,7 @@ impl Core {
                     ))
                 })?;
                 let opened = match registry.opened.get(&id) {
-                    Some(cached) if cached.checkout.0 == path => cached.clone(),
+                    Some(cached) if cached.checkout.as_path() == path => cached.clone(),
                     Some(_) | None => OpenedRepo::open(&path).map_err(|error| {
                         CoreError::invalid(format!(
                             "repo {id} in workspace {} cannot open {}: {error}; detach this membership to repair it",
@@ -66,9 +62,9 @@ impl Core {
                     if previous.checkout != opened.checkout {
                         return Err(CoreError::invalid(format!(
                             "repo {id} has conflicting checkout memberships: workspace {owner} ({}) and workspace {} ({}); detach the incorrect membership before accessing this repo",
-                            previous.checkout.0.display(),
+                            previous.checkout.as_path().display(),
                             workspace.id,
-                            opened.checkout.0.display()
+                            opened.checkout.as_path().display()
                         )));
                     }
                 } else {
@@ -90,8 +86,8 @@ impl Core {
         {
             return Err(CoreError::invalid(format!(
                 "repo {id} already identifies {}; cannot attach it to {}",
-                bound.checkout.0.display(),
-                candidate.checkout.0.display()
+                bound.checkout.as_path().display(),
+                candidate.checkout.as_path().display()
             )));
         }
         Ok(())
@@ -108,7 +104,7 @@ impl Core {
     ) -> Result<Repo, CoreError> {
         let repo = Repo {
             id: repo_id,
-            path: opened.checkout.0.to_string_lossy().into_owned(),
+            path: opened.checkout.as_path().to_string_lossy().into_owned(),
             display_name,
         };
         self.append(
@@ -152,7 +148,7 @@ impl Core {
             {
                 return Err(CoreError::invalid(format!(
                     "checkout {} is already attached to workspace {workspace_id} as repo {}; reuse this repository ID or detach that membership before attaching again. Attaching it to another workspace is allowed",
-                    opened.checkout.0.display(),
+                    opened.checkout.as_path().display(),
                     member.id
                 )));
             }
@@ -238,7 +234,14 @@ impl Core {
     /// must use the same ownership validation as Git-backed reads, including
     /// legacy ambiguity and unavailable memberships.
     pub fn repo_checkout_path(&self, id: RepoId) -> Result<PathBuf, CoreError> {
-        Ok(self.repo(id)?.workdir().to_path_buf())
+        let registry = self
+            .repositories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let opened = self
+            .bound_repo(&registry, id)?
+            .ok_or_else(|| CoreError::not_found(EntityKind::Repo, &id))?;
+        Ok(opened.checkout.as_path().to_path_buf())
     }
 
     pub(crate) fn workspace_repo(

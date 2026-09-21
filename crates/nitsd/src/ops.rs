@@ -186,8 +186,10 @@ impl Ops {
                 // accessible aliases, but retain advertised-path inference when
                 // its checkout cannot be opened on this client. Open exactly the
                 // advertised path; discovering ancestors could match another repo.
-                let git = nits_review_core::git::Repo::open_canonical(advertised).ok();
-                let root = git.as_ref().map_or(advertised, |git| git.workdir());
+                let checkout = nits_review_core::git::CheckoutPath::resolve(advertised).ok();
+                let root = checkout
+                    .as_ref()
+                    .map_or(advertised, |checkout| checkout.as_path());
                 if !dir.starts_with(root) {
                     continue;
                 }

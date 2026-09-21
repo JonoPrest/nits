@@ -1,6 +1,6 @@
 //! Directory bootstrap runs beside git and under the daemon's writer queue.
 
-use crate::git::Repo;
+use crate::git::{CheckoutPath, Repo};
 use crate::{Core, CoreError, Ctx};
 use nits_protocol::{
     DirectoryReview, DirectoryReviewOutcome, EnsureDirectoryReview, NonEmpty, RefSpec,
@@ -117,8 +117,8 @@ impl Core {
                     .repos
                     .iter()
                     .filter(|repo| {
-                        Repo::open_canonical(Path::new(&repo.path))
-                            .is_ok_and(|git| git.workdir() == root)
+                        CheckoutPath::resolve(Path::new(&repo.path))
+                            .is_ok_and(|checkout| checkout.as_path() == root)
                     })
                     .map(move |repo| (workspace.id, repo.id))
             })
