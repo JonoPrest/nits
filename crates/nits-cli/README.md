@@ -57,6 +57,14 @@ repository's existing attachment and rejects `--workspace`. For an explicit
 workspace, use `nits --workspace <ID> review create --repo <REPO_ID> --base <REF>
 --head worktree`; `nits workspace list` shows the repository IDs.
 
+A checkout can be attached once per workspace, including through symlinks or its
+`.git` directory. Repeating `workspace attach` reports the existing repository ID;
+it does not create another attachment. The same checkout can belong to another
+workspace, and separate Git worktrees remain distinct. Use `nits workspace detach
+<WORKSPACE> <REPO>` to remove a membership or repair older duplicates. Detaching
+keeps checkout files and review/comment history. Reviews that used the removed
+membership cannot read checkout content through it.
+
 ```console
 $ nits -c build-box --workspace <ID> review list
 $ nits --daemon-url ws://reviews.example:7677 workspace list

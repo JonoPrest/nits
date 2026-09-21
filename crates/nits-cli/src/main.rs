@@ -303,6 +303,14 @@ enum WorkspaceCmd {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Detach one repository membership; keeps its checkout and review history.
+    Detach {
+        #[arg(value_name = "WORKSPACE")]
+        workspace_id: WorkspaceId,
+        /// Repository ID from `workspace list`.
+        #[arg(value_name = "REPO")]
+        repo_id: RepoId,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1337,6 +1345,13 @@ async fn workspace(ops: &mut Ops, cmd: WorkspaceCmd, json: bool) -> anyhow::Resu
                 .attach_repo(workspace_id, path.to_string_lossy().into_owned(), display)
                 .await?;
             emit(json, &event, || id.to_string())
+        }
+        WorkspaceCmd::Detach {
+            workspace_id,
+            repo_id,
+        } => {
+            let event = ops.detach_repo(workspace_id, repo_id).await?;
+            emit(json, &event, || format!("detached {repo_id}"))
         }
     }
 }

@@ -199,6 +199,22 @@ impl Ops {
                 }
             }
         }
+        if let Some(first) = best.first()
+            && best.len() > 1
+            && best
+                .iter()
+                .all(|entry| entry.workspace.id == first.workspace.id)
+        {
+            return Err(OpsError::Invalid(format!(
+                "{} has multiple repository attachments in workspace {} ({}); use `workspace detach WORKSPACE REPO` to remove duplicate memberships",
+                dir.display(),
+                first.workspace.id,
+                best.iter()
+                    .map(|entry| entry.repo.id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
         match best.len() {
             1 => Ok(best.remove(0)),
             0 => Err(OpsError::Invalid(format!(
@@ -484,6 +500,18 @@ impl Ops {
             })
             .await?;
         Ok((repo_id, event))
+    }
+
+    pub async fn detach_repo(
+        &mut self,
+        workspace_id: WorkspaceId,
+        repo_id: RepoId,
+    ) -> Result<Event, OpsError> {
+        self.mutate(Mutation::DetachRepo {
+            workspace_id,
+            repo_id,
+        })
+        .await
     }
 
     pub async fn create_review(

@@ -151,7 +151,18 @@ async fn serve_older_protocol_until_shutdown(
 }
 
 fn start() -> Harness {
+    start_seeded(|_, _| {})
+}
+
+fn start_seeded(seed: impl FnOnce(&DataDir, &TestRepo)) -> Harness {
     let dir = tempfile::tempdir().unwrap();
+    let repo = RepoBuilder::new()
+        .commit("base", files!["a.rs" => "fn a() {}\nfn z() {}\n"])
+        .branch("feature")
+        .commit("feat", files!["a.rs" => "fn a() { 1; }\nfn z() {}\n"])
+        .build()
+        .unwrap();
+    seed(&DataDir::new(dir.path()), &repo);
     let socket = std::env::temp_dir().join(format!(
         "nits-cli-{}-{}.sock",
         std::process::id(),
@@ -180,12 +191,6 @@ fn start() -> Harness {
         .unwrap();
     let ws_url = format!("ws://{}", ws_server.addr());
     rt.spawn(ws_server.run(Arc::clone(&daemon), shutdown.clone()));
-    let repo = RepoBuilder::new()
-        .commit("base", files!["a.rs" => "fn a() {}\nfn z() {}\n"])
-        .branch("feature")
-        .commit("feat", files!["a.rs" => "fn a() { 1; }\nfn z() {}\n"])
-        .build()
-        .unwrap();
     Harness {
         dir,
         socket,
@@ -2311,3 +2316,5 @@ fn event_scopes_keep_review_workspace_recipient_and_all_filters() {
         assert!(!events.contains("unrelated-workspace"));
     }
 }
+
+mod duplicates;
