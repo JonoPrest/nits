@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use nits_client_core::{
     Action, Bytes, CacheConfig, CacheKey, CacheValue, ClientCore, Config, ConnectionView,
     CoreError, DiskTier, Effect, FileRef, Focus, IdSeed, Input, KeyChord, NamedKey,
-    PREFETCH_RADIUS, RenderKey, ScopeChoice, TransportEvent, resolve_command,
+    PREFETCH_RADIUS, RenderKey, ScopeChoice, TransportEvent, TreeKey, resolve_command,
 };
 use nits_protocol::{
     Author, BlobOid, BuildInfo, ChangeKind, ChunkIndex, ClientId, ClientMsg, ClientSeq, CommitOid,
@@ -202,7 +202,10 @@ fn header_key(p: &str) -> CacheKey {
 
 fn tree_key(fill: u8) -> CacheKey {
     CacheKey::Tree {
-        root: tree_oid(fill),
+        tree: TreeKey {
+            repo_id: repo_id(),
+            root: tree_oid(fill),
+        },
     }
 }
 
@@ -584,7 +587,19 @@ fn streamed_open_fills_and_pins_the_cache_and_renders_once_at_end() {
     // a.rs is the auto-opened file, so its chunks are pinned too.
     assert!(cache.is_pinned(&chunk_key("a.rs", 0)));
     let open = core.view().review.as_ref().unwrap();
-    assert_eq!(open.trees, vec![tree_oid(1), tree_oid(2)]);
+    assert_eq!(
+        open.trees,
+        vec![
+            TreeKey {
+                repo_id: repo_id(),
+                root: tree_oid(1)
+            },
+            TreeKey {
+                repo_id: repo_id(),
+                root: tree_oid(2)
+            }
+        ]
+    );
     assert_eq!(open.files, vec![render_key("a.rs"), render_key("b.rs")]);
 }
 
@@ -1371,7 +1386,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
 }
 
 #[test]
-fn tree_delta_applies_in_place_and_renders_the_tree() {
+fn tree_delta_preserves_immutable_roots_until_targets_change() {
     let mut core = subscribed(local());
     open_streamed(&mut core);
     let delta = TreeDelta {
@@ -1392,11 +1407,11 @@ fn tree_delta_applies_in_place_and_renders_the_tree() {
     let effects = core
         .handle(Input::Server(ServerMsg::TreeDelta { delta }))
         .unwrap();
-    // The cache updates in place; the diffing tree (changed files only)
+    // The cache adds a snapshot; the diffing tree (changed files only)
     // does not depend on the head tree, so nothing re-renders.
     assert_eq!(rendered(&effects), Vec::new());
-    assert!(!core.cache().contains(&tree_key(2)));
-    assert!(core.cache().is_pinned(&tree_key(9)));
+    assert!(core.cache().contains(&tree_key(2)));
+    assert!(!core.cache().is_pinned(&tree_key(9)));
     let Some(CacheValue::Tree { snapshot }) = core.cache().peek(&tree_key(9)) else {
         panic!("tree 9 missing");
     };
@@ -1408,7 +1423,16 @@ fn tree_delta_applies_in_place_and_renders_the_tree() {
     assert_eq!(paths, vec!["a.rs", "b.rs", "d.rs"]);
     assert_eq!(
         core.view().review.as_ref().unwrap().trees,
-        vec![tree_oid(1), tree_oid(9)]
+        vec![
+            TreeKey {
+                repo_id: repo_id(),
+                root: tree_oid(1)
+            },
+            TreeKey {
+                repo_id: repo_id(),
+                root: tree_oid(2)
+            }
+        ]
     );
     // A delta for an unknown root is ignored.
     let effects = core
@@ -4248,3 +4272,6 @@ fn portable_reply_link_preserves_deferred_browse_source_and_inflight_review_requ
         assert_eq!(core.view().requests.len(), 1);
     }
 }
+
+#[path = "cache_flow/shared_trees.rs"]
+mod shared_trees;

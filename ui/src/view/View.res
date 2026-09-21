@@ -98,12 +98,17 @@ module OpenFile = {
   type t = {render: RenderKey.t, @as("first_row") firstRow: int, @as("last_row") lastRow: int}
 }
 
+module TreeKey = {
+  @schema
+  type t = {@as("repo_id") repoId: repoId, root: treeOid}
+}
+
 module OpenReview = {
   @schema
   type t = {
     snapshot: Domain.ReviewSnapshot.t,
     pending: array<PendingEvent.t>,
-    trees: array<treeOid>,
+    trees: array<TreeKey.t>,
     files: array<RenderKey.t>,
     @as("open_file") openFile: @s.null option<OpenFile.t>,
     scope: Domain.DiffScope.t,

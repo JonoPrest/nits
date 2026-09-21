@@ -415,7 +415,7 @@ Hosts (Tauri, wasm, TUI) own: transport, local KV store, clock. This makes the c
 
 ### 5.1 Cache
 
-Content-addressed, so never stale: blobs by OID, trees by OID, diff render models by `(base_oid, head_oid, opts)`. On opening a review the daemon streams the full diff set and touched blobs; the file explorer prefetches siblings. Cache hit ⇒ zero-latency navigation.
+Content-addressed, so never stale: blobs by OID, repository-scoped tree snapshots by `(repo_id, root_oid)`, diff render models by `(base_oid, head_oid, opts)`. On opening a review the daemon streams the full diff set and touched blobs; the file explorer prefetches siblings. Cache hit ⇒ zero-latency navigation.
 
 Two tiers, both LRU with a **byte budget**:
 
@@ -425,6 +425,8 @@ Two tiers, both LRU with a **byte budget**:
 Both budgets are configurable. Because keys are OIDs, on-disk entries never need invalidation; the disk tier is only ever trimmed by LRU or cleared explicitly.
 
 **Local daemon ⇒ no client disk tier.** When the client connects to a unix socket on its own host, the daemon's `render-cache.redb` already holds every header and chunk, and a local socket round-trip is sub-millisecond, so the client runs memory-only and misses go to the daemon. The disk tier is enabled only for remote daemons (SSH/WebSocket). This avoids a second copy on disk without sharing a file between processes: redb is single-process (exclusive lock), so "daemon writes, client reads the same tables" is not possible without changing the store engine. If a shared local cache is ever wanted, `RenderCache` is the isolated seam to swap for sqlite.
+
+Tree cache keys include the repository because identical Git trees can belong to different checkouts; legacy root-only client KV keys are ignored. Working-tree deltas add a new immutable snapshot without deleting the old ref or another repository’s snapshot.
 
 Cache entries are `TreeSnapshot`s (§4.7), render headers and render **chunks** (§4.6), never whole files. Chunks of the open file are pinned while it is open; on close they return to normal LRU.
 

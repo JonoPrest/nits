@@ -22,12 +22,12 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use nits_protocol::{
     ChunkIndex, ClientMsg, FileChange, FileRenderHeader, RefSpec, RenderContent, RenderOpts,
     RenderTarget, RepoId, RepoPath, Request, ResolvedRef, ResolvedSource, ResolvedTarget, ReviewId,
-    TreeDelta, TreeEntry, TreeOid, TreeSnapshot, ViewSection,
+    TreeDelta, TreeEntry, TreeSnapshot, ViewSection,
 };
 use serde::{Deserialize, Serialize};
 use strum::EnumDiscriminants;
 
-use crate::cache::{Bytes, CacheKey, CacheValue, ContentCache, Evicted, RenderKey};
+use crate::cache::{Bytes, CacheKey, CacheValue, ContentCache, Evicted, RenderKey, TreeKey};
 use crate::view::OpenFile;
 use crate::{ClientCore, CoreError, Effect, InFlight, Key};
 
@@ -139,9 +139,8 @@ impl DiskIndex {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Fetch {
     Tree {
-        repo_id: RepoId,
+        tree: TreeKey,
         ref_spec: RefSpec,
-        root: TreeOid,
     },
     /// `FileRender` stream: header then chunks from `first_chunk`; the core
     /// cancels once a chunk past `stop_after` arrives.
@@ -160,7 +159,7 @@ pub(crate) enum Fetch {
 impl Fetch {
     fn key(&self) -> CacheKey {
         match self {
-            Fetch::Tree { root, .. } => CacheKey::Tree { root: *root },
+            Fetch::Tree { tree, .. } => CacheKey::Tree { tree: *tree },
             Fetch::Render { render, .. } => CacheKey::Header {
                 render: render.clone(),
             },
@@ -346,13 +345,12 @@ impl ClientCore {
             self.content.pending.insert(key.clone(), Pending::Requested);
             self.content.in_flight += 1;
             let (request, waiting) = match fetch {
-                Fetch::Tree {
-                    repo_id,
-                    ref_spec,
-                    root,
-                } => (
-                    Request::TreeSnapshot { repo_id, ref_spec },
-                    InFlight::TreeSnapshot { root },
+                Fetch::Tree { tree, ref_spec } => (
+                    Request::TreeSnapshot {
+                        repo_id: tree.repo_id,
+                        ref_spec,
+                    },
+                    InFlight::TreeSnapshot { tree },
                 ),
                 Fetch::Render {
                     review_id,
@@ -544,7 +542,7 @@ impl ClientCore {
             return false;
         };
         match key {
-            CacheKey::Tree { root } => open.trees.contains(root),
+            CacheKey::Tree { tree } => open.trees.contains(tree),
             // A header only ever arrives for the open review (streamed with
             // it, or requested from its file list), so it is always pinned.
             CacheKey::Header { .. } => true,
@@ -656,14 +654,30 @@ impl ClientCore {
         let mut trees = Vec::new();
         for t in &targets {
             for r in [&t.base, &t.head] {
-                if !trees.contains(&r.tree) {
-                    trees.push(r.tree);
+                let tree = TreeKey {
+                    repo_id: t.repo_id,
+                    root: r.tree,
+                };
+                if !trees.contains(&tree) {
+                    trees.push(tree);
                     fetches.push(Fetch::Tree {
-                        repo_id: t.repo_id,
+                        tree,
                         ref_spec: ref_spec_of(r),
-                        root: r.tree,
                     });
                 }
+            }
+        }
+        // A resolved-target refresh must not unpin a custom Browse ref
+        // just because its repository's current head moved elsewhere.
+        if let Some(browse) = &self.browse
+            && let Some(root) = browse.root
+        {
+            let tree = TreeKey {
+                repo_id: browse.repo_id,
+                root,
+            };
+            if !trees.contains(&tree) {
+                trees.push(tree);
             }
         }
         open.trees = trees;
@@ -775,7 +789,7 @@ impl ClientCore {
             None => (Vec::new(), Vec::new(), None, None),
         };
         self.content.cache.retain_pins(|k| match k {
-            CacheKey::Tree { root } => trees.contains(root),
+            CacheKey::Tree { tree } => trees.contains(tree),
             CacheKey::Header { render } => {
                 files.contains(render)
                     || original.as_ref() == Some(render)
@@ -837,7 +851,12 @@ impl ClientCore {
                     .tree
             }
         };
-        let CacheValue::Tree { snapshot } = self.content.cache.peek(&CacheKey::Tree { root })?
+        let CacheValue::Tree { snapshot } = self.content.cache.peek(&CacheKey::Tree {
+            tree: TreeKey {
+                repo_id: file.repo_id,
+                root,
+            },
+        })?
         else {
             return None;
         };
@@ -1009,25 +1028,24 @@ impl ClientCore {
 
     // ---- tree deltas ----------------------------------------------------
 
-    /// Apply a working-tree delta in place: the snapshot under `from_root`
-    /// becomes the one under `to_root`. Unknown `from_root` is ignored.
+    /// Build the new immutable snapshot for this repository. The old key
+    /// remains valid for pinned refs, other scopes and historical reviews;
+    /// resolved-target events decide which trees the active review pins.
     pub(crate) fn tree_delta(&mut self, delta: &TreeDelta) -> Vec<Effect> {
         let from = CacheKey::Tree {
-            root: delta.from_root,
+            tree: TreeKey {
+                repo_id: delta.repo_id,
+                root: delta.from_root,
+            },
         };
-        let Some(CacheValue::Tree { snapshot }) = self.content.cache.remove(&from) else {
+        let Some(CacheValue::Tree { snapshot }) = self.content.cache.peek(&from) else {
             return Vec::new();
         };
-        let snapshot = apply_delta(snapshot, delta);
+        let snapshot = apply_delta(snapshot.clone(), delta);
         let mut effects = Vec::new();
-        if let Some(open) = &mut self.view.review
-            && let Some(slot) = open.trees.iter_mut().find(|t| **t == delta.from_root)
-        {
-            *slot = delta.to_root;
-        }
         self.arrived(
             CacheKey::Tree {
-                root: delta.to_root,
+                tree: TreeKey::of_snapshot(&snapshot),
             },
             CacheValue::Tree { snapshot },
             Arrival::Response,
@@ -1123,7 +1141,7 @@ fn apply_delta(mut snapshot: TreeSnapshot, delta: &TreeDelta) -> TreeSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nits_protocol::{Oid, TreeEntryKind};
+    use nits_protocol::{Oid, TreeEntryKind, TreeOid};
 
     fn header(chunk_rows: u32, chunk_count: u32) -> FileRenderHeader {
         FileRenderHeader {
@@ -1205,7 +1223,10 @@ mod tests {
     fn disk_index_trims_oldest_first() {
         let mut d = DiskIndex::new(Bytes(20));
         let k = |f: u8| CacheKey::Tree {
-            root: TreeOid::from_bytes([f; 20]),
+            tree: TreeKey {
+                repo_id: RepoId::from_parts(1, 1),
+                root: TreeOid::from_bytes([f; 20]),
+            },
         };
         assert!(d.touch(&k(1), Bytes(10)).is_empty());
         assert!(d.touch(&k(2), Bytes(10)).is_empty());

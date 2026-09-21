@@ -1,7 +1,7 @@
 //! Content cache, memory tier (plan 3.2, `docs/ARCHITECTURE.md` §5.1).
 //!
-//! Every entry is content-addressed — trees by root oid, render headers and
-//! chunks by `(repo, path, target, opts[, chunk])` where `target` names the
+//! Every entry is content-addressed — trees by repository and root oid,
+//! render headers and chunks by `(repo, path, target, opts[, chunk])` where `target` names the
 //! blob oids — so nothing here is ever stale; entries only leave by LRU
 //! eviction under the byte budget. Values are headers and chunks, never
 //! whole files.
@@ -61,13 +61,34 @@ impl RenderKey {
     }
 }
 
+/// A repository's immutable tree. Git root OIDs identify contents, but a
+/// snapshot also carries the repository used by navigation and mutations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TreeKey {
+    pub repo_id: RepoId,
+    pub root: TreeOid,
+}
+
+impl TreeKey {
+    #[must_use]
+    pub fn of_snapshot(snapshot: &TreeSnapshot) -> Self {
+        Self {
+            repo_id: snapshot.repo_id,
+            root: snapshot.root_oid,
+        }
+    }
+}
+
 /// What a cache entry is. The serialised form (`serde_json`) is the host KV
-/// key, so the wire spelling here is what lands on disk; keep it stable.
+/// key, so the wire spelling here is what lands on disk. Legacy root-only
+/// tree keys are intentionally not requested or decoded: their snapshots
+/// may have been overwritten by a different repository with that root.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum CacheKey {
     Tree {
-        root: TreeOid,
+        tree: TreeKey,
     },
     Header {
         render: RenderKey,
@@ -121,7 +142,9 @@ impl CacheValue {
     #[must_use]
     pub fn matches(&self, key: &CacheKey) -> bool {
         match (self, key) {
-            (CacheValue::Tree { snapshot }, CacheKey::Tree { root }) => snapshot.root_oid == *root,
+            (CacheValue::Tree { snapshot }, CacheKey::Tree { tree }) => {
+                TreeKey::of_snapshot(snapshot) == *tree
+            }
             (CacheValue::Header { header }, CacheKey::Header { render }) => {
                 RenderKey::of_header(header) == *render
             }
@@ -219,8 +242,8 @@ impl ContentCache {
         self.entries.get(key).map(|e| &e.value)
     }
 
-    pub fn tree(&mut self, root: TreeOid) -> Option<&TreeSnapshot> {
-        match self.get(&CacheKey::Tree { root })? {
+    pub fn tree(&mut self, tree: TreeKey) -> Option<&TreeSnapshot> {
+        match self.get(&CacheKey::Tree { tree })? {
             CacheValue::Tree { snapshot } => Some(snapshot),
             CacheValue::Header { .. } | CacheValue::Chunk { .. } => None,
         }
@@ -339,7 +362,10 @@ mod tests {
 
     fn tree_key(fill: u8) -> CacheKey {
         CacheKey::Tree {
-            root: TreeOid::from_bytes([fill; 20]),
+            tree: TreeKey {
+                repo_id: RepoId::from_parts(1, 1),
+                root: TreeOid::from_bytes([fill; 20]),
+            },
         }
     }
 
@@ -360,8 +386,20 @@ mod tests {
         assert!(c.insert(tree_key(1), tree_value(1), Bytes(10)).is_empty());
         assert_eq!(c.get(&tree_key(1)), Some(&tree_value(1)));
         assert_eq!(c.used(), Bytes(10));
-        assert!(c.tree(TreeOid::from_bytes([1; 20])).is_some());
-        assert!(c.tree(TreeOid::from_bytes([2; 20])).is_none());
+        assert!(
+            c.tree(TreeKey {
+                repo_id: RepoId::from_parts(1, 1),
+                root: TreeOid::from_bytes([1; 20])
+            })
+            .is_some()
+        );
+        assert!(
+            c.tree(TreeKey {
+                repo_id: RepoId::from_parts(1, 1),
+                root: TreeOid::from_bytes([2; 20])
+            })
+            .is_none()
+        );
     }
 
     #[test]
