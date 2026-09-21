@@ -204,6 +204,7 @@ fn duplicate_creation_targets_fail_before_lookups_resolution_or_events() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // One repair scenario preserves history across both rebuilds.
 fn legacy_duplicate_reviews_survive_rebuild_and_explicit_archive_replacement_repair() {
     use nits_review_core::store::{NewEvent, Store};
     let w = world();

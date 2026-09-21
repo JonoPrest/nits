@@ -473,8 +473,7 @@ pub struct CreateReview {
     pub title: String,
     /// Choose exactly one base/head pair per repository. Repeated repository
     /// IDs are rejected even when their refs differ or their IDs are implicit.
-    #[schemars(length(min = 1))]
-    pub targets: Vec<TargetSpec>,
+    pub targets: NonEmpty<TargetSpec>,
 }
 
 /// Rename a review or change its status.
