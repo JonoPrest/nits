@@ -220,6 +220,9 @@ Goal: usable desktop app.
 
 ## Later
 - Browser build (`nits-client-wasm`, daemon serves `ui/`), TUI, cross-machine sync, GitHub export.
+- GitHub PR integration: [proposal for #49](GITHUB-PR-INTEGRATION.md) covers inline
+  imports, explicit publishing, daemon-owned authentication and UI concepts.
+  Proposed phases are not yet scheduled milestones.
 
 ## Finding dispositions (#73)
 
