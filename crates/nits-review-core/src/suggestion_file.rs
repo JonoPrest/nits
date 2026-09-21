@@ -408,7 +408,7 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     struct Fixture {
-        _dir: tempfile::TempDir,
+        dir: tempfile::TempDir,
         root: std::path::PathBuf,
         metadata: std::path::PathBuf,
         outside: std::path::PathBuf,
@@ -426,7 +426,7 @@ mod tests {
             std::fs::write(root.join("dir/file"), b"base\n").unwrap();
             std::fs::write(outside.join("file"), b"base\n").unwrap();
             Self {
-                _dir: dir,
+                dir,
                 root,
                 metadata,
                 outside,
@@ -544,8 +544,8 @@ mod tests {
             for linked in [false, true] {
                 let fixture = Fixture::new();
                 let mut file = fixture.open();
-                let moved = fixture._dir.path().join("moved-checkout");
-                let replacement = fixture._dir.path().join("replacement-checkout");
+                let moved = fixture.dir.path().join("moved-checkout");
+                let replacement = fixture.dir.path().join("replacement-checkout");
                 let mut stage_name = OsString::new();
                 let result = file.replace_with(&fixture.metadata, b"base\n", b"patched\n", |at| {
                     if at == point {
