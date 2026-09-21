@@ -27,16 +27,24 @@ the IDs/cursors returned. Context switches do not translate IDs between daemons.
 A typical opening sequence is:
 
 ```text
-list_workspaces {}
-list_reviews {"workspace_id":"WORKSPACE_ID"}
+list_reviews {"title":"PR #247"}
 get_review {"review_id":"REVIEW_ID"}
 get_diff {"review_id":"REVIEW_ID","repo_id":"REPO_ID","path":"src/parser.rs"}
 get_file {"review_id":"REVIEW_ID","repo_id":"REPO_ID","path":"src/parser.rs","side":"Head","start_line":10,"end_line":35}
 ```
 
-Omit `workspace_id` only when the MCP server's working directory identifies the
-intended attached workspace. Omit both file bounds for full content, or supply
-both as inclusive 1-based source lines. Diff display row indices are not anchors.
+`list_reviews {}` discovers all workspaces, independent of the server's working
+directory. Add `workspace_id` to scope it, `title` for a case-insensitive substring,
+or `awaiting` for an exact agent name with a pending request. Rows include
+workspace/repository identities, open findings, pending requests and last
+committed activity, newest first; archived reviews remain visible. Replies do not
+increase finding counts, and deleted/resolved/deferred roots do not count. A
+request remains pending until its named agent records a checkpoint explicitly
+answering it; this is not an approval signal. The response's `seq` belongs to its
+coherent metadata read; still open the review and use that full snapshot's cursor.
+
+Omit both file bounds for full content, or supply both as inclusive 1-based source
+lines. Diff display row indices are not anchors.
 
 For a checkout that should have a review, call
 `ensure_directory_review {"path":"/work/example-project"}`. It attaches the repo
@@ -94,8 +102,8 @@ mutually exclusive; omit all for all events. `since_context` is mandatory with a
 cursor after switching contexts; supplying it consistently also catches accidental
 cross-context reuse. An `awaiting_agent` subscription uses the recipient's exact
 `get_session_identity.author.name`. Existing requests for each opened review are
-in `get_review`/`list_comments.requests`; opening one review does not discover
-older requests in all other workspaces.
+in `get_review`/`list_comments.requests`; discover pending requests across reviews
+with `list_reviews {"awaiting":"YOUR_EXACT_AGENT_NAME"}`.
 
 MCP mutation receipts give stable IDs; most include the primary committed `seq`.
 `record_checkpoint` returns the checkpoint record with its sequence-derived `id`,
@@ -130,6 +138,13 @@ equivalents, then `--context`, `NITS_CONTEXT`, persisted default, implicit local
 Inspect `context show`, especially before opening a portable reference. Prefer a
 per-command context for this task; `context use` changes the persisted default
 for future processes. MCP switches and CLI defaults do not move each other.
+
+Discover remote reviews without a checkout with
+`nits --context review-box review list --all --title 'PR #247'`; add
+`--awaiting reviewer-a` for pending requests to that exact recipient, or replace
+`--all` with `--workspace WORKSPACE_ID` to scope discovery. Plain `review list`
+also defaults to all workspaces. `--json` returns review rows with workspace,
+finding, request and activity metadata.
 
 Bootstrap with `nits --agent reviewer-a --context review-box --json /work/example-project --headless`.
 For an explicitly new review, use `review create --base main --head worktree`

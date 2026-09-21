@@ -119,7 +119,9 @@ fn review_metadata_and_base_preserve_identity_other_fields_and_json_receipts() {
     let reviews: Value =
         serde_json::from_str(&h.out(&["review", "list", "--workspace", &workspace, "--json"]))
             .unwrap();
-    assert_eq!(reviews[0], current["review"]);
+    for (key, value) in current["review"].as_object().unwrap() {
+        assert_eq!(&reviews[0][key], value, "retained review field {key}");
+    }
 }
 
 #[test]
@@ -225,7 +227,11 @@ fn workspace_rename_and_detach_preserve_review_and_files() {
     let reviews: Value =
         serde_json::from_str(&h.out(&["--workspace", &workspace, "review", "list", "--json"]))
             .unwrap();
-    assert_eq!(reviews[0], before["review"]);
+    for (key, value) in before["review"].as_object().unwrap() {
+        assert_eq!(&reviews[0][key], value, "retained review field {key}");
+    }
+    assert_eq!(reviews[0]["workspace_name"], "after");
+    assert_eq!(reviews[0]["repositories"], serde_json::json!([]));
     assert_eq!(std::fs::read(h.repo.path().join("a.rs")).unwrap(), contents);
     assert!(
         h.out(&["events", "--since", "0"])

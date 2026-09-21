@@ -373,22 +373,13 @@ enum WorkspaceCmd {
 #[derive(Debug, Subcommand)]
 enum ReviewCmd {
     /// Rename a review, preserving its open/archived status and targets.
-    Rename {
-        review: ReviewId,
-        title: String,
-    },
+    Rename { review: ReviewId, title: String },
     /// Archive a review; keeps its comments and history and can be reopened.
-    Archive {
-        review: ReviewId,
-    },
+    Archive { review: ReviewId },
     /// Reopen an archived review after checking its current refs resolve.
-    Reopen {
-        review: ReviewId,
-    },
+    Reopen { review: ReviewId },
     /// Delete this review from listings; retains event history, with no undelete.
-    Delete {
-        review: ReviewId,
-    },
+    Delete { review: ReviewId },
     /// Change one repository's base, preserving its head and review identity.
     SetBase {
         review: ReviewId,
@@ -446,7 +437,18 @@ enum ReviewCmd {
         #[arg(long)]
         title: Option<String>,
     },
-    List,
+    /// Discover reviews across all workspaces, newest activity first.
+    List {
+        /// Explicitly select every workspace, independent of the current directory.
+        #[arg(long, conflicts_with = "workspace")]
+        all: bool,
+        /// Case-insensitive title substring (for example a PR number).
+        #[arg(long)]
+        title: Option<String>,
+        /// Exact recipient of an unanswered review request.
+        #[arg(long)]
+        awaiting: Option<String>,
+    },
     /// Review, targets, files and thread counts.
     Show {
         #[command(flatten)]
@@ -1598,6 +1600,53 @@ fn review_text(review: &Review, workspaces: &[Workspace]) -> String {
     out
 }
 
+fn review_summary_text(review: &nits_protocol::ReviewSummary) -> String {
+    let at = jiff::Timestamp::from_millisecond(review.last_activity.at.millis()).map_or_else(
+        |_| format!("{} ms since Unix epoch", review.last_activity.at.millis()),
+        |time| time.to_string(),
+    );
+    let basic = Review {
+        id: review.id,
+        workspace_id: review.workspace_id,
+        title: review.title.clone(),
+        targets: review.targets.clone(),
+        created: review.created,
+        status: review.status,
+    };
+    let workspace = Workspace {
+        id: review.workspace_id,
+        name: review.workspace_name.clone(),
+        repos: review.repositories.clone(),
+    };
+    let mut out = review_text(&basic, &[workspace]);
+    let finding_label = if review.open_findings == 1 {
+        "finding"
+    } else {
+        "findings"
+    };
+    let request_label = if review.pending_requests.len() == 1 {
+        "request"
+    } else {
+        "requests"
+    };
+    let _ = write!(
+        out,
+        "\n  {} open {finding_label} · {} pending {request_label} · last activity {} (seq {})",
+        review.open_findings,
+        review.pending_requests.len(),
+        at,
+        review.last_activity.seq,
+    );
+    for request in &review.pending_requests {
+        let _ = write!(
+            out,
+            "\n  awaiting {} (request {})",
+            request.recipient, request.id
+        );
+    }
+    out
+}
+
 /// The full `UpdateReview` RPC requires both metadata fields. Read the current
 /// record and preserve the field this CLI command does not change.
 enum ReviewMetadataEdit {
@@ -1802,21 +1851,29 @@ async fn review(
                 .await?;
             emit(json, &event, || id.to_string())
         }
-        ReviewCmd::List => {
-            let workspace = match workspace {
-                Some(w) => w,
-                None => locate_review_workspace(ops).await?.workspace.id,
+        ReviewCmd::List {
+            all,
+            title,
+            awaiting,
+        } => {
+            let scope = match (all, workspace) {
+                (false, Some(workspace_id)) => {
+                    nits_protocol::ReviewScope::Workspace { workspace_id }
+                }
+                (true, _) | (false, None) => nits_protocol::ReviewScope::All {},
             };
-            let reviews = ops.reviews(workspace).await?;
-            let workspaces = if json {
-                Vec::new()
-            } else {
-                ops.workspaces().await?
-            };
-            emit(json, &reviews, || {
-                reviews
+            let discovery = ops
+                .discover_reviews(nits_protocol::ReviewQuery {
+                    scope,
+                    title,
+                    awaiting,
+                })
+                .await?;
+            emit(json, &discovery.reviews, || {
+                discovery
+                    .reviews
                     .iter()
-                    .map(|r| review_text(r, &workspaces))
+                    .map(review_summary_text)
                     .collect::<Vec<_>>()
                     .join("\n")
             })

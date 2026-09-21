@@ -1,0 +1,10 @@
+{
+  "query": {
+    "awaiting": null,
+    "scope": {
+      "type": "All"
+    },
+    "title": null
+  },
+  "type": "DiscoverReviews"
+}

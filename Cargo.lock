@@ -3103,6 +3103,7 @@ dependencies = [
  "clap",
  "futures-util",
  "gethostname",
+ "jiff",
  "nits-client-core",
  "nits-client-host",
  "nits-client-web",

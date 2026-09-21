@@ -16,6 +16,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use strum::IntoEnumIterator;
 
+use nits_protocol::discovery::*;
 use nits_protocol::domain::*;
 use nits_protocol::events::*;
 use nits_protocol::ids::*;
@@ -193,6 +194,12 @@ registry!(
     ResolvedTarget,
     ReviewStatus,
     Review,
+    ReviewScope,
+    ReviewQuery,
+    ReviewActivity,
+    PendingReviewRequest,
+    ReviewSummary,
+    ReviewDiscovery,
     Sig,
     CommitInfo,
     Human,
@@ -882,6 +889,73 @@ struct_fixture!(
 );
 unit_enum_fixture!(ReviewStatus, "ReviewStatus");
 struct_fixture!(Review, "Review", review()?);
+enum_fixture!(
+    ReviewScope,
+    ReviewScopeKind,
+    "ReviewScope",
+    [
+        ReviewScope::All {},
+        ReviewScope::Workspace {
+            workspace_id: workspace_id()
+        }
+    ]
+);
+struct_fixture!(
+    ReviewQuery,
+    "ReviewQuery",
+    ReviewQuery {
+        scope: ReviewScope::Workspace {
+            workspace_id: workspace_id()
+        },
+        title: Some("PR #42".into()),
+        awaiting: Some("review-agent".into()),
+    }
+);
+struct_fixture!(ReviewActivity, "ReviewActivity", review_activity());
+struct_fixture!(
+    PendingReviewRequest,
+    "PendingReviewRequest",
+    pending_request()
+);
+struct_fixture!(ReviewSummary, "ReviewSummary", review_summary()?);
+struct_fixture!(
+    ReviewDiscovery,
+    "ReviewDiscovery",
+    ReviewDiscovery {
+        reviews: vec![review_summary()?],
+        seq: Seq::new(42)
+    }
+);
+
+fn review_activity() -> ReviewActivity {
+    ReviewActivity {
+        seq: Seq::new(41),
+        at: Timestamp::from_millis(1_700_000_000_000),
+    }
+}
+fn pending_request() -> PendingReviewRequest {
+    PendingReviewRequest {
+        id: ReviewRequestId::from_event_seq(Seq::new(40)),
+        recipient: "review-agent".into(),
+        created: review_activity().at,
+    }
+}
+fn review_summary() -> Result<ReviewSummary, FixtureError> {
+    let review = review()?;
+    Ok(ReviewSummary {
+        id: review.id,
+        workspace_id: review.workspace_id,
+        title: review.title,
+        targets: review.targets,
+        created: review.created,
+        status: review.status,
+        workspace_name: workspace().name,
+        repositories: workspace().repos,
+        open_findings: 2,
+        pending_requests: vec![pending_request()],
+        last_activity: review_activity(),
+    })
+}
 struct_fixture!(Sig, "Sig", sig(0));
 struct_fixture!(CommitInfo, "CommitInfo", commit_info());
 struct_fixture!(Human, "Human", human());
@@ -1633,6 +1707,9 @@ enum_fixture!(
         Request::ListReviews {
             workspace_id: workspace_id()
         },
+        Request::DiscoverReviews {
+            query: ReviewQuery::default()
+        },
         Request::ListRefs { repo_id: repo_id() },
         Request::DefaultBase { repo_id: repo_id() },
         Request::GetReview {
@@ -1747,6 +1824,12 @@ enum_fixture!(
         },
         Response::Reviews {
             reviews: vec![review()?]
+        },
+        Response::ReviewDiscovery {
+            discovery: ReviewDiscovery {
+                reviews: vec![review_summary()?],
+                seq: Seq::new(42)
+            }
         },
         Response::DefaultBase {
             base: RefSpec::Branch {

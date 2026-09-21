@@ -1,0 +1,62 @@
+{
+  "discovery": {
+    "reviews": [
+      {
+        "created": 1700000001000,
+        "id": "01HF7YATZ80000000000000004",
+        "last_activity": {
+          "at": 1700000000000,
+          "seq": 41
+        },
+        "open_findings": 2,
+        "pending_requests": [
+          {
+            "created": 1700000000000,
+            "id": 40,
+            "recipient": "review-agent"
+          }
+        ],
+        "repositories": [
+          {
+            "display_name": "nits",
+            "id": "01HF7YAT000000000000000002",
+            "path": "/home/ada/src/nits"
+          },
+          {
+            "display_name": "envio",
+            "id": "01HF7YAT000000000000000003",
+            "path": "/home/ada/src/envio"
+          }
+        ],
+        "status": "Open",
+        "targets": [
+          {
+            "base": {
+              "name": "main",
+              "type": "Branch"
+            },
+            "head": {
+              "type": "WorkingTree"
+            },
+            "repo_id": "01HF7YAT000000000000000002"
+          },
+          {
+            "base": {
+              "oid": "1f202122232425262728292a2b2c2d2e2f303132",
+              "type": "Commit"
+            },
+            "head": {
+              "type": "Head"
+            },
+            "repo_id": "01HF7YAT000000000000000003"
+          }
+        ],
+        "title": "Keyboard-first client core",
+        "workspace_id": "01HF7YAT000000000000000001",
+        "workspace_name": "hacks"
+      }
+    ],
+    "seq": 42
+  },
+  "type": "ReviewDiscovery"
+}

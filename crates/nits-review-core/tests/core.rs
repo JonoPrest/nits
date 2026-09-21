@@ -2416,3 +2416,6 @@ fn explicit_worktree_scope_remains_live_for_commit_headed_reviews() {
     ));
     assert_eq!(w.core.review_snapshot(review_id(1)).unwrap(), before);
 }
+
+#[path = "discovery/mod.rs"]
+mod discovery;

@@ -4852,6 +4852,7 @@ fn response_name(r: &Response) -> &'static str {
     match r {
         Response::Workspaces { .. } => "Workspaces",
         Response::Reviews { .. } => "Reviews",
+        Response::ReviewDiscovery { .. } => "ReviewDiscovery",
         Response::DefaultBase { .. } => "DefaultBase",
         Response::DirectoryReview { .. } => "DirectoryReview",
         Response::Review { .. } => "Review",

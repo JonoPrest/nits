@@ -91,6 +91,23 @@ impl Core {
             .collect())
     }
 
+    /// Discover reviews from one coherent metadata snapshot, without opening Git.
+    pub fn discover_reviews(
+        &self,
+        query: &nits_protocol::ReviewQuery,
+    ) -> Result<nits_protocol::ReviewDiscovery, CoreError> {
+        self.store
+            .discover_reviews(query)?
+            .ok_or_else(|| match query.scope {
+                nits_protocol::ReviewScope::Workspace { workspace_id } => {
+                    CoreError::not_found(EntityKind::Workspace, &workspace_id)
+                }
+                nits_protocol::ReviewScope::All {} => {
+                    CoreError::invalid("all-workspace discovery unavailable")
+                }
+            })
+    }
+
     /// Detect the base revision for a working-tree review in `repo_id`.
     pub fn default_base(&self, repo_id: RepoId) -> Result<RefSpec, CoreError> {
         Ok(self.repo(repo_id)?.default_base()?)

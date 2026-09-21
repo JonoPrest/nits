@@ -85,3 +85,16 @@ it("suggestion preview is a single response and never a streamed item", () => {
   expect(Registry.roundtrip("ServerMsg", { type: "Response", id: 1, response: preview }).TAG).toBe("Ok");
   expect(Registry.roundtrip("ServerMsg", { type: "StreamItem", id: 1, item: preview }).TAG).toBe("Error");
 });
+
+
+it("review discovery is a single metadata response, never a streamed snapshot", () => {
+  const response = JSON.parse(
+    readFileSync(join(fixturesRoot, "protocol", "Response", "ReviewDiscovery.json"), "utf8"),
+  );
+  expect(Registry.roundtrip("Response", response).TAG).toBe("Ok");
+  expect(Registry.roundtrip("StreamItem", response).TAG).toBe("Error");
+  expect(Registry.roundtrip("ServerMsg", { type: "Response", id: 7, response }).TAG).toBe("Ok");
+  expect(Registry.roundtrip("ServerMsg", { type: "StreamItem", id: 7, item: response }).TAG).toBe("Error");
+  response.discovery.reviews[0].pending_requests[0].recipient = 7;
+  expect(Registry.roundtrip("Response", response).TAG).toBe("Error");
+});

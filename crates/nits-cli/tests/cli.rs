@@ -230,8 +230,8 @@ fn workspace_review_comment_round_trip() {
         .assert()
         .success()
         .stdout(predicate::str::contains("main..feature"));
-    // No `--workspace`: inferred from the working directory (any depth),
-    // never from shared state. Outside every repo it says what to do.
+    // Unscoped discovery works inside and outside checkouts; creation still
+    // infers a workspace from the current directory when none is supplied.
     let sub = h.repo.path().join("sub/dir");
     std::fs::create_dir_all(&sub).unwrap();
     h.nits()
@@ -244,8 +244,8 @@ fn workspace_review_comment_round_trip() {
         .current_dir(h.dir.path())
         .args(["review", "list"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("pass --workspace"));
+        .success()
+        .stdout(predicate::str::contains("main..feature"));
     let again = h
         .nits()
         .current_dir(h.repo.path())
@@ -416,7 +416,7 @@ fn headless_json_describes_created_and_reused_directory_reviews() {
                 assert_eq!(review_id, id, "reuse must return the same review");
             }
             previous = Some(review_id);
-            let reviews: Vec<nits_protocol::Review> = serde_json::from_str(&h.out(&[
+            let reviews: Vec<nits_protocol::ReviewSummary> = serde_json::from_str(&h.out(&[
                 "--json",
                 "review",
                 "list",
@@ -1018,7 +1018,7 @@ fn workspace_selection_is_global_and_remote_output_identifies_each_repo() {
             .args(["--json", "--workspace", workspace, "review", "list"])
             .assert()
             .success();
-        let reviews: Vec<nits_protocol::Review> =
+        let reviews: Vec<nits_protocol::ReviewSummary> =
             serde_json::from_slice(&json.get_output().stdout).unwrap();
         assert_eq!(reviews.len(), 1);
         assert_eq!(reviews[0].id.to_string(), *review);
@@ -1041,11 +1041,9 @@ fn workspace_selection_is_global_and_remote_output_identifies_each_repo() {
     remote()
         .args(["review", "list"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "nits --workspace <ID> review list",
-        ))
-        .stderr(predicate::str::contains("nits workspace list"));
+        .success()
+        .stdout(predicate::str::contains(&selections[0].2))
+        .stdout(predicate::str::contains(&selections[1].2));
 
     // Both the old alias and primary spelling still connect to the daemon.
     for flag in ["--daemon-url", "--ws"] {
@@ -2342,3 +2340,74 @@ mod maintenance;
 mod attribution;
 
 mod bootstrap;
+#[test]
+fn review_discovery_is_scoped_only_explicitly_and_filters_without_cwd() {
+    let h = start();
+    let mut rows = Vec::new();
+    for (name, title) in [("topic-ci", "PR #42 café"), ("topic-ci", "PR #43")] {
+        let workspace = h.out(&["workspace", "add", name]);
+        h.out(&[
+            "workspace",
+            "attach",
+            &workspace,
+            h.repo.path().to_str().unwrap(),
+        ]);
+        let review = h.out(&[
+            "review",
+            "create",
+            "--workspace",
+            &workspace,
+            "--base",
+            "main",
+            "--head",
+            "feature",
+            "--title",
+            title,
+        ]);
+        rows.push((workspace, review));
+    }
+    let list = |extra: &[&str]| {
+        let mut command = h.nits();
+        command
+            .current_dir(h.dir.path())
+            .args(["--json", "review", "list"])
+            .args(extra);
+        let output = command.assert().success();
+        serde_json::from_slice::<Vec<nits_protocol::ReviewSummary>>(&output.get_output().stdout)
+            .unwrap()
+    };
+    let summaries = list(&[]);
+    assert_eq!(summaries.len(), 2);
+    assert_eq!(summaries[0].id.to_string(), rows[1].1);
+    assert_eq!(list(&["--all"]), summaries);
+    let filtered = list(&["--title", "CAFÉ"]);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].id.to_string(), rows[0].1);
+    assert_eq!(filtered[0].workspace_name, "topic-ci");
+    assert_eq!(filtered[0].repositories.len(), 1);
+    assert_eq!(list(&["--workspace", &rows[0].0]).len(), 1);
+    assert!(list(&["--awaiting", "reader"]).is_empty());
+    h.out(&[
+        "review",
+        "request",
+        &rows[0].1,
+        "reader",
+        "--note",
+        "Inspect #42",
+    ]);
+    let awaiting = list(&["--awaiting", "reader", "--title", "#42"]);
+    assert_eq!(awaiting.len(), 1);
+    assert_eq!(awaiting[0].pending_requests[0].recipient, "reader");
+    h.nits()
+        .args(["review", "list", "--all", "--workspace", &rows[0].0])
+        .assert()
+        .failure();
+    h.nits()
+        .current_dir(h.dir.path())
+        .args(["review", "list", "--awaiting", "reader"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("awaiting reader (request "))
+        .stdout(predicate::str::contains("last activity "))
+        .stdout(predicate::str::contains("main..feature"));
+}
