@@ -9,6 +9,7 @@ let fileKey = (diff: View.DiffView.t): string =>
   | Blob({oid}) => oid
   | Diff({change}) =>
     switch change {
+    | Submodule({change}) => SubmoduleView.text(change)
     | Added({new}) => "added:" ++ new
     | Deleted({old}) => "deleted:" ++ old
     | Modified({old, new}) => old ++ ":" ++ new
@@ -28,6 +29,7 @@ let fileKey = (diff: View.DiffView.t): string =>
     "\x00" ++
     Int.toString(deletions)
   | Binary(_) => "\x00binary"
+  | Submodule(_) => "\x00submodule"
   }
 
 /// Merge the patch's viewport rows into the rows seen so far. Clears when

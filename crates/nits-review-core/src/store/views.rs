@@ -288,7 +288,7 @@ pub(super) fn apply(t: &mut Write<'_>, event: &Event) -> Result<(), StoreError> 
             repo_id,
             path,
             viewer,
-            blob_oid,
+            content,
         } => {
             load_review(t, seq, *review_id)?;
             let mark = ViewedMark {
@@ -296,7 +296,7 @@ pub(super) fn apply(t: &mut Write<'_>, event: &Event) -> Result<(), StoreError> 
                 repo_id: *repo_id,
                 path: path.clone(),
                 viewer: viewer.clone(),
-                blob_oid: *blob_oid,
+                content: *content,
             };
             t.viewed.insert(
                 (

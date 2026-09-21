@@ -78,7 +78,7 @@ module EventBody = {
         @as("repo_id") repoId: repoId,
         path: string,
         viewer: Human.t,
-        @as("blob_oid") blobOid: @s.null option<blobOid>,
+        content: ViewedContent.t,
       })
     | @as("FileUnviewed")
     FileUnviewed({

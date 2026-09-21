@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nits_protocol::{
-    Author, BlobOid, ChangeKind, ChangeKindKind, RenderTarget, RepoId, RepoPath, ReviewSnapshot,
+    Author, ViewedContent, ChangeKind, ChangeKindKind, RenderTarget, RepoId, RepoPath, ReviewSnapshot,
     TreeEntryKind, TreeSnapshot,
 };
 use serde::{Deserialize, Serialize};
@@ -152,7 +152,7 @@ fn change_of<'a>(
         })
 }
 
-/// Viewed state of `file` at `head_blob` for `viewer`. Agents never mark
+/// Viewed state of `file` at `head_content` for `viewer`. Agents never mark
 /// files, so for an agent everything is `Unviewed`.
 #[must_use]
 pub fn viewed_state(
@@ -160,7 +160,7 @@ pub fn viewed_state(
     viewer: &Author,
     repo_id: RepoId,
     path: &RepoPath,
-    head_blob: Option<BlobOid>,
+    head_content: ViewedContent,
 ) -> ViewedState {
     let Some(human) = viewer.as_human() else {
         return ViewedState::Unviewed;
@@ -171,7 +171,7 @@ pub fn viewed_state(
         .find(|v| v.repo_id == repo_id && v.path == *path && v.viewer == human)
     {
         None => ViewedState::Unviewed,
-        Some(mark) if mark.blob_oid == head_blob => ViewedState::Viewed,
+        Some(mark) if mark.content == head_content => ViewedState::Viewed,
         Some(_) => ViewedState::ChangedSinceViewed,
     }
 }
@@ -191,8 +191,8 @@ pub(crate) fn progress(
             p.deletions += d;
         }
         let head = match &f.target {
-            RenderTarget::Diff { change } => change.new_blob(),
-            RenderTarget::Blob { oid } => Some(*oid),
+            RenderTarget::Diff { change } => change.viewed_content(),
+            RenderTarget::Blob { oid } => ViewedContent::Blob { oid: *oid },
         };
         p.total += 1;
         match viewed_state(snapshot, viewer, f.repo_id, &f.path, head) {
@@ -208,7 +208,7 @@ pub(crate) fn progress(
 /// it only exists in base (deleted).
 struct Leaf {
     path: RepoPath,
-    head_blob: Option<BlobOid>,
+    head_content: ViewedContent,
 }
 
 /// Build the whole explorer view.
@@ -231,7 +231,7 @@ pub(crate) fn build(inputs: &ExplorerInputs<'_>) -> TreeView {
                 TreeEntryKind::File { oid, .. } | TreeEntryKind::Symlink { oid } => {
                     leaves.push(Leaf {
                         path: e.path.clone(),
-                        head_blob: Some(*oid),
+                        head_content: ViewedContent::Blob { oid: *oid },
                     });
                 }
                 TreeEntryKind::Dir { .. } | TreeEntryKind::Submodule { .. } => {}
@@ -241,13 +241,13 @@ pub(crate) fn build(inputs: &ExplorerInputs<'_>) -> TreeView {
     for f in inputs.files {
         let leaves = repos.entry(f.repo_id).or_default();
         if leaves.iter().all(|l| l.path != f.path) {
-            let head_blob = match &f.target {
-                RenderTarget::Diff { change } => change.new_blob(),
-                RenderTarget::Blob { oid } => Some(*oid),
+            let head_content = match &f.target {
+                RenderTarget::Diff { change } => change.viewed_content(),
+                RenderTarget::Blob { oid } => ViewedContent::Blob { oid: *oid },
             };
             leaves.push(Leaf {
                 path: f.path.clone(),
-                head_blob,
+                head_content,
             });
         }
     }
@@ -357,7 +357,7 @@ fn nest(
                     inputs.viewer,
                     repo_id,
                     &leaf.path,
-                    leaf.head_blob,
+                    leaf.head_content,
                 ),
                 open: inputs
                     .open_file

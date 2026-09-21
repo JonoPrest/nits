@@ -183,6 +183,8 @@ registry!(
     ThreadResolution,
     Thread,
     ViewedMark,
+    ViewedContent,
+    SubmoduleChange,
     RenderOpts,
     GapExpansion,
     GapRow,
@@ -588,7 +590,7 @@ fn viewed_mark() -> Result<ViewedMark, FixtureError> {
         repo_id: repo_id(),
         path: path("src/lib.rs")?,
         viewer: human(),
-        blob_oid: Some(blob(30)),
+        content: ViewedContent::Blob { oid: blob(30) },
     })
 }
 
@@ -966,6 +968,7 @@ enum_fixture!(
     ChangeKindKind,
     "ChangeKind",
     [
+        ChangeKind::Submodule { change: SubmoduleChange::Updated { old: commit(1), new: commit(2) } },
         ChangeKind::Added { new: blob(30) },
         ChangeKind::Deleted { old: blob(29) },
         modified(),
@@ -1114,7 +1117,7 @@ enum_fixture!(
             repo_id: repo_id(),
             path: path("src/lib.rs")?,
             viewer: human(),
-            blob_oid: Some(blob(30))
+            content: ViewedContent::Blob { oid: blob(30) }
         },
         EventBody::FileUnviewed {
             review_id: review_id(),
@@ -1217,6 +1220,7 @@ enum_fixture!(
     "RenderContent",
     [
         RenderContent::Binary,
+        RenderContent::Submodule,
         RenderContent::Text {
             total_rows: 1203,
             chunk_rows: 500,
@@ -1863,3 +1867,17 @@ enum_fixture!(
     ]
 );
 unit_enum_fixture!(CheckpointFreshness, "CheckpointFreshness");
+
+enum_fixture!(ViewedContent, ViewedContentKind, "ViewedContent", [
+    ViewedContent::Missing,
+    ViewedContent::Blob { oid: blob(30) },
+    ViewedContent::Submodule { commit: commit(2) },
+]);
+enum_fixture!(SubmoduleChange, SubmoduleChangeKind, "SubmoduleChange", [
+    SubmoduleChange::Added { new: commit(2) },
+    SubmoduleChange::Deleted { old: commit(1) },
+    SubmoduleChange::Updated { old: commit(1), new: commit(2) },
+    SubmoduleChange::Renamed { from: path("old-dependency")?, old: commit(1), new: commit(2) },
+    SubmoduleChange::BlobToSubmodule { old: blob(30), new: commit(2) },
+    SubmoduleChange::SubmoduleToBlob { old: commit(1), new: blob(30) },
+]);

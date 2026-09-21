@@ -522,6 +522,11 @@ impl Core {
                         fates.insert(change.path, PathFate::Gone);
                     }
                     ChangeKind::Added { .. } | ChangeKind::Modified { .. } => {}
+                    ChangeKind::Submodule { change: submodule } => {
+                        if submodule.new_blob().is_none() {
+                            fates.insert(change.path, PathFate::Gone);
+                        }
+                    }
                 }
             }
         }

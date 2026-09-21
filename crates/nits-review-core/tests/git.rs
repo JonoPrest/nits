@@ -565,6 +565,7 @@ fn changed_files_detects_add_delete_modify_rename() {
                 ChangeKind::Deleted { .. } => "D",
                 ChangeKind::Modified { .. } => "M",
                 ChangeKind::Renamed { .. } => "R",
+                ChangeKind::Submodule { .. } => "S",
             };
             (c.path.to_string(), k)
         })

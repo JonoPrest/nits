@@ -58,7 +58,7 @@ let make = (
   let replyTo = draft->Option.flatMap(d => View.Draft.thread(d))
   let total = switch diff.content {
   | Text({totalRows}) => totalRows
-  | Binary(_) => 0
+  | Binary(_) | Submodule(_) => 0
   }
   let stats = switch diff.content {
   | Text({additions, deletions}) =>
@@ -66,7 +66,7 @@ let make = (
       <span className="stat-add"> {React.string("+" ++ Int.toString(additions))} </span>
       <span className="stat-del"> {React.string("−" ++ Int.toString(deletions))} </span>
     </span>
-  | Binary(_) => React.null
+  | Binary(_) | Submodule(_) => React.null
   }
   // Visual-mode selection (core-owned): only the open file's rows.
   // Visual-mode and drag selections both live on one side, and a row is
@@ -143,6 +143,7 @@ let make = (
       ? React.null
       : <div className="file-diff-body" onMouseLeave={_ => setDrag(_ => None)}>
           {switch diff.content {
+          | Submodule(_) => <SubmoduleView target=diff.target />
           | Binary(_) => <div className="diff-binary"> {React.string("binary file")} </div>
           | Text(_) => React.null
           }}

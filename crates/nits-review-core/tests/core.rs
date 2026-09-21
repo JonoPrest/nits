@@ -624,7 +624,7 @@ fn viewed_marks_track_the_head_blob_and_reject_agents() {
             .viewed_state(review_id(1), rid(1), &p("src/main.rs"))
             .unwrap(),
         ViewedState::ChangedSinceViewed {
-            marked: Some(marked)
+            marked: nits_protocol::ViewedContent::Blob { oid: marked }
         }
     );
     w.core

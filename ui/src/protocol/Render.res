@@ -80,6 +80,7 @@ module RenderContent = {
   @schema @tag("type")
   type t =
     | @as("Binary") Binary({})
+    | @as("Submodule") Submodule({})
     | @as("Text")
     Text({
         @as("total_rows") totalRows: int,

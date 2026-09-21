@@ -533,7 +533,7 @@ fn apply_ops(s: &Store, ops: &[Op]) -> usize {
                     repo_id: repo_id(),
                     path: RepoPath::new("a.txt").unwrap(),
                     viewer: viewer.clone(),
-                    blob_oid: Some(self::blob(blob)),
+                    content: nits_protocol::ViewedContent::Blob { oid: self::blob(blob) },
                 }
             }
             Op::Unviewed { review } => {

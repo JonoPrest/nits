@@ -450,7 +450,7 @@ pub fn apply_body(
             repo_id,
             path,
             viewer,
-            blob_oid,
+            content,
         } if mine(*review_id) => {
             snapshot
                 .viewed
@@ -460,7 +460,7 @@ pub fn apply_body(
                 repo_id: *repo_id,
                 path: path.clone(),
                 viewer: viewer.clone(),
-                blob_oid: *blob_oid,
+                content: *content,
             });
             vec![ViewSection::Progress]
         }

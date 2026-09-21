@@ -34,6 +34,7 @@ let contextText = (context: Domain.CommentContext.t): string =>
   | Diff({change}) =>
     let short = oid => String.slice(oid, ~start=0, ~end=7)
     switch change {
+    | Submodule({change}) => SubmoduleView.text(change)
     | Added({new}) => "added @" ++ short(new)
     | Deleted({old}) => "deleted @" ++ short(old)
     | Modified({old, new}) | Renamed({old, new}) => short(old) ++ " → " ++ short(new)

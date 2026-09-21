@@ -110,7 +110,7 @@ pub enum EventBody {
         repo_id: RepoId,
         path: RepoPath,
         viewer: Human,
-        blob_oid: Option<BlobOid>,
+        content: crate::ViewedContent,
     },
     FileUnviewed {
         review_id: ReviewId,

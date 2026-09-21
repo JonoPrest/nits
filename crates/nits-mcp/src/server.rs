@@ -720,6 +720,7 @@ impl Server {
         let (repo_id, blob_oid, header, chunks) =
             ops.file_at(p.review_id, p.repo_id, &path, p.side).await?;
         let lines = match header.content {
+            RenderContent::Submodule => return Err(ToolError::Invalid("submodules have commit identities, not source lines; use get_diff".into())),
             RenderContent::Binary => {
                 if p.lines.is_some() {
                     return Err(ToolError::Invalid(

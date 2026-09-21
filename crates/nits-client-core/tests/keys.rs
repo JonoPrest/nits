@@ -694,7 +694,7 @@ fn every_action_is_reachable_from_a_binding() {
             repo_id: repo_id(),
             path: path("src/a.rs"),
             viewer: mine.as_human().unwrap(),
-            blob_oid: Some(blob(11)),
+            content: nits_protocol::ViewedContent::Blob { oid: blob(11) },
         },
     ];
     for (i, body) in bodies.into_iter().enumerate() {

@@ -754,8 +754,8 @@ impl Repo {
         })
     }
 
-    /// Changed files between two trees with rename detection. Submodule
-    /// entries are skipped (they are not blobs and cannot be rendered).
+    /// Changed entries between two trees, with rename detection. Gitlinks
+    /// retain commit identities and never enter the blob-reading path.
     pub fn changed_files(
         &self,
         base: TreeOid,
@@ -763,10 +763,31 @@ impl Repo {
     ) -> Result<Vec<FileChangeRaw>, GitError> {
         let mut out = Vec::new();
         for raw in self.raw_diff(base, head, true)? {
-            if raw.old_mode & 0o170_000 == 0o160_000 || raw.new_mode & 0o170_000 == 0o160_000 {
-                continue;
-            }
-            let kind = match raw.status {
+            let old_gitlink = raw.old_mode & 0o170_000 == 0o160_000;
+            let new_gitlink = raw.new_mode & 0o170_000 == 0o160_000;
+            let kind = if old_gitlink || new_gitlink {
+                use nits_protocol::SubmoduleChange;
+                let change = match raw.status {
+                    RawStatus::Added => SubmoduleChange::Added { new: CommitOid::new(raw.new) },
+                    RawStatus::Deleted => SubmoduleChange::Deleted { old: CommitOid::new(raw.old) },
+                    RawStatus::Renamed { from } => SubmoduleChange::Renamed {
+                        from, old: CommitOid::new(raw.old), new: CommitOid::new(raw.new),
+                    },
+                    RawStatus::Modified | RawStatus::TypeChanged => match (old_gitlink, new_gitlink) {
+                        (true, true) => SubmoduleChange::Updated {
+                            old: CommitOid::new(raw.old), new: CommitOid::new(raw.new),
+                        },
+                        (false, true) => SubmoduleChange::BlobToSubmodule {
+                            old: BlobOid::new(raw.old), new: CommitOid::new(raw.new),
+                        },
+                        (true, false) => SubmoduleChange::SubmoduleToBlob {
+                            old: CommitOid::new(raw.old), new: BlobOid::new(raw.new),
+                        },
+                        (false, false) => return Err(GitError::Parse("submodule change has no gitlink".into())),
+                    },
+                };
+                ChangeKind::Submodule { change }
+            } else { match raw.status {
                 RawStatus::Added => ChangeKind::Added {
                     new: BlobOid::new(raw.new),
                 },
@@ -782,7 +803,7 @@ impl Repo {
                     old: BlobOid::new(raw.old),
                     new: BlobOid::new(raw.new),
                 },
-            };
+            }};
             out.push(FileChangeRaw {
                 path: raw.path,
                 kind,

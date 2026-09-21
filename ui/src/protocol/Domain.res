@@ -229,9 +229,21 @@ module DiffScope = {
   @@warning("+27")
 }
 
+module SubmoduleChange = {
+  @schema @tag("type")
+  type t =
+    | @as("Added") Added({new: commitOid})
+    | @as("Deleted") Deleted({old: commitOid})
+    | @as("Updated") Updated({old: commitOid, new: commitOid})
+    | @as("Renamed") Renamed({from: string, old: commitOid, new: commitOid})
+    | @as("BlobToSubmodule") BlobToSubmodule({old: blobOid, new: commitOid})
+    | @as("SubmoduleToBlob") SubmoduleToBlob({old: commitOid, new: blobOid})
+}
+
 module ChangeKind = {
   @schema @tag("type")
   type t =
+    | @as("Submodule") Submodule({change: SubmoduleChange.t})
     | @as("Added") Added({new: blobOid})
     | @as("Deleted") Deleted({old: blobOid})
     | @as("Modified") Modified({old: blobOid, new: blobOid})
@@ -300,6 +312,15 @@ module Thread = {
   }
 }
 
+module ViewedContent = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t =
+    | @as("Missing") Missing({})
+    | @as("Blob") Blob({oid: blobOid})
+    | @as("Submodule") Submodule({commit: commitOid})
+  @@warning("+27")
+}
 module ViewedMark = {
   @schema
   type t = {
@@ -307,7 +328,7 @@ module ViewedMark = {
     @as("repo_id") repoId: repoId,
     path: string,
     viewer: Human.t,
-    @as("blob_oid") blobOid: @s.null option<blobOid>,
+    content: ViewedContent.t,
   }
 }
 
