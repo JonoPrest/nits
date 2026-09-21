@@ -37,6 +37,7 @@ let schemas: dict<S.t<unknown>> = Dict.fromArray([
   ("OpenReview", erase(View.OpenReview.schema)),
   ("OpenFile", erase(View.OpenFile.schema)),
   ("RenderKey", erase(View.RenderKey.schema)),
+  ("TreeKey", erase(View.TreeKey.schema)),
   ("FileRef", erase(View.FileRef.schema)),
   ("TreeView", erase(View.TreeView.schema)),
   ("TreeNode", erase(View.TreeNode.schema)),

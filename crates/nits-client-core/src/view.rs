@@ -3,10 +3,10 @@
 
 use nits_protocol::{
     Anchor, ClientSeq, DiffScope, EventBody, RenderOpts, RepoPath, ResolvedTarget, Review,
-    ReviewId, ReviewSnapshot, RpcError, Side, ThreadId, TreeOid, ViewSection, Workspace,
+    ReviewId, ReviewSnapshot, RpcError, Side, ThreadId, ViewSection, Workspace,
 };
 
-use crate::cache::RenderKey;
+use crate::cache::{RenderKey, TreeKey};
 use crate::diff::{CommitStepper, DiffView, ThreadView};
 use crate::explorer::{Progress, TreeView};
 use crate::focus::Focus;
@@ -107,8 +107,8 @@ pub struct OpenReview {
     /// Committed state plus every pending mutation applied on top (§5.2).
     pub snapshot: ReviewSnapshot,
     pub pending: Vec<PendingEvent>,
-    /// Tree roots of the resolved targets (base and head per repo).
-    pub trees: Vec<TreeOid>,
+    /// Repository-scoped tree roots of the resolved targets and Browse ref.
+    pub trees: Vec<TreeKey>,
     /// Changed files, in daemon order; one render key each.
     pub files: Vec<RenderKey>,
     pub open_file: Option<OpenFile>,

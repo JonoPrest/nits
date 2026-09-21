@@ -168,6 +168,7 @@ registry!(
     OpenReview,
     OpenFile,
     RenderKey,
+    TreeKey,
     FileRef,
     TreeView,
     TreeNode,
@@ -363,6 +364,11 @@ struct_fixture!(
 );
 struct_fixture!(RenderKey, "RenderKey", render_key()?);
 struct_fixture!(
+    TreeKey,
+    "TreeKey",
+    TreeKey::of_snapshot(&proto::<TreeSnapshot>()?)
+);
+struct_fixture!(
     ContentSearchView,
     "ContentSearchView",
     ContentSearchView {
@@ -425,7 +431,7 @@ struct_fixture!(
     OpenReview {
         snapshot: proto::<ReviewSnapshot>()?,
         pending: vec![local::<PendingEvent>()?],
-        trees: vec![proto::<TreeSnapshot>()?.root_oid],
+        trees: vec![local::<TreeKey>()?],
         files: vec![render_key()?],
         open_file: Some(local::<OpenFile>()?),
         scope: DiffScope::All,

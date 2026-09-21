@@ -50,7 +50,7 @@ use nits_protocol::{
 use serde::{Deserialize, Serialize};
 use strum::EnumDiscriminants;
 
-pub use cache::{Bytes, CacheKey, CacheValue, ContentCache, Evicted, RenderKey};
+pub use cache::{Bytes, CacheKey, CacheValue, ContentCache, Evicted, RenderKey, TreeKey};
 pub use connection::{Connection, ConnectionKind};
 pub use content::{CacheConfig, DiskTier, DiskTierKind, FileRef, PREFETCH_RADIUS};
 pub use creation::{
@@ -625,7 +625,7 @@ pub(crate) enum InFlight {
     },
     Search,
     TreeSnapshot {
-        root: nits_protocol::TreeOid,
+        tree: TreeKey,
     },
     /// A Browse-tab tree at an arbitrary ref; the root is unknown until
     /// the answer names it.
@@ -672,7 +672,7 @@ impl InFlight {
     /// The cache key this request fills, if it is a single-key fetch.
     fn key(&self) -> Option<CacheKey> {
         match self {
-            InFlight::TreeSnapshot { root } => Some(CacheKey::Tree { root: *root }),
+            InFlight::TreeSnapshot { tree } => Some(CacheKey::Tree { tree: *tree }),
             InFlight::FileRender { render, .. } => Some(CacheKey::Header {
                 render: render.clone(),
             }),
@@ -1019,17 +1019,27 @@ impl ClientCore {
         let (tree, progress) = match (&self.view.review, &self.committed) {
             (Some(open), Some(_)) => {
                 let browse_root = match (self.view.tab, &self.browse) {
-                    (Tab::Browse, Some(b)) => b.root,
+                    (Tab::Browse, Some(b)) => b.root.map(|root| TreeKey {
+                        repo_id: b.repo_id,
+                        root,
+                    }),
                     (Tab::Browse | Tab::FilesChanged | Tab::Conversation, _) => None,
                 };
-                let heads: Vec<nits_protocol::TreeOid> = match browse_root {
+                let heads: Vec<TreeKey> = match browse_root {
                     Some(root) => vec![root],
-                    None => open.current_targets().iter().map(|t| t.head.tree).collect(),
+                    None => open
+                        .current_targets()
+                        .iter()
+                        .map(|t| TreeKey {
+                            repo_id: t.repo_id,
+                            root: t.head.tree,
+                        })
+                        .collect(),
                 };
                 let trees: Vec<&nits_protocol::TreeSnapshot> = heads
                     .iter()
-                    .filter_map(|root| {
-                        match self.content.cache.peek(&CacheKey::Tree { root: *root }) {
+                    .filter_map(|tree| {
+                        match self.content.cache.peek(&CacheKey::Tree { tree: *tree }) {
                             Some(CacheValue::Tree { snapshot }) => Some(snapshot),
                             Some(CacheValue::Header { .. } | CacheValue::Chunk { .. }) | None => {
                                 None
@@ -3958,7 +3968,7 @@ impl ClientCore {
             }
             (InFlight::OpenReview { .. }, StreamItem::TreeSnapshot { snapshot }) => {
                 let key = CacheKey::Tree {
-                    root: snapshot.root_oid,
+                    tree: TreeKey::of_snapshot(&snapshot),
                 };
                 self.arrived(
                     key,
@@ -4298,21 +4308,21 @@ impl ClientCore {
             }
             (InFlight::BrowseTree { repo_id }, Response::TreeSnapshot { snapshot }) => {
                 let mut effects = Vec::new();
-                let root = snapshot.root_oid;
+                let tree = TreeKey::of_snapshot(&snapshot);
                 if snapshot.repo_id == repo_id
                     && let Some(browse) = &mut self.browse
                     && browse.repo_id == repo_id
                     && browse.request_id == id
                 {
-                    browse.root = Some(root);
+                    browse.root = Some(tree.root);
                     if let Some(open) = &mut self.view.review
-                        && !open.trees.contains(&root)
+                        && !open.trees.contains(&tree)
                     {
-                        open.trees.push(root);
+                        open.trees.push(tree);
                     }
-                    self.content.cache.pin(CacheKey::Tree { root });
+                    self.content.cache.pin(CacheKey::Tree { tree });
                     self.arrived(
-                        CacheKey::Tree { root },
+                        CacheKey::Tree { tree },
                         CacheValue::Tree { snapshot },
                         content::Arrival::Response,
                         &mut effects,
@@ -4321,17 +4331,17 @@ impl ClientCore {
                 self.content_done(&mut effects);
                 effects
             }
-            (InFlight::TreeSnapshot { root }, Response::TreeSnapshot { snapshot }) => {
-                if snapshot.root_oid != root {
+            (InFlight::TreeSnapshot { tree }, Response::TreeSnapshot { snapshot }) => {
+                if TreeKey::of_snapshot(&snapshot) != tree {
                     return Err(CoreError::UnexpectedResponse {
                         id,
-                        expected: "TreeSnapshot of the requested root",
-                        got: "TreeSnapshot of another root",
+                        expected: "TreeSnapshot of the requested repository and root",
+                        got: "TreeSnapshot of another repository or root",
                     });
                 }
                 let mut effects = Vec::new();
                 self.arrived(
-                    CacheKey::Tree { root },
+                    CacheKey::Tree { tree },
                     CacheValue::Tree { snapshot },
                     content::Arrival::Response,
                     &mut effects,
