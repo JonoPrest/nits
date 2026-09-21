@@ -454,8 +454,12 @@ fn errors_are_reported_not_panicked() {
         .failure()
         .stderr(predicate::str::contains("NotFound"));
     let mut c = Command::cargo_bin("nits").unwrap();
-    c.env("NITS_SOCKET", "/tmp/definitely-not-a-nitsd.sock")
+    c.env_clear()
+        .envs(std::env::vars_os().filter(|(key, _)| !key.to_string_lossy().starts_with("NITS_")))
+        .env("NITS_SOCKET", h.dir.path().join("never-used.sock"))
         .env("NITS_CONFIG", h.dir.path().join("no-config.toml"))
+        .env("XDG_DATA_HOME", h.dir.path().join("xdg-data"))
+        .env("XDG_CONFIG_HOME", h.dir.path().join("xdg-config"))
         .args(["--start-policy", "require-running", "workspace", "list"])
         .assert()
         .failure()

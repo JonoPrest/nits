@@ -49,7 +49,7 @@ pub enum Ownership {
 }
 
 /// Absence of a guard is different from a known endpoint whose owner released it.
-/// Only untracked endpoints need the legacy configured-data-directory fallback.
+/// Untracked legacy endpoints can only be probed through their own listener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketOwnership {
     Untracked,

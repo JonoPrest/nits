@@ -125,17 +125,14 @@ pub enum Availability {
     Stopped,
 }
 
+/// Probe the selected socket only. The configured store is an independent
+/// startup constraint, not evidence that this endpoint has an owner.
 pub async fn availability(spec: &DaemonSpec) -> std::io::Result<Availability> {
     let owner = match ownership::probe_socket(&spec.socket)? {
         SocketOwnership::Tracked(owner) => owner,
-        SocketOwnership::Untracked => {
-            // A legacy listener can serve a different store from the caller's
-            // configured default. With no endpoint association, prefer it.
-            if is_listening(&spec.socket).await {
-                return Ok(Availability::Listening);
-            }
-            ownership::probe(&spec.data_dir)?
-        }
+        // Legacy daemons have no endpoint guard. Their listener below is the
+        // only evidence available; an unrelated store cannot establish it.
+        SocketOwnership::Untracked => Ownership::Free,
     };
     if let Ownership::Held {
         phase: phase @ (Phase::Starting | Phase::Stopping),
@@ -228,6 +225,74 @@ pub async fn proxy_stdio(socket: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_untracked_endpoint_does_not_inherit_an_unrelated_stores_phase() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = DaemonSpec::for_data_dir(dir.path().join("store"));
+        spec.socket = dir.path().join("never-used.sock");
+        let store = ownership::Lease::acquire(&spec.data_dir).unwrap();
+        for phase in [Phase::Starting, Phase::Serving, Phase::Stopping] {
+            store.set_phase(phase).unwrap();
+            assert_eq!(availability(&spec).await.unwrap(), Availability::Stopped);
+            assert_eq!(
+                ownership::probe(&spec.data_dir).unwrap(),
+                Ownership::Held { phase }
+            );
+        }
+        assert_eq!(
+            ownership::probe_socket(&spec.socket).unwrap(),
+            SocketOwnership::Untracked,
+            "status must not create an endpoint guard"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_listeners_and_starting_endpoint_guards_retain_their_own_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = DaemonSpec::for_data_dir(dir.path().to_path_buf());
+        let store = ownership::Lease::acquire(&spec.data_dir).unwrap();
+        store.set_phase(Phase::Stopping).unwrap();
+        let listener = tokio::net::UnixListener::bind(&spec.socket).unwrap();
+        assert_eq!(availability(&spec).await.unwrap(), Availability::Listening);
+        drop(listener);
+        std::fs::remove_file(&spec.socket).unwrap();
+        let endpoint = ownership::Lease::for_socket(&spec.socket).unwrap();
+        assert_eq!(
+            availability(&spec).await.unwrap(),
+            Availability::Transitioning {
+                phase: Phase::Unknown
+            }
+        );
+        drop(endpoint);
+        assert_eq!(availability(&spec).await.unwrap(), Availability::Stopped);
+    }
+
+    #[tokio::test]
+    async fn starting_an_untracked_endpoint_still_waits_for_the_configured_store() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = DaemonSpec::for_data_dir(dir.path().join("store"));
+        spec.socket = dir.path().join("never-used.sock");
+        spec.program = dir.path().join("launcher");
+        // The marker is the socket path passed to the launcher, so this test
+        // catches an accidental spawn without opening a real daemon or store.
+        std::fs::write(&spec.program, "#!/bin/sh\n: > \"$6\"\n").unwrap();
+        std::fs::set_permissions(&spec.program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let store = ownership::Lease::acquire(&spec.data_dir).unwrap();
+        store.set_phase(Phase::Serving).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), ensure_daemon(&spec))
+                .await
+                .is_err()
+        );
+        assert!(
+            !spec.socket.exists(),
+            "start must not spawn for an owned store"
+        );
+        assert!(!spec.data_dir.join("nitsd.log").exists());
+    }
 
     /// The argv a spawned daemon gets. A default spec that did not start
     /// with the serve subcommand would run the *client* — which would try
