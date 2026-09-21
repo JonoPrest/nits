@@ -187,9 +187,11 @@ enum Cmd {
     Events {
         #[arg(long)]
         follow: bool,
+        /// Only this review. Mutually exclusive with `--workspace` and `--awaiting`.
         #[arg(long)]
         review: Option<ReviewId>,
         /// Only `ReviewRequested` events addressed to this agent name.
+        /// Mutually exclusive with `--workspace` and `--review`.
         #[arg(long)]
         awaiting: Option<String>,
         /// Replay everything after this log position first.
@@ -1018,6 +1020,30 @@ fn keys_cmd(cmd: &KeysCmd) -> anyhow::Result<()> {
     }
 }
 
+/// Parse the event selector once, before configuration, dialing or autostart.
+/// Other commands retain their own workspace semantics and do not consume this
+/// scope. Reading the fully parsed Cli handles global flags in either position.
+fn event_scope(cli: &Cli) -> Result<SubscribeScope, clap::Error> {
+    let Some(Cmd::Events {
+        review, awaiting, ..
+    }) = &cli.cmd
+    else {
+        return Ok(SubscribeScope::All);
+    };
+    match (*review, cli.workspace, awaiting) {
+        (None, None, None) => Ok(SubscribeScope::All),
+        (Some(review_id), None, None) => Ok(SubscribeScope::Review { review_id }),
+        (None, Some(workspace_id), None) => Ok(SubscribeScope::Workspace { workspace_id }),
+        (None, None, Some(agent)) => Ok(SubscribeScope::AwaitingAgent { agent: agent.clone() }),
+        (Some(_), Some(_), _) | (Some(_), None, Some(_)) | (None, Some(_), Some(_)) => {
+            Err(<Cli as clap::CommandFactory>::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "events accepts only one of --review, --workspace or --awaiting; these scope flags cannot be used together",
+            ))
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let matches = <Cli as clap::CommandFactory>::command().get_matches();
@@ -1028,6 +1054,7 @@ async fn main() -> anyhow::Result<()> {
         SelectionOrigin::Flag
     };
     let mut cli = Cli::from_arg_matches(&matches)?;
+    let event_scope = event_scope(&cli).unwrap_or_else(|error| error.exit());
     if cli.cmd.is_none()
         && cli.path.is_some()
         && let Some(workspace) = cli.workspace
@@ -1105,12 +1132,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Review(c) => review(&mut ops, c, cli.workspace, json).await,
         Cmd::Comment(c) => comment(&mut ops, c, json).await,
         Cmd::Files { .. } | Cmd::Diff { .. } | Cmd::Show { .. } => content(&ops, cmd, json).await,
-        Cmd::Events {
-            follow,
-            review,
-            awaiting,
-            since,
-        } => events(&ops, follow, review, cli.workspace, awaiting, since, json).await,
+        Cmd::Events { follow, since, .. } => events(&ops, follow, event_scope, since, json).await,
     }
 }
 
@@ -1780,39 +1802,29 @@ async fn comment(ops: &mut Ops, cmd: CommentCmd, json: bool) -> anyhow::Result<(
 async fn events(
     ops: &Ops,
     follow: bool,
-    review: Option<ReviewId>,
-    workspace: Option<WorkspaceId>,
-    awaiting: Option<String>,
+    scope: SubscribeScope,
     since: Option<u64>,
     json: bool,
 ) -> anyhow::Result<()> {
-    {
-        let scope = match (review, workspace, awaiting) {
-            (Some(review_id), _, _) => SubscribeScope::Review { review_id },
-            (None, Some(workspace_id), _) => SubscribeScope::Workspace { workspace_id },
-            (None, None, Some(agent)) => SubscribeScope::AwaitingAgent { agent },
-            (None, None, None) => SubscribeScope::All,
+    let mut since = since.map_or(Since::Now, |n| Since::After { seq: Seq::new(n) });
+    loop {
+        let timeout = if follow {
+            Duration::from_hours(1)
+        } else {
+            Duration::ZERO
         };
-        let mut since = since.map_or(Since::Now, |n| Since::After { seq: Seq::new(n) });
-        loop {
-            let timeout = if follow {
-                Duration::from_hours(1)
-            } else {
-                Duration::ZERO
-            };
-            let polled = ops.poll_events(scope.clone(), since, timeout, 1000).await?;
-            for e in &polled.events {
-                emit(json, e, || event_line(e))?;
-            }
-            if !follow {
-                break;
-            }
-            since = Since::After {
-                seq: polled.last_seq,
-            };
+        let polled = ops.poll_events(scope.clone(), since, timeout, 1000).await?;
+        for e in &polled.events {
+            emit(json, e, || event_line(e))?;
         }
-        Ok(())
+        if !follow {
+            break;
+        }
+        since = Since::After {
+            seq: polled.last_seq,
+        };
     }
+    Ok(())
 }
 
 fn context_cmd(
@@ -2012,6 +2024,132 @@ async fn daemon_cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_scopes_reject_every_conflict_before_connection() {
+        let review = ReviewId::from_parts(1, 1).to_string();
+        let workspace = WorkspaceId::from_parts(1, 2).to_string();
+        for flags in [
+            vec!["--review", &review, "--awaiting", "recipient"],
+            vec!["--awaiting", "recipient", "--review", &review],
+            vec!["--workspace", &workspace, "--review", &review],
+            vec!["--review", &review, "--workspace", &workspace],
+            vec!["--workspace", &workspace, "--awaiting", "recipient"],
+            vec!["--awaiting", "recipient", "--workspace", &workspace],
+            vec![
+                "--workspace",
+                &workspace,
+                "--review",
+                &review,
+                "--awaiting",
+                "recipient",
+            ],
+            vec![
+                "--awaiting",
+                "recipient",
+                "--review",
+                &review,
+                "--workspace",
+                &workspace,
+            ],
+        ] {
+            for workspace_before in [false, true] {
+                for follow in [false, true] {
+                    let mut args = vec!["nits"];
+                    if workspace_before && flags.contains(&"--workspace") {
+                        args.extend(["--workspace", workspace.as_str()]);
+                    }
+                    args.push("events");
+                    for flag in flags.chunks_exact(2) {
+                        if !workspace_before || flag[0] != "--workspace" {
+                            args.extend(flag);
+                        }
+                    }
+                    if follow {
+                        args.push("--follow");
+                    }
+                    let cli = Cli::try_parse_from(&args).unwrap();
+                    let error = event_scope(&cli).unwrap_err();
+                    assert_eq!(
+                        error.kind(),
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "{args:?}"
+                    );
+                    assert_eq!(error.exit_code(), 2);
+                    let message = error.to_string();
+                    for flag in ["--review", "--workspace", "--awaiting"] {
+                        assert!(message.contains(flag), "{message}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn event_scopes_preserve_each_selector_and_other_workspace_commands() {
+        let review = ReviewId::from_parts(1, 1);
+        let workspace = WorkspaceId::from_parts(1, 2);
+        let review_arg = review.to_string();
+        let workspace_arg = workspace.to_string();
+        for (args, expected) in [
+            (vec!["nits", "events"], SubscribeScope::All),
+            (
+                vec!["nits", "events", "--review", &review_arg],
+                SubscribeScope::Review { review_id: review },
+            ),
+            (
+                vec!["nits", "--workspace", &workspace_arg, "events"],
+                SubscribeScope::Workspace {
+                    workspace_id: workspace,
+                },
+            ),
+            (
+                vec!["nits", "events", "--workspace", &workspace_arg],
+                SubscribeScope::Workspace {
+                    workspace_id: workspace,
+                },
+            ),
+            (
+                vec!["nits", "events", "--awaiting", "recipient"],
+                SubscribeScope::AwaitingAgent {
+                    agent: "recipient".into(),
+                },
+            ),
+        ] {
+            for follow in [false, true] {
+                let mut args = args.clone();
+                if follow {
+                    args.push("--follow");
+                }
+                assert_eq!(
+                    event_scope(&Cli::try_parse_from(&args).unwrap()).unwrap(),
+                    expected
+                );
+            }
+        }
+        for args in [
+            vec!["nits", "--workspace", &workspace_arg, "review", "list"],
+            vec!["nits", "review", "list", "--workspace", &workspace_arg],
+            vec![
+                "nits",
+                "review",
+                "create",
+                "--workspace",
+                &workspace_arg,
+                "--base",
+                "main",
+                "--head",
+                "feature",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(cli.workspace, Some(workspace));
+            assert_eq!(event_scope(&cli).unwrap(), SubscribeScope::All);
+        }
+        let help = Cli::try_parse_from(["nits", "events", "--help"]).unwrap_err();
+        assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+        assert!(help.to_string().contains("Mutually exclusive"));
+    }
 
     #[test]
     fn deferred_cli_validates_reason_and_external_url_before_connecting() {
