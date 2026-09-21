@@ -319,14 +319,11 @@ fn cli_detach_repairs_legacy_duplicates_and_missing_checkouts_without_losing_his
         .failure()
         .stderr(predicate::str::contains("multiple repository attachments"));
     assert_eq!(events(&h), before_events);
-    assert_eq!(
-        h.out(&["workspace", "detach", &ws, &duplicate]),
-        format!("detached {duplicate}")
-    );
-    assert_eq!(
-        h.out(&["workspace", "detach", &ws, &missing]),
-        format!("detached {missing}")
-    );
+    for repo in [&duplicate, &missing] {
+        let receipt = h.out(&["workspace", "detach", &ws, repo]);
+        assert!(receipt.contains(&format!("repo detached {repo} from workspace {ws}")));
+        assert!(receipt.contains("checkout and history kept"));
+    }
     h.nits()
         .current_dir(h.repo.path())
         .args(["review", "list"])

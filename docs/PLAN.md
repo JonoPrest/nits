@@ -122,6 +122,7 @@ Goal: `nitsd` running, multiple clients connected, events streaming, MCP working
 
 ### 2.6 `nits` CLI
 - `nits workspace add/list`, `nits review create --base --head [--repo ...]`, `nits comment ...`, `nits events --follow`. Same client lib as MCP.
+- Maintenance uses existing typed mutations: workspace rename/detach, review rename/archive/reopen/delete/set-base/set-head, and author-restricted comment edit/delete. JSON returns committed Event receipts; archive is reversible, deletion preserves tombstones/history.
 - `nits context use NAME` atomically persists a startup default; ad-hoc transports and explicit context flags/environment override it. `context show` includes selection origin.
 - Tests: `assert_cmd` against spawned daemons in temp dirs, including selection precedence and MCP startup/switch isolation.
 
