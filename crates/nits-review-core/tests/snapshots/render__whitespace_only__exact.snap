@@ -23,6 +23,7 @@ expression: r
       "left": {
         "line_no": 1,
         "text": "fn a() {",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -58,6 +59,7 @@ expression: r
       "right": {
         "line_no": 1,
         "text": "fn a() {",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -96,6 +98,7 @@ expression: r
       "left": {
         "line_no": 2,
         "text": "    x();",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -122,6 +125,7 @@ expression: r
       "right": {
         "line_no": 2,
         "text": "\tx();",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -151,6 +155,7 @@ expression: r
       "left": {
         "line_no": 3,
         "text": "}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -165,6 +170,7 @@ expression: r
       "right": {
         "line_no": 3,
         "text": "}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {

@@ -117,6 +117,7 @@ fn header(p: &str, change: ChangeKind, chunk_count: u32) -> FileRenderHeader {
 fn chunk(index: u32) -> RenderChunk {
     use nits_protocol::Cell;
     let cell = |n: u32, text: &str| Cell {
+        ending: nits_protocol::LineEnding::Lf,
         line_no: LineNo::new(n).unwrap(),
         text: text.into(),
         spans: Vec::new(),

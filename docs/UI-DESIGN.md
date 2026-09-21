@@ -382,3 +382,11 @@ Duplicate names show a short ID with the full checkout path in the description;
 missing membership shows a stable repository-ID fallback. Action names identify
 their own file, and Copy relative path still copies only the repository-relative
 path. Labels never substitute for the RepoId carried by file actions.
+
+
+Line-ending annotations belong to their source cells, below the source text so
+long lines and narrow split views cannot hide them. `CRLF` and `No final newline`
+remain visible in expanded context and Browse; paired ending changes also label
+`LF`. Annotations are unnumbered and excluded from source selection. A bare
+carriage-return character is displayed as ␍ while keeping its original source
+character separate from the visual glyph.

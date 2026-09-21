@@ -9,8 +9,8 @@ expression: r
     "chunk_rows": 500,
     "chunk_count": 1,
     "highlighted": false,
-    "additions": 1,
-    "deletions": 1,
+    "additions": 2,
+    "deletions": 2,
     "gaps": []
   },
   "rows": [
@@ -19,7 +19,7 @@ expression: r
       "text": "@@ -1,2 +1,2 @@"
     },
     {
-      "type": "Context",
+      "type": "Modified",
       "left": {
         "line_no": 1,
         "text": "one",
@@ -30,7 +30,7 @@ expression: r
       "right": {
         "line_no": 1,
         "text": "one",
-        "ending": "Lf",
+        "ending": "CrLf",
         "spans": [],
         "changed": []
       }
@@ -40,14 +40,14 @@ expression: r
       "left": {
         "line_no": 2,
         "text": "two",
-        "ending": "Missing",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       },
       "right": {
         "line_no": 2,
         "text": "two",
-        "ending": "Lf",
+        "ending": "CrLf",
         "spans": [],
         "changed": []
       }

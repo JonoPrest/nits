@@ -29,12 +29,30 @@ pub fn render(header: &FileRenderHeader, chunks: &[RenderChunk]) -> String {
                 Row::HunkHeader { text } => line(&mut out, "", "", '@', text),
                 Row::Context { left, right } => {
                     line(&mut out, &no(left), &no(right), ' ', &right.text);
+                    if left.ending == right.ending {
+                        line_ending(&mut out, right, false);
+                    } else {
+                        let _ = writeln!(
+                            out,
+                            "            \\ Line ending: {} → {}",
+                            ending(left.ending),
+                            ending(right.ending)
+                        );
+                    }
                 }
-                Row::Removed { left } => line(&mut out, &no(left), "", '-', &left.text),
-                Row::Added { right } => line(&mut out, "", &no(right), '+', &right.text),
+                Row::Removed { left } => {
+                    line(&mut out, &no(left), "", '-', &left.text);
+                    line_ending(&mut out, left, false);
+                }
+                Row::Added { right } => {
+                    line(&mut out, "", &no(right), '+', &right.text);
+                    line_ending(&mut out, right, false);
+                }
                 Row::Modified { left, right } => {
                     line(&mut out, &no(left), "", '-', &left.text);
+                    line_ending(&mut out, left, left.ending != right.ending);
                     line(&mut out, "", &no(right), '+', &right.text);
+                    line_ending(&mut out, right, left.ending != right.ending);
                 }
                 Row::Expander { hidden, .. } => {
                     line(&mut out, "", "", '~', &format!("{hidden} unchanged lines"));
@@ -87,7 +105,13 @@ fn render_blob_selected(
             if let Row::Context { right, .. } = row
                 && lines.is_none_or(|range| range.contains(right.line_no))
             {
-                let _ = writeln!(out, "{:>5}│{}", right.line_no.get(), right.text);
+                let _ = writeln!(
+                    out,
+                    "{:>5}│{}",
+                    right.line_no.get(),
+                    right.text.replace('\r', "␍")
+                );
+                line_ending(&mut out, right, false);
             }
         }
     }
@@ -134,7 +158,24 @@ fn no(c: &Cell) -> String {
 }
 
 fn line(out: &mut String, old: &str, new: &str, mark: char, text: &str) {
-    let _ = writeln!(out, "{old:>5} {new:>5} {mark}{text}");
+    let _ = writeln!(out, "{old:>5} {new:>5} {mark}{}", text.replace('\r', "␍"));
+}
+
+fn ending(ending: nits_protocol::LineEnding) -> &'static str {
+    match ending {
+        nits_protocol::LineEnding::Lf => "LF",
+        nits_protocol::LineEnding::CrLf => "CRLF",
+        nits_protocol::LineEnding::Missing => "No final newline",
+    }
+}
+
+fn line_ending(out: &mut String, cell: &Cell, show_lf: bool) {
+    if show_lf || cell.ending != nits_protocol::LineEnding::Lf {
+        let _ = writeln!(out, "            \\ {}", ending(cell.ending));
+    }
+    if cell.text.contains('\r') {
+        let _ = writeln!(out, "            \\ CR in source text shown as ␍");
+    }
 }
 
 /// Gitlinks name commits, so these identities are metadata rather than source lines.
@@ -172,6 +213,66 @@ mod tests {
     use super::*;
     use nits_protocol::{BlobOid, LineNo, RenderOpts, RenderTarget, RepoId, RepoPath};
     use nits_review_core::render::{Highlighter, render_blob as blob};
+
+    #[test]
+    fn terminator_markers_are_explicit_but_never_numbered_source_lines() {
+        use nits_protocol::{BlobEntry, BlobMode, ChangeKind, LineEnding};
+        let entry = BlobEntry {
+            oid: BlobOid::from_bytes([1; 20]),
+            mode: BlobMode::Regular,
+        };
+        let header = |content| FileRenderHeader {
+            repo_id: RepoId::from_parts(1, 1),
+            path: RepoPath::new("source").unwrap(),
+            target: RenderTarget::Diff {
+                change: ChangeKind::Modified {
+                    old: entry,
+                    new: entry,
+                },
+            },
+            opts: RenderOpts::default(),
+            lang: None,
+            content,
+        };
+        for old in [LineEnding::Lf, LineEnding::CrLf, LineEnding::Missing] {
+            for new in [LineEnding::Lf, LineEnding::CrLf, LineEnding::Missing] {
+                if old == new {
+                    continue;
+                }
+                let before = format!("same{}", old.as_str());
+                let after = format!("same{}", new.as_str());
+                let rendered = nits_review_core::render::render_file(
+                    &Highlighter::new(),
+                    Some(before.as_bytes()),
+                    Some(after.as_bytes()),
+                    None,
+                    &RenderOpts::default(),
+                );
+                let chunks: Vec<_> = rendered.chunks().collect();
+                let text = render(&header(rendered.content), &chunks);
+                assert!(
+                    text.contains(&format!("-same\n            \\ {}\n", ending(old))),
+                    "{text}"
+                );
+                assert!(
+                    text.contains(&format!("+same\n            \\ {}\n", ending(new))),
+                    "{text}"
+                );
+                assert_eq!(text.lines().filter(|line| line.contains("same")).count(), 2);
+            }
+        }
+        let rendered = blob(&Highlighter::new(), b"first\r\nlast\r", None);
+        let chunks: Vec<_> = rendered.chunks().collect();
+        let text = render_blob_range(
+            &header(rendered.content),
+            &chunks,
+            LineRange::single(LineNo::new(2).unwrap()),
+        );
+        assert_eq!(
+            text,
+            "    2│last␍\n            \\ No final newline\n            \\ CR in source text shown as ␍\n"
+        );
+    }
 
     #[test]
     fn mode_and_type_metadata_survives_zero_hunks_binary_and_unknown_history() {

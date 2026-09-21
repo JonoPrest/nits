@@ -19,6 +19,7 @@ expression: r
       "left": {
         "line_no": 1,
         "text": "use std::fmt;",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -47,6 +48,7 @@ expression: r
       "right": {
         "line_no": 1,
         "text": "use std::fmt;",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -78,12 +80,14 @@ expression: r
       "left": {
         "line_no": 2,
         "text": "",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       },
       "right": {
         "line_no": 2,
         "text": "",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       }
@@ -93,6 +97,7 @@ expression: r
       "left": {
         "line_no": 3,
         "text": "fn main() {",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -128,6 +133,7 @@ expression: r
       "right": {
         "line_no": 3,
         "text": "fn main() {",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -166,6 +172,7 @@ expression: r
       "left": {
         "line_no": 4,
         "text": "    let x: u32 = 1;",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -215,6 +222,7 @@ expression: r
       "right": {
         "line_no": 4,
         "text": "    let x: u32 = 1;",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -267,6 +275,7 @@ expression: r
       "left": {
         "line_no": 5,
         "text": "    let y = 2;",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -302,6 +311,7 @@ expression: r
       "right": {
         "line_no": 5,
         "text": "    let y = 2;",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -340,6 +350,7 @@ expression: r
       "left": {
         "line_no": 6,
         "text": "    let z = 3;",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -375,6 +386,7 @@ expression: r
       "right": {
         "line_no": 6,
         "text": "    let z = 3;",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -413,6 +425,7 @@ expression: r
       "left": {
         "line_no": 7,
         "text": "    println!(\"{}\", x + y + z);",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -469,6 +482,7 @@ expression: r
       "right": {
         "line_no": 7,
         "text": "    println!(\"{}\", x + y + z);",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -528,6 +542,7 @@ expression: r
       "left": {
         "line_no": 8,
         "text": "}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -542,6 +557,7 @@ expression: r
       "right": {
         "line_no": 8,
         "text": "}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -559,12 +575,14 @@ expression: r
       "left": {
         "line_no": 9,
         "text": "",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       },
       "right": {
         "line_no": 9,
         "text": "",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       }
@@ -574,6 +592,7 @@ expression: r
       "left": {
         "line_no": 10,
         "text": "fn helper(a: u32) -> u32 {",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -651,6 +670,7 @@ expression: r
       "right": {
         "line_no": 10,
         "text": "fn helper(a: u32) -> u32 {",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -731,6 +751,7 @@ expression: r
       "left": {
         "line_no": 11,
         "text": "    a * 2",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -752,6 +773,7 @@ expression: r
       "right": {
         "line_no": 11,
         "text": "    a * 2",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -776,6 +798,7 @@ expression: r
       "left": {
         "line_no": 12,
         "text": "}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -790,6 +813,7 @@ expression: r
       "right": {
         "line_no": 12,
         "text": "}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -807,12 +831,14 @@ expression: r
       "left": {
         "line_no": 13,
         "text": "",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       },
       "right": {
         "line_no": 13,
         "text": "",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       }
@@ -822,6 +848,7 @@ expression: r
       "left": {
         "line_no": 14,
         "text": "fn unchanged_1() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -857,6 +884,7 @@ expression: r
       "right": {
         "line_no": 14,
         "text": "fn unchanged_1() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -895,6 +923,7 @@ expression: r
       "left": {
         "line_no": 15,
         "text": "fn unchanged_2() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -930,6 +959,7 @@ expression: r
       "right": {
         "line_no": 15,
         "text": "fn unchanged_2() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -968,6 +998,7 @@ expression: r
       "left": {
         "line_no": 16,
         "text": "fn unchanged_3() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1003,6 +1034,7 @@ expression: r
       "right": {
         "line_no": 16,
         "text": "fn unchanged_3() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1041,6 +1073,7 @@ expression: r
       "left": {
         "line_no": 17,
         "text": "fn unchanged_4() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1076,6 +1109,7 @@ expression: r
       "right": {
         "line_no": 17,
         "text": "fn unchanged_4() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1114,6 +1148,7 @@ expression: r
       "left": {
         "line_no": 18,
         "text": "fn unchanged_5() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1149,6 +1184,7 @@ expression: r
       "right": {
         "line_no": 18,
         "text": "fn unchanged_5() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1187,6 +1223,7 @@ expression: r
       "left": {
         "line_no": 19,
         "text": "fn unchanged_6() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1222,6 +1259,7 @@ expression: r
       "right": {
         "line_no": 19,
         "text": "fn unchanged_6() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1260,6 +1298,7 @@ expression: r
       "left": {
         "line_no": 20,
         "text": "fn unchanged_7() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1295,6 +1334,7 @@ expression: r
       "right": {
         "line_no": 20,
         "text": "fn unchanged_7() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1333,6 +1373,7 @@ expression: r
       "left": {
         "line_no": 21,
         "text": "fn unchanged_8() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1368,6 +1409,7 @@ expression: r
       "right": {
         "line_no": 21,
         "text": "fn unchanged_8() {}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1406,12 +1448,14 @@ expression: r
       "left": {
         "line_no": 22,
         "text": "",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       },
       "right": {
         "line_no": 22,
         "text": "",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       }
@@ -1421,6 +1465,7 @@ expression: r
       "left": {
         "line_no": 23,
         "text": "fn tail() -> bool {",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1470,6 +1515,7 @@ expression: r
       "right": {
         "line_no": 23,
         "text": "fn tail() -> bool {",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1522,6 +1568,7 @@ expression: r
       "left": {
         "line_no": 24,
         "text": "    false",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1536,6 +1583,7 @@ expression: r
       "right": {
         "line_no": 24,
         "text": "    false",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1553,6 +1601,7 @@ expression: r
       "left": {
         "line_no": 25,
         "text": "}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {
@@ -1567,6 +1616,7 @@ expression: r
       "right": {
         "line_no": 25,
         "text": "}",
+        "ending": "Lf",
         "spans": [
           {
             "range": {

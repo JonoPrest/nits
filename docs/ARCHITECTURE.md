@@ -355,7 +355,7 @@ Two independent versions, both typed in `nits-protocol::version`.
 - Deprecation path: a daemon may keep serving an old minor for a time and attach
   `Welcome.upgrade: UpgradeNotice { latest, message }`; clients surface it. Once dropped, the
   handshake is rejected with the supported list, so the error is specific and actionable.
-- Protocol 0.15 currently serves **only minor 0.15**: older minors are retired and
+- Protocol 0.16 currently serves **only minor 0.16**: older minors are retired and
   rejected during Hello, before any event or snapshot. The daemon has one serializer;
   the same-major compatibility predicate alone does not prove it can encode an old
   minor. Adding a supported minor requires its serializer. The stable shutdown-only
@@ -765,3 +765,18 @@ steps keep payloads raw until their shape is current. An unknown historical mark
 never equals a current known-mode entry. Header and chunk cache keys include the
 entry mode; old-format keys miss and regenerate, while unreadable client cache
 values are discarded and fetched again. Event history is never used as a cache.
+
+
+Exact renders preserve each source line's `LineEnding` (`Lf`, `CrLf`, or
+`Missing`) separately from its text. Terminator-only edits count as changed
+source lines; whitespace-ignore intentionally hides them. Bare CR without LF
+remains content. Markers belong to cells and never acquire source line numbers,
+so expanding context, Browse, comments and chunking retain the same coordinates.
+The UI and CLI/MCP identify CRLF and missing-final-newline cells, with LF shown
+when paired against a different terminator. Bare CR content displays as ␍;
+render-model JSON retains its original character.
+
+Protocol 0.16 adds required cell endings. Disposable daemon renders and client
+header/chunk storage use a shared renderer generation as well as entry identities
+and options: pre-terminator cache entries are misses even when their zero-change
+headers still decode. This does not rewrite persisted event history (schema 9).

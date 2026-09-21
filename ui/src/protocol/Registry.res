@@ -61,6 +61,7 @@ let schemas: dict<S.t<unknown>> = Dict.fromArray([
   ("ReviewSnapshot", erase(Domain.ReviewSnapshot.schema)),
   ("SpanClass", erase(Render.SpanClass.schema)),
   ("Span", erase(Render.Span.schema)),
+  ("LineEnding", erase(Render.LineEnding.schema)),
   ("Cell", erase(Render.Cell.schema)),
   ("ExpandDir", erase(Render.ExpandDir.schema)),
   ("Row", erase(Render.Row.schema)),

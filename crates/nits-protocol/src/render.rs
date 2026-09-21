@@ -40,6 +40,31 @@ pub struct Span {
     pub class: SpanClass,
 }
 
+/// Source bytes terminating a line. Git blobs retain these bytes unchanged;
+/// a trailing terminator does not create another source line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum LineEnding {
+    Lf,
+    CrLf,
+    Missing,
+}
+
+impl LineEnding {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::CrLf => "\r\n",
+            Self::Missing => "",
+        }
+    }
+}
+
+/// Disposable render-cache generation, shared by daemon and client storage.
+/// Increment when rendering semantics change even if old headers still decode.
+pub const RENDER_CACHE_GENERATION: u32 = 1;
+
 /// One side of a row.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -49,6 +74,7 @@ pub struct Cell {
     /// Original line text without the trailing newline. Whitespace-ignored
     /// diffs still carry the real text.
     pub text: String,
+    pub ending: LineEnding,
     pub spans: Vec<Span>,
     /// Intra-line changed ranges (only non-empty on `Modified` rows).
     pub changed: Vec<ColRange>,

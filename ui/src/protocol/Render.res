@@ -31,11 +31,17 @@ module Span = {
   type t = {range: ColRange.t, class: SpanClass.t}
 }
 
+module LineEnding = {
+  @schema
+  type t = Lf | CrLf | Missing
+}
+
 module Cell = {
   @schema
   type t = {
     @as("line_no") lineNo: int,
     text: string,
+    ending: LineEnding.t,
     spans: array<Span.t>,
     changed: array<ColRange.t>,
   }

@@ -901,6 +901,25 @@
   .cell-line-no {
     @apply w-12 shrink-0 pr-2 text-right text-muted select-none;
   }
+  .cell-ending {
+    /* Separate from source spans and line numbers: remains visible for long
+       lines and in narrow split views, without becoming copied source. */
+    @apply block text-muted select-none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-size: 11px;
+    line-height: 18px;
+    padding-left: 1rem;
+  }
+  .cell-carriage-return {
+    white-space: pre;
+    font-size: 0;
+  }
+  .cell-carriage-return::after {
+    content: "␍";
+    font-size: 12px;
+    color: var(--color-muted);
+  }
   .cell-changed {
     background: var(--color-diff-changed-bg);
   }

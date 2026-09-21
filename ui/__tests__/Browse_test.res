@@ -23,6 +23,7 @@ let base = (): View.DiffView.t => {
   let rows = [1, 2, 3]->Array.map(line => {
     let cell: Render.Cell.t = {
       lineNo: line,
+      ending: Lf,
       text: "source " ++ Int.toString(line),
       spans: [],
       changed: [],
