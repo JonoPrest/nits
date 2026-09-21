@@ -17,6 +17,7 @@ let viewportOf = (items: array<Virtual.virtualItem>): option<(int, int)> =>
 
 @react.component
 let make = (
+  ~repositories: RepositoryIdentity.context=Unavailable,
   ~diff: DiffView.t,
   ~layout: Layout.t,
   ~focus: Focus.t,
@@ -108,7 +109,7 @@ let make = (
   | _ => None
   }
   let replyTo = draft->Option.flatMap(d => View.Draft.thread(d))
-  let title = diff.file.path
+  let title = RepositoryIdentity.fileText(repositories, diff.file)
   let stats = switch diff.content {
   | Text({additions, deletions}) =>
     <span className="file-stats">
@@ -124,15 +125,16 @@ let make = (
   }
   <section className="diff-panel panel" role="grid" ariaLabel=title>
     <header className="panel-header file-header">
-      <span className="file-path mono"> {React.string(title)} </span>
-      <UI.CopyPath path={diff.file.path} chrome dispatch />
+      <RepositoryIdentity.File repositories file=diff.file />
+      <UI.CopyPath path={diff.file.path} fileLabel=title chrome dispatch />
       stats
       {switch (diff.target, diff.content) {
       | (Diff(_), Text(_)) =>
         <UI.Button
           label="expand file"
           kind=Ghost
-          title="show the whole file as context"
+          title=?{Chrome.tip(chrome, ExpandContext)}
+          ariaLabel={"Expand context for " ++ title}
           onClick={() => dispatch(ExpandContext({file: diff.file, full: true}))}
         />
       | (Blob(_), _) | (Diff(_), Binary(_) | Submodule(_)) => React.null
@@ -257,6 +259,7 @@ let make = (
                 | _ => React.null
                 }
                 <InlineThread
+                  repositories
                   chrome
                   key=thread.id
                   thread

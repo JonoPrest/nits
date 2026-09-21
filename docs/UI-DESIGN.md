@@ -374,3 +374,11 @@ names (even for one target), and active repository with the sidebar hidden.
 paths and short IDs; duplicate workspace names include short IDs. Paths belong
 to the displayed daemon, including when it is remote. At narrow widths home
 stacks the workspace list over its details, and review identity wraps.
+
+File cards retain a compact repository label beside the relative path, including
+sticky headers, Browse, and pinned original contexts. Conversation and inline
+locations, file search, and content search use the same workspace-scoped identity.
+Duplicate names show a short ID with the full checkout path in the description;
+missing membership shows a stable repository-ID fallback. Action names identify
+their own file, and Copy relative path still copies only the repository-relative
+path. Labels never substitute for the RepoId carried by file actions.

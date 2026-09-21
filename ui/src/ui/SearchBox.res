@@ -3,7 +3,11 @@
 open View
 
 @react.component
-let make = (~search: SearchView.t, ~dispatch: Action.t => unit) => {
+let make = (
+  ~search: SearchView.t,
+  ~repositories: RepositoryIdentity.context=Unavailable,
+  ~dispatch: Action.t => unit,
+) => {
   let (
     selected,
     inputRef,
@@ -46,14 +50,15 @@ let make = (~search: SearchView.t, ~dispatch: Action.t => unit) => {
       {search.hits
       ->Array.mapWithIndex((h, i) =>
         <div
-          key={h.file.path ++ Int.toString(i)}
+          key={h.file.repoId ++ h.file.path ++ Int.toString(i)}
           id={hitId(i)}
           role="option"
+          ariaLabel={RepositoryIdentity.fileText(repositories, h.file)}
           ariaSelected={selected == Some(i)}
           className={"search-hit" ++ (selected == Some(i) ? " selected" : "")}
           onClick={_ => dispatch(Viewport({file: h.file, firstRow: 0, lastRow: 59}))}
         >
-          {React.string(h.file.path)}
+          <RepositoryIdentity.File repositories file=h.file />
         </div>
       )
       ->React.array}

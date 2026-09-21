@@ -6,6 +6,7 @@ open View
 
 @react.component
 let make = (
+  ~repositories: RepositoryIdentity.context=Unavailable,
   ~thread: ThreadView.t,
   ~chrome: array<Hint.t>=[],
   ~focused: bool,
@@ -24,6 +25,7 @@ let make = (
     <div
       className={["inline-thread", ...flags]->Array.join(" ")}
       role="note"
+      ariaLabel={Threads.placeText(~repositories, thread.place)}
       ref={ReactDOM.Ref.domRef(focusRef)}
       tabIndex={focused ? 0 : -1}
       onKeyDown
@@ -32,6 +34,11 @@ let make = (
         dispatch(SetFocus({focus: Focus.Thread({index: index})}))
       }}
     >
+      <span
+        className="thread-place" title={Threads.placeText(~repositories, ~full=true, thread.place)}
+      >
+        {React.string(Threads.placeText(~repositories, thread.place))}
+      </span>
       <Threads.Context context=thread.context />
       {thread.comments
       ->Array.map(c =>

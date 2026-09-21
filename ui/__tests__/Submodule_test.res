@@ -46,9 +46,11 @@ describe("Submodule changes", () => {
         expect(Element.textContent(metadata))->toContain("no line diff")
         expect(Element.querySelector(container, ".row"))->toBeNull
         expect(Screen.queryAllByText("expand file")->Array.length)->toBe(0)
-        let comment = Element.querySelector(container, "[title='comment on this file']")
+        let comment = Element.querySelector(container, "[aria-label^='Comment on ']")
         expect(comment->Nullable.toOption == None)->toBe(variant != "SubmoduleToBlob")
-        FireEvent.click(Screen.getByLabelText("Viewed"))
+        FireEvent.click(
+          Screen.getByLabelText("Viewed " ++ RepositoryIdentity.fileText(Unavailable, diff.file)),
+        )
         expect(dispatch)->toHaveBeenLastCalledWith(Action.MarkViewed({file: diff.file}))
         expect(Element.textContent(metadata))->toMatchSnapshot(variant)
       },

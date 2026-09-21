@@ -102,9 +102,15 @@ module Button = {
 /// what is copied and says so once (`ViewModel.notice`).
 module CopyPath = {
   @react.component
-  let make = (~path: string, ~chrome: array<View.Hint.t>=[], ~dispatch: Action.t => unit) =>
+  let make = (
+    ~path: string,
+    ~fileLabel: option<string>=?,
+    ~chrome: array<View.Hint.t>=[],
+    ~dispatch: Action.t => unit,
+  ) =>
     <Button
       label="⧉"
+      ariaLabel={"Copy relative path for " ++ fileLabel->Option.getOr(path)}
       kind=Ghost
       title=?{Chrome.tip(chrome, CopyPath)}
       onClick={() => dispatch(CopyPath({path: path}))}
