@@ -244,3 +244,11 @@ Implemented captured review requests (including retained working-tree trees),
 attributed checkpoints with stable reviewer identities, fresh-state freshness,
 requested-revision and checkpoint-delta scopes, MCP/CLI inspection and keyboard
 UI controls. Legacy request targets remain explicitly unknown.
+
+### Working-tree Git metadata refresh (#97)
+
+Implemented checkout and Git metadata watching for normal/linked worktrees,
+provenance-aware resolution, refreshed directory reuse, captured HEAD retention,
+and commit-list subscription refresh. Real-daemon tests cover commits, amends,
+ref/index-only changes, branch switches and watcher feedback suppression.
+Protocol 0.12 and schema 7 preserve honest unknown historical HEAD provenance.

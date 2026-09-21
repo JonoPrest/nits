@@ -379,6 +379,7 @@ fn headless_json_describes_created_and_reused_directory_reviews() {
             let base_tree = h.repo.git(&["rev-parse", "main^{tree}"]).unwrap();
             let base_commit = h.repo.git(&["rev-parse", "main"]).unwrap();
             let head_tree = h.repo.git(&["rev-parse", "feature^{tree}"]).unwrap();
+            let head_commit = h.repo.rev_parse("feature").unwrap();
             assert_eq!(
                 actual,
                 serde_json::json!({
@@ -392,7 +393,7 @@ fn headless_json_describes_created_and_reused_directory_reviews() {
                     },
                     "head": {
                         "tree": head_tree.trim(),
-                        "source": {"type": "WorkingTree", "dirty": [], "branch": "feature"},
+                        "source": {"type": "WorkingTree", "dirty": [], "branch": "feature", "head": head_commit},
                     },
                 })
             );

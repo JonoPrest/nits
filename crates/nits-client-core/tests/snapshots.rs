@@ -79,6 +79,7 @@ fn snapshot() -> ReviewSnapshot {
             head: resolved(
                 2,
                 ResolvedSource::WorkingTree {
+                    head: None,
                     dirty: Vec::new(),
                     branch: None,
                 },

@@ -2024,3 +2024,107 @@ fn checking_a_displayed_worktree_after_refresh_uses_its_retained_target_event() 
         nits_protocol::CheckpointFreshness::Changed
     );
 }
+
+#[test]
+fn directory_reuse_refreshes_provenance_and_returns_the_new_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(&DataDir::new(dir.path())).unwrap();
+    let repo = RepoBuilder::new()
+        .commit("base", files!["a.txt" => "a\n"])
+        .build()
+        .unwrap();
+    let options = nits_protocol::EnsureDirectoryReview {
+        workspace_id: ws(),
+        repo_id: rid(1),
+        review_id: review_id(1),
+        path: repo.path().to_string_lossy().into_owned(),
+        base: Some(BaseRefSpec::Head),
+        head: None,
+    };
+    let first = core
+        .ensure_directory_review(&human(), options.clone())
+        .unwrap();
+    repo.write_file("a.txt", b"changed\n").unwrap();
+    let dirty = core
+        .ensure_directory_review(&human(), options.clone())
+        .unwrap();
+    assert_eq!(dirty.review_id, first.review_id);
+    assert_eq!(dirty.outcome, nits_protocol::DirectoryReviewOutcome::Reused);
+    assert_eq!(core.files(first.review_id).unwrap().len(), 1);
+    let dirty_targets = core
+        .review_snapshot(first.review_id)
+        .unwrap()
+        .resolved
+        .unwrap();
+    repo.git(&["add", "a.txt"]).unwrap();
+    repo.git(&["commit", "-qm", "accepted"]).unwrap();
+    let clean = core.ensure_directory_review(&human(), options).unwrap();
+    let clean_targets = core
+        .review_snapshot(first.review_id)
+        .unwrap()
+        .resolved
+        .unwrap();
+    assert_eq!(clean.review_id, first.review_id);
+    assert_eq!(clean.outcome, nits_protocol::DirectoryReviewOutcome::Reused);
+    assert!(clean.seq > dirty.seq);
+    assert_eq!(Some(clean.seq), core.last_seq().unwrap());
+    assert_eq!(
+        clean_targets.first().head.tree,
+        dirty_targets.first().head.tree
+    );
+    assert_ne!(clean_targets, dirty_targets);
+    assert!(core.files(first.review_id).unwrap().is_empty());
+}
+
+#[test]
+fn archived_worktree_commit_scopes_and_provenance_survive_amend_and_gc() {
+    let w = world();
+    let target = NonEmpty::singleton(ReviewTarget {
+        repo_id: rid(1),
+        base: RefSpec::Branch {
+            name: "main".into(),
+        },
+        head: RefSpec::WorkingTree,
+    });
+    w.core
+        .create_review(&human(), review_id(3), ws(), "captured".into(), target)
+        .unwrap();
+    let committed = w
+        .core
+        .files_scoped(review_id(3), &DiffScope::Committed)
+        .unwrap();
+    let dirty = w
+        .core
+        .files_scoped(review_id(3), &DiffScope::Worktree { repo_id: rid(1) })
+        .unwrap();
+    let commits = w.core.commits(review_id(3), rid(1)).unwrap();
+    assert!(!commits.is_empty());
+    w.core
+        .update_review(
+            &human(),
+            review_id(3),
+            "archived".into(),
+            ReviewStatus::Archived,
+        )
+        .unwrap();
+    w.a.write_file("later.txt", b"future checkout\n").unwrap();
+    w.a.git(&["add", "-A"]).unwrap();
+    w.a.git(&["commit", "--amend", "-qm", "replaced tip"])
+        .unwrap();
+    w.a.git(&["reflog", "expire", "--expire=now", "--all"])
+        .unwrap();
+    w.a.git(&["gc", "--prune=now"]).unwrap();
+    assert_eq!(w.core.commits(review_id(3), rid(1)).unwrap(), commits);
+    assert_eq!(
+        w.core
+            .files_scoped(review_id(3), &DiffScope::Committed)
+            .unwrap(),
+        committed
+    );
+    assert_eq!(
+        w.core
+            .files_scoped(review_id(3), &DiffScope::Worktree { repo_id: rid(1) })
+            .unwrap(),
+        dirty
+    );
+}

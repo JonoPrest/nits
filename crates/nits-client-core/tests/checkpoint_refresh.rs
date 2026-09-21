@@ -29,6 +29,7 @@ fn targets(n: u8) -> NonEmpty<ResolvedTarget> {
     let revision = |n| ResolvedRef {
         tree: TreeOid::from_bytes([n; 20]),
         source: ResolvedSource::WorkingTree {
+            head: None,
             dirty: vec![],
             branch: None,
         },

@@ -1495,7 +1495,8 @@ expression: core.view()
         "source": {
           "type": "WorkingTree",
           "dirty": [],
-          "branch": null
+          "branch": null,
+          "head": null
         }
       }
     }
@@ -1544,7 +1545,8 @@ expression: core.view()
             "source": {
               "type": "WorkingTree",
               "dirty": [],
-              "branch": null
+              "branch": null,
+              "head": null
             }
           }
         }

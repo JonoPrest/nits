@@ -181,6 +181,11 @@ pub enum ResolvedSource {
     WorkingTree {
         dirty: Vec<RepoPath>,
         branch: Option<String>,
+        /// HEAD at capture time. Absent for unborn branches and historical
+        /// snapshots made before HEAD provenance was recorded; never inferred
+        /// from the checkout's current HEAD when reading an old snapshot.
+        #[serde(default)]
+        head: Option<CommitOid>,
     },
 }
 

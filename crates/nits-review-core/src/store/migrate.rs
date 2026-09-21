@@ -35,7 +35,26 @@ const MIGRATIONS: &[Migration] = &[
     migrate_3_to_4,
     migrate_4_to_5,
     migrate_5_to_6,
+    migrate_6_to_7,
 ];
+
+/// Schema 7 captures working-tree HEAD provenance. Missing historical HEADs
+/// deserialize as None: migrating never invents provenance from today's repo.
+/// Rebuild views with the current shape and prevent older writers from opening
+/// a store containing the newly captured field.
+fn migrate_6_to_7(txn: &WriteTransaction) -> Result<(), String> {
+    fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
+        let mut tables = tables::Write::open(txn)?;
+        rewrite_raw_events(&mut tables, |stored| {
+            stored.schema = SchemaVersion::new(7);
+            Ok(())
+        })?;
+        tables.clear_views()?;
+        tables.clear_view_seq()?;
+        Ok(())
+    }
+    migrate(txn).map_err(|error| error.to_string())
+}
 
 /// Schema 3 materializes every historical `ReviewRequested`. The event format is
 /// unchanged; rebuilding assigns each request its original event identity.

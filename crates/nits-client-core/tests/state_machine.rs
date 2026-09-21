@@ -72,6 +72,7 @@ fn resolved(fill: u8) -> NonEmpty<ResolvedTarget> {
         base: ResolvedRef {
             tree,
             source: ResolvedSource::WorkingTree {
+                head: None,
                 dirty: Vec::new(),
                 branch: None,
             },
@@ -79,6 +80,7 @@ fn resolved(fill: u8) -> NonEmpty<ResolvedTarget> {
         head: ResolvedRef {
             tree,
             source: ResolvedSource::WorkingTree {
+                head: None,
                 dirty: Vec::new(),
                 branch: None,
             },
@@ -1777,6 +1779,7 @@ fn requested_checkpoint_and_new_target_delivered_ahead_of_snapshot_are_preserved
     let reference = |n| ResolvedRef {
         tree: TreeOid::new(Oid::from_bytes([n; 20])),
         source: ResolvedSource::WorkingTree {
+            head: None,
             dirty: Vec::new(),
             branch: None,
         },
@@ -2021,4 +2024,92 @@ fn linked_browse_reply_survives_newer_request_target_and_checkpoint_before_snaps
             Err(CoreError::CurrentChangesRefreshing)
         ));
     }
+}
+
+#[test]
+fn provenance_refresh_requests_new_commits_and_ignores_out_of_order_old_list() {
+    let mut core = subscribed(1);
+    let review_id = ReviewId::from_parts(4, 1);
+    open(&mut core, review_id);
+    let mut requests = Vec::new();
+    for n in [2u8, 3] {
+        let mut target = resolved(7).first().clone();
+        target.head.source = ResolvedSource::WorkingTree {
+            dirty: vec![],
+            branch: Some("feature".into()),
+            head: Some(nits_protocol::CommitOid::from_bytes([n; 20])),
+        };
+        let effects = core
+            .handle(Input::Server(ServerMsg::Event {
+                event: event(
+                    u64::from(n),
+                    EventBody::ReviewTargetsResolved {
+                        review_id,
+                        targets: NonEmpty::singleton(target),
+                    },
+                ),
+            }))
+            .unwrap();
+        let commits: Vec<_> = effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::Send(ClientMsg::Request {
+                    id,
+                    request:
+                        Request::ListCommits {
+                            review_id: got_review,
+                            repo_id: got_repo,
+                        },
+                }) => {
+                    assert_eq!(*got_review, review_id);
+                    assert_eq!(*got_repo, repo_id());
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            commits.len(),
+            1,
+            "one commit refresh for each provenance event"
+        );
+        requests.push(commits[0]);
+    }
+    let sig = nits_protocol::Sig {
+        name: "ada".into(),
+        email: "ada@example.com".into(),
+        time: Timestamp::from_millis(0),
+        offset_minutes: 0,
+    };
+    let commit = nits_protocol::CommitInfo {
+        oid: nits_protocol::CommitOid::from_bytes([3; 20]),
+        parents: vec![],
+        tree: TreeOid::from_bytes([7; 20]),
+        author: sig.clone(),
+        committer: sig,
+        subject: "amended".into(),
+        body: String::new(),
+    };
+    let effects = core
+        .handle(Input::Server(ServerMsg::Response {
+            id: requests[1],
+            response: Response::Commits {
+                commits: vec![commit.clone()],
+            },
+        }))
+        .unwrap();
+    assert_eq!(rendered(&effects), vec![ViewSection::CommitStepper]);
+    assert_eq!(
+        core.view().stepper.as_ref().unwrap().commits[0].oid,
+        commit.oid
+    );
+    let before = core.view().clone();
+    let effects = core
+        .handle(Input::Server(ServerMsg::Response {
+            id: requests[0],
+            response: Response::Commits { commits: vec![] },
+        }))
+        .unwrap();
+    assert!(effects.is_empty());
+    assert_eq!(core.view(), &before);
 }

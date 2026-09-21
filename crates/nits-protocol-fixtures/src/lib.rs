@@ -483,6 +483,7 @@ fn resolved_targets() -> Result<NonEmpty<ResolvedTarget>, FixtureError> {
             head: ResolvedRef {
                 tree: tree(22),
                 source: ResolvedSource::WorkingTree {
+                    head: Some(commit(2)),
                     dirty: vec![path("src/lib.rs")?],
                     branch: Some("feature".into()),
                 },
@@ -811,6 +812,7 @@ enum_fixture!(
     [
         ResolvedSource::Commit { oid: commit(1) },
         ResolvedSource::WorkingTree {
+            head: None,
             dirty: vec![path("src/lib.rs")?, path("new.txt")?],
             branch: Some("feature".into()),
         },

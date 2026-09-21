@@ -303,7 +303,7 @@ impl Core {
     }
 
     /// Re-resolve every target. Emits `ReviewTargetsResolved` only when the
-    /// resolved OIDs differ from the stored ones, then re-anchors comments.
+    /// resolved content or provenance differs, then re-anchors comments.
     /// Returns `(targets, changed)`.
     pub fn resolve_targets(
         &self,
@@ -430,8 +430,11 @@ impl Core {
                 let mapped = resolved
                     .into_iter()
                     .map(|mut t| {
-                        if matches!(t.head.source, ResolvedSource::WorkingTree { .. }) {
-                            t.head = self.repo(t.repo_id)?.resolve(&RefSpec::Head)?;
+                        if let ResolvedSource::WorkingTree { head, .. } = t.head.source {
+                            let oid = head.ok_or_else(|| {
+                                CoreError::invalid("snapshot has no captured HEAD commit")
+                            })?;
+                            t.head = self.repo(t.repo_id)?.resolve(&RefSpec::Commit { oid })?;
                         }
                         Ok(t)
                     })
@@ -443,12 +446,20 @@ impl Core {
                 Ok(NonEmpty::singleton(self.commit_step(*repo_id, *oid)?))
             }
             DiffScope::Worktree { repo_id } => {
-                Self::target(&resolved, *repo_id)?;
+                let target = Self::target(&resolved, *repo_id)?;
                 let repo = self.repo(*repo_id)?;
+                let ResolvedSource::WorkingTree {
+                    head: Some(oid), ..
+                } = target.head.source
+                else {
+                    return Err(CoreError::invalid(
+                        "snapshot has no captured working-tree HEAD commit",
+                    ));
+                };
                 Ok(NonEmpty::singleton(ResolvedTarget {
                     repo_id: *repo_id,
-                    base: repo.resolve(&RefSpec::Head)?,
-                    head: repo.resolve(&RefSpec::WorkingTree)?,
+                    base: repo.resolve(&RefSpec::Commit { oid })?,
+                    head: target.head,
                 }))
             }
         }
@@ -587,9 +598,9 @@ impl Core {
     }
 
     /// Commits between base and head for one repo target (newest first).
-    /// A working-tree head steps through the checked-out branch's commits
-    /// (the worktree itself is the final step). Empty when the base is not
-    /// a commit.
+    /// A working-tree head steps through its captured HEAD's commits (the
+    /// worktree itself is the final step). Empty when the base is not a
+    /// commit or the working-tree snapshot has no recorded HEAD.
     pub fn commits(&self, id: ReviewId, repo_id: RepoId) -> Result<Vec<CommitInfo>, CoreError> {
         let (_, resolved) = self.resolved(id)?;
         let t = Self::target(&resolved, repo_id)?;
@@ -597,13 +608,11 @@ impl Core {
             return Ok(vec![]);
         };
         let head = match t.head.source {
-            ResolvedSource::Commit { oid } => oid,
-            ResolvedSource::WorkingTree { .. } => {
-                match self.repo(repo_id)?.resolve(&RefSpec::Head)?.source {
-                    ResolvedSource::Commit { oid } => oid,
-                    ResolvedSource::WorkingTree { .. } => return Ok(vec![]),
-                }
-            }
+            ResolvedSource::Commit { oid }
+            | ResolvedSource::WorkingTree {
+                head: Some(oid), ..
+            } => oid,
+            ResolvedSource::WorkingTree { head: None, .. } => return Ok(vec![]),
         };
         Ok(self.repo(repo_id)?.commits_between(base, head)?)
     }
