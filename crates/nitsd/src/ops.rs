@@ -71,6 +71,39 @@ pub struct Polled {
     pub last_seq: Seq,
 }
 
+/// A live subscription with its own connection. Creating it acknowledges the
+/// subscription before later calls proceed; dropping it releases the connection
+/// and its daemon subscriptions, including when a wait is cancelled.
+#[derive(Debug)]
+pub struct EventPoll {
+    client: Client,
+    last_seq: Seq,
+    timeout: Duration,
+    max: usize,
+}
+
+impl EventPoll {
+    pub async fn subscribe(
+        client: Client,
+        scope: SubscribeScope,
+        since: Since,
+        timeout: Duration,
+        max: usize,
+    ) -> Result<Self, OpsError> {
+        let last_seq = subscribe_events(&client, scope, since).await?;
+        Ok(Self {
+            client,
+            last_seq,
+            timeout,
+            max,
+        })
+    }
+
+    pub async fn wait(self) -> Result<Polled, OpsError> {
+        collect_events(&self.client, self.last_seq, self.timeout, self.max).await
+    }
+}
+
 impl Ops {
     #[must_use]
     pub fn new(client: Client) -> Self {
@@ -546,46 +579,64 @@ impl Ops {
             .await
             .is_ok_and(|m| m.is_some())
         {}
-        let Response::Subscribed { seq: head } = client
-            .request(Request::Subscribe {
-                scope: scope.clone(),
-                since,
-            })
-            .await?
-        else {
-            return Err(OpsError::Shape);
-        };
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut events: Vec<Event> = Vec::new();
-        let mut last_seq = match since {
-            Since::After { seq } => seq,
-            Since::Now => head,
-        };
-        while events.len() < max {
-            // Once something arrived, only drain what is already queued.
-            let wait = if events.is_empty() {
-                deadline.saturating_duration_since(tokio::time::Instant::now())
-            } else {
-                Duration::from_millis(20)
-            };
-            match tokio::time::timeout(wait, client.next_unsolicited()).await {
-                Ok(Some(Unsolicited::Event(e))) => {
-                    last_seq = e.seq;
-                    events.push(e);
-                }
-                Ok(Some(Unsolicited::Error(RpcError::SeqTooOld { oldest }))) => {
-                    return Err(OpsError::Invalid(format!(
-                        "since is older than the daemon's backlog; restart from {oldest}"
-                    )));
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => return Err(ClientError::Closed.into()),
-                Err(_) => break,
-            }
-        }
+        let last_seq = subscribe_events(client, scope.clone(), since).await?;
+        let result = collect_events(client, last_seq, timeout, max).await;
         let _ = client.request(Request::Unsubscribe { scope }).await;
-        Ok(Polled { events, last_seq })
+        result
     }
+}
+
+async fn subscribe_events(
+    client: &Client,
+    scope: SubscribeScope,
+    since: Since,
+) -> Result<Seq, OpsError> {
+    let Response::Subscribed { seq: head } =
+        client.request(Request::Subscribe { scope, since }).await?
+    else {
+        return Err(OpsError::Shape);
+    };
+    Ok(match since {
+        Since::After { seq } => seq,
+        Since::Now => head,
+    })
+}
+
+async fn collect_events(
+    client: &Client,
+    mut last_seq: Seq,
+    timeout: Duration,
+    max: usize,
+) -> Result<Polled, OpsError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut events: Vec<Event> = Vec::new();
+    while events.len() < max {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if !events.is_empty() && remaining.is_zero() {
+            break;
+        }
+        // Once something arrived, only drain what is already queued.
+        let wait = if events.is_empty() {
+            remaining
+        } else {
+            remaining.min(Duration::from_millis(20))
+        };
+        match tokio::time::timeout(wait, client.next_unsolicited()).await {
+            Ok(Some(Unsolicited::Event(e))) => {
+                last_seq = e.seq;
+                events.push(e);
+            }
+            Ok(Some(Unsolicited::Error(RpcError::SeqTooOld { oldest }))) => {
+                return Err(OpsError::Invalid(format!(
+                    "since is older than the daemon's backlog; restart from {oldest}"
+                )));
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => return Err(ClientError::Closed.into()),
+            Err(_) => break,
+        }
+    }
+    Ok(Polled { events, last_seq })
 }
 
 /// `start..=end` as a [`LineRange`]; `end` defaults to `start`.

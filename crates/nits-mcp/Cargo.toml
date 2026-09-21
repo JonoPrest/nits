@@ -24,6 +24,7 @@ strum = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
+tokio-util.workspace = true
 tracing = { workspace = true }
 gethostname = { workspace = true }
 nits-config = { workspace = true, features = ["schema"] }
@@ -34,7 +35,6 @@ nits-config = { path = "../nits-config" }
 nits-review-core = { workspace = true }
 nits-test-support = { workspace = true }
 tempfile = { workspace = true }
-tokio-util.workspace = true
 
 [lints]
 workspace = true

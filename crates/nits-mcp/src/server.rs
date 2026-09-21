@@ -1,7 +1,6 @@
 //! The MCP server: `initialize`, `tools/list`, `tools/call`, proxied to the
-//! daemon through [`nitsd::ops::Ops`]. One request at a time, in order — MCP
-//! clients pipeline rarely and the daemon connection is shared, so
-//! serialising keeps event long-polls from interleaving with other calls.
+//! daemon through [`nitsd::ops::Ops`]. Calls establish their context and author
+//! in input order. Only acknowledged event waits overlap subsequent calls.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,11 +10,12 @@ use nits_protocol::{
     NonEmpty, RenderContent, RenderOpts, RepoPath, ReviewTarget, Since,
 };
 use nitsd::client::{Client, ClientError, Identity};
-use nitsd::ops::{Ops, OpsError};
+use nitsd::ops::{EventPoll, Ops, OpsError};
 use nitsd::render_text as text;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use strum::EnumString;
+use tokio_util::sync::CancellationToken;
 
 use crate::jsonrpc::{self, Incoming, Outgoing};
 use crate::tools::{
@@ -34,6 +34,69 @@ enum Method {
     ToolsList,
     #[strum(serialize = "tools/call")]
     ToolsCall,
+    #[strum(serialize = "notifications/cancelled")]
+    Cancelled,
+}
+
+#[derive(Debug, Deserialize)]
+struct Cancellation {
+    #[serde(rename = "requestId")]
+    request_id: jsonrpc::RequestId,
+}
+
+/// The transport schedules only event waits. Every other call has completed
+/// before this value is returned, preserving mutation and session ordering.
+#[derive(Debug)]
+pub(crate) enum Dispatch {
+    Reply(Outgoing),
+    Notification,
+    Cancel(jsonrpc::RequestId),
+    Wait {
+        id: jsonrpc::RequestId,
+        wait: EventWait,
+    },
+}
+
+#[derive(Debug)]
+enum PreparedCall {
+    Ready(Result<Value, ToolError>),
+    Wait(EventWait),
+}
+
+impl PreparedCall {
+    async fn finish(self) -> Result<Value, ToolError> {
+        match self {
+            Self::Ready(result) => result,
+            Self::Wait(wait) => wait.finish().await,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct EventWait {
+    poll: EventPoll,
+    context: tools::ContextIdentity,
+    session_end: CancellationToken,
+}
+
+impl EventWait {
+    async fn finish(self) -> Result<Value, ToolError> {
+        tokio::select! {
+            biased;
+            () = self.session_end.cancelled() => Err(ToolError::Invalid(format!(
+                "event wait in context {} cancelled because the MCP session context or identity changed",
+                self.context.name
+            ))),
+            polled = self.poll.wait() => {
+                let polled = polled?;
+                ok(tools::Events { context: self.context, events: polled.events, last_seq: polled.last_seq })
+            }
+        }
+    }
+
+    pub(crate) async fn reply(self, id: &jsonrpc::RequestId) -> Outgoing {
+        tool_reply(id.value(), self.finish().await)
+    }
 }
 
 /// `params` of `tools/call`. `name` is parsed to a `ToolName` here so an
@@ -150,6 +213,13 @@ impl From<nits_protocol::InvariantError> for ToolError {
 struct Session {
     author: Author,
     ops: Ops,
+    end: CancellationToken,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.end.cancel();
+    }
 }
 
 /// Legacy bare cursors are unambiguous only before a context switch.
@@ -186,44 +256,72 @@ impl Server {
         self.session.as_ref().map(|s| s.ops.client())
     }
 
-    /// Handle one line of stdin. Notifications produce no reply.
+    /// Handle one line, awaiting any event wait. The stdio transport uses
+    /// `dispatch_line` to keep reading while that wait is pending.
     pub async fn handle_line(&mut self, line: &str) -> Option<Outgoing> {
+        finish_dispatch(self.dispatch_line(line).await).await
+    }
+
+    /// Handle one decoded message, awaiting any event wait.
+    pub async fn handle(&mut self, msg: Incoming) -> Option<Outgoing> {
+        finish_dispatch(self.dispatch(msg).await).await
+    }
+
+    pub(crate) async fn dispatch_line(&mut self, line: &str) -> Dispatch {
         let msg: Incoming = match serde_json::from_str(line) {
             Ok(m) => m,
             Err(e) => {
-                return Some(Outgoing::error(
+                return Dispatch::Reply(Outgoing::error(
                     Value::Null,
                     jsonrpc::PARSE_ERROR,
                     format!("parse error: {e}"),
                 ));
             }
         };
-        self.handle(msg).await
+        self.dispatch(msg).await
     }
 
-    /// Handle one decoded message.
-    pub async fn handle(&mut self, msg: Incoming) -> Option<Outgoing> {
+    async fn dispatch(&mut self, msg: Incoming) -> Dispatch {
         if msg.jsonrpc != "2.0" {
-            return Some(Outgoing::error(
+            return Dispatch::Reply(Outgoing::error(
                 msg.id.unwrap_or(Value::Null),
                 jsonrpc::INVALID_REQUEST,
                 "jsonrpc must be \"2.0\"",
             ));
         }
-        let id = msg.id?;
-        let Ok(method) = msg.method.parse::<Method>() else {
-            return Some(Outgoing::error(
+        let method = msg.method.parse::<Method>();
+        let Some(id) = msg.id else {
+            return match method {
+                Ok(Method::Cancelled) => serde_json::from_value::<Cancellation>(msg.params)
+                    .map_or(Dispatch::Notification, |p| Dispatch::Cancel(p.request_id)),
+                _ => Dispatch::Notification,
+            };
+        };
+        let Ok(request_id) = serde_json::from_value::<jsonrpc::RequestId>(id.clone()) else {
+            return Dispatch::Reply(Outgoing::error(
+                Value::Null,
+                jsonrpc::INVALID_REQUEST,
+                "request id must be a string or number",
+            ));
+        };
+        let Ok(method) = method else {
+            return Dispatch::Reply(Outgoing::error(
                 id,
                 jsonrpc::METHOD_NOT_FOUND,
                 format!("method not found: {}", msg.method),
             ));
         };
-        Some(match method {
+        Dispatch::Reply(match method {
             Method::Initialize => match self.initialize(&msg.params).await {
                 Ok(v) => Outgoing::result(id, v),
                 Err(e) => Outgoing::error(id, jsonrpc::INTERNAL_ERROR, e.to_string()),
             },
             Method::Ping => Outgoing::result(id, json!({})),
+            Method::Cancelled => Outgoing::error(
+                id,
+                jsonrpc::INVALID_REQUEST,
+                "cancellation must be a notification",
+            ),
             Method::ToolsList => Outgoing::result(
                 id,
                 json!({
@@ -239,7 +337,7 @@ impl Server {
                 let params: CallParams = match serde_json::from_value(msg.params) {
                     Ok(p) => p,
                     Err(e) => {
-                        return Some(Outgoing::error(
+                        return Dispatch::Reply(Outgoing::error(
                             id,
                             jsonrpc::INVALID_PARAMS,
                             format!("invalid tools/call params: {e}"),
@@ -248,11 +346,16 @@ impl Server {
                 };
                 let call = match ToolCall::parse(params.name, params.arguments) {
                     Ok(c) => c,
-                    Err(e) => return Some(Outgoing::result(id, tool_err(&ToolError::from(e)))),
+                    Err(e) => return Dispatch::Reply(tool_reply(id, Err(ToolError::from(e)))),
                 };
-                match self.call(call).await {
-                    Ok(v) => Outgoing::result(id, tool_ok(&v)),
-                    Err(e) => Outgoing::result(id, tool_err(&e)),
+                match self.prepare_call(call.classify()).await {
+                    PreparedCall::Ready(result) => tool_reply(id, result),
+                    PreparedCall::Wait(wait) => {
+                        return Dispatch::Wait {
+                            id: request_id,
+                            wait,
+                        };
+                    }
                 }
             }
         })
@@ -277,6 +380,7 @@ impl Server {
         self.session = Some(Session {
             author,
             ops: Ops::new(client),
+            end: CancellationToken::new(),
         });
         Ok(json!({
             "protocolVersion": MCP_VERSION,
@@ -284,7 +388,7 @@ impl Server {
             "serverInfo": { "name": self.build.name, "version": self.build.version },
             "instructions": format!(
                 "Nits code review. Connected to {} {} in context {}. \
-                 Use list_contexts and use_context to select a daemon for this session; calls run in order. \
+                 Use list_contexts and use_context to select a daemon for this session; ordinary calls run in order. Acknowledged event waits may overlap later calls; context or identity changes cancel them. \
                  New sessions follow the CLI persisted default unless launch flags override it. \
                  Reads report their source context. IDs and cursors belong to that context; after switching, \
                  pass since_context with since_seq. Start with list_workspaces, then get_review; \
@@ -348,6 +452,7 @@ impl Server {
             self.session = Some(Session {
                 author,
                 ops: Ops::new(client),
+                end: CancellationToken::new(),
             });
         }
         Ok(())
@@ -355,18 +460,47 @@ impl Server {
 
     /// Run a decoded tool call. Public so tests can bypass JSON-RPC.
     pub async fn call(&mut self, call: ToolCall) -> Result<Value, ToolError> {
-        match call.classify() {
-            Call::Query(q) => {
-                self.ensure_connected().await?;
-                self.call_query(q).await
-            }
-            Call::Mutating(m) => {
-                self.ensure_connected().await?;
-                self.call_mutating(m).await
-            }
+        self.prepare_call(call.classify()).await.finish().await
+    }
+
+    async fn prepare_call(&mut self, call: Call) -> PreparedCall {
+        PreparedCall::Ready(match call {
+            Call::Query(q) => match self.ensure_connected().await {
+                Ok(()) => self.call_query(q).await,
+                Err(e) => Err(e),
+            },
+            Call::EventWait(p) => match self.prepare_wait(p).await {
+                Ok(wait) => return PreparedCall::Wait(wait),
+                Err(e) => Err(e),
+            },
+            Call::Mutating(m) => match self.ensure_connected().await {
+                Ok(()) => self.call_mutating(m).await,
+                Err(e) => Err(e),
+            },
             Call::Session(s) => self.call_session(s).await,
             Call::Context(c) => self.call_context(c).await,
-        }
+        })
+    }
+
+    async fn prepare_wait(&mut self, p: tools::SubscribeEvents) -> Result<EventWait, ToolError> {
+        self.ensure_connected().await?;
+        let since = self.subscription_since(p.start)?;
+        let session = self.session.as_ref().ok_or(ToolError::NotInitialized)?;
+        // Each poll owns its event queue and connection. A cancelled poll
+        // cannot consume another poll's events or leave a shared subscription.
+        let poll = tokio::time::timeout(CONNECT_TIMEOUT, async {
+            let client = self.connect(session.author.clone()).await?;
+            Ok::<_, ToolError>(
+                EventPoll::subscribe(client, p.scope, since, p.timeout.duration(), p.max).await?,
+            )
+        })
+        .await
+        .map_err(|_| ToolError::Connecting("event subscription setup timed out".into()))??;
+        Ok(EventWait {
+            poll,
+            context: self.context_identity(),
+            session_end: session.end.clone(),
+        })
     }
 
     fn context_identity(&self) -> tools::ContextIdentity {
@@ -424,6 +558,7 @@ impl Server {
                 self.session = Some(Session {
                     author,
                     ops: Ops::new(client),
+                    end: CancellationToken::new(),
                 });
                 self.endpoint.selection = selection;
                 self.cursor_policy = cursor_policy;
@@ -453,6 +588,7 @@ impl Server {
                 self.session = Some(Session {
                     author: author.clone(),
                     ops: Ops::new(client),
+                    end: CancellationToken::new(),
                 });
                 author
             }
@@ -572,17 +708,6 @@ impl Server {
                     checkpoints: snap.checkpoints,
                     requests: snap.requests,
                     seq: snap.seq,
-                })
-            }
-            QueryCall::SubscribeEvents(p) => {
-                let since = self.subscription_since(p.start)?;
-                let polled = ops
-                    .poll_events(p.scope, since, Duration::from_millis(p.timeout_ms), p.max)
-                    .await?;
-                ok(tools::Events {
-                    context: self.context_identity(),
-                    events: polled.events,
-                    last_seq: polled.last_seq,
                 })
             }
         }
@@ -874,4 +999,22 @@ fn tool_err(e: &ToolError) -> Value {
         "content": [{ "type": "text", "text": e.to_string() }],
         "isError": true,
     })
+}
+
+async fn finish_dispatch(dispatch: Dispatch) -> Option<Outgoing> {
+    match dispatch {
+        Dispatch::Reply(reply) => Some(reply),
+        Dispatch::Notification | Dispatch::Cancel(_) => None,
+        Dispatch::Wait { id, wait } => Some(wait.reply(&id).await),
+    }
+}
+
+fn tool_reply(id: Value, result: Result<Value, ToolError>) -> Outgoing {
+    Outgoing::result(
+        id,
+        match result {
+            Ok(value) => tool_ok(&value),
+            Err(error) => tool_err(&error),
+        },
+    )
 }

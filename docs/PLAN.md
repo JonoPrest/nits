@@ -252,3 +252,10 @@ provenance-aware resolution, refreshed directory reuse, captured HEAD retention,
 and commit-list subscription refresh. Real-daemon tests cover commits, amends,
 ref/index-only changes, branch switches and watcher feedback suppression.
 Protocol 0.12 and schema 7 preserve honest unknown historical HEAD provenance.
+
+### MCP cancellable event waits (#108)
+
+Acknowledged event waits may overlap ordinary ordered calls. Each wait owns its
+connection and is cancelled on request, session replacement, or MCP input EOF.
+Timeouts and concurrent waits are bounded; real-daemon and subprocess tests
+cover pipelining, subscription ordering, identities, contexts and disconnects.

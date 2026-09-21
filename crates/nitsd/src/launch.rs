@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use tokio::net::UnixStream;
 
-mod stdio;
+pub mod stdio;
 
 /// How long to wait for a freshly started daemon to listen.
 pub const START_TIMEOUT: Duration = Duration::from_secs(15);
