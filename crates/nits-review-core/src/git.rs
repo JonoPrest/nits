@@ -127,6 +127,18 @@ pub fn is_binary(bytes: &[u8]) -> bool {
 }
 
 impl Repo {
+    /// Open the canonical checkout, resolving symlinks and Git-directory aliases.
+    /// Linked worktrees keep their own workdir rather than their shared metadata root.
+    pub fn open_canonical(path: &Path) -> Result<Self, GitError> {
+        let git = Self::open(&std::fs::canonicalize(path)?)?;
+        let checkout = std::fs::canonicalize(git.workdir())?;
+        if git.workdir() == checkout {
+            Ok(git)
+        } else {
+            Self::open(&checkout)
+        }
+    }
+
     pub fn open(path: &Path) -> Result<Self, GitError> {
         let repo = gix::open(path).map_err(|e| GitError::Open {
             path: path.to_path_buf(),

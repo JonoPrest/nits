@@ -116,7 +116,10 @@ impl Core {
                 workspace
                     .repos
                     .iter()
-                    .filter(|repo| Path::new(&repo.path) == root)
+                    .filter(|repo| {
+                        Repo::open_canonical(Path::new(&repo.path))
+                            .is_ok_and(|git| git.workdir() == root)
+                    })
                     .map(move |repo| (workspace.id, repo.id))
             })
             .collect();

@@ -22,15 +22,8 @@ struct OpenedRepo {
 
 impl OpenedRepo {
     fn open(path: &Path) -> Result<Self, CoreError> {
-        let git = GitRepo::open(&std::fs::canonicalize(path)?)?;
-        let checkout = CheckoutPath(std::fs::canonicalize(git.workdir())?);
-        // Keep the cached handle on the same canonical checkout as its identity,
-        // even if the supplied symlink or Git-directory alias later changes.
-        let git = if git.workdir() == checkout.0 {
-            git
-        } else {
-            GitRepo::open(&checkout.0)?
-        };
+        let git = GitRepo::open_canonical(path)?;
+        let checkout = CheckoutPath(git.workdir().to_path_buf());
         Ok(Self {
             checkout,
             git: Arc::new(git),

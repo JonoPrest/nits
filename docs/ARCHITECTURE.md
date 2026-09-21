@@ -176,6 +176,10 @@ membership in that review's workspace, so detaching a conflicting member cannot
 redirect an old review to a surviving checkout elsewhere. Within one workspace,
 a canonical checkout may have only one attachment: a fresh ID for an existing
 checkout is rejected before any event or cache change, naming the existing ID.
+Directory bootstrap and inferred selection use the same canonical opened workdir,
+including legacy symlink/Git-directory memberships and survivors after detach.
+Client-side inference retains advertised-path matching when a remote checkout
+cannot be opened locally; daemon-side bootstrap resolves checkout identity there.
 Intentional membership in another workspace remains allowed. `nits workspace
 detach WORKSPACE REPO` removes a selected membership, including legacy duplicates
 or unavailable checkouts, while preserving files and review/comment history.
