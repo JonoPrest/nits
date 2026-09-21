@@ -704,15 +704,22 @@ impl Drop for RunningUi {
 }
 
 async fn browser_reaches_subscribed(port: u16) {
-    let url = format!("ws://127.0.0.1:{port}/ws");
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    let mut request = format!("ws://127.0.0.1:{port}/ws")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "Origin",
+        format!("http://127.0.0.1:{port}").parse().unwrap(),
+    );
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
     let mut socket = loop {
-        match tokio_tungstenite::connect_async(&url).await {
+        match tokio_tungstenite::connect_async(request.clone()).await {
             Ok((socket, _)) => break socket,
             Err(err) => {
                 assert!(
                     tokio::time::Instant::now() < deadline,
-                    "UI bridge did not listen at {url}: {err}"
+                    "UI bridge did not listen on port {port}: {err}"
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }

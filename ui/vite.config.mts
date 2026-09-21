@@ -12,7 +12,9 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    // Same-origin `/ws` in dev too: run `cargo run -p nits-client-web`.
+    // Preserve Host and Origin; explicitly trust the URL Vite prints:
+    // cargo run -p nits-client-web -- --allow-origin http://localhost:5173
+    // Do not rewrite Origin: that would also bless unrelated browser pages.
     proxy: { "/ws": { target: "ws://127.0.0.1:9777", ws: true } },
   },
   test: {

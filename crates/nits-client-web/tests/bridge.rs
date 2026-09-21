@@ -24,7 +24,7 @@ use nitsd::client::{Client, Identity};
 use nitsd::contexts::{DaemonEndpoint, StartPolicy};
 use nitsd::server::UnixServer;
 use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_util::sync::CancellationToken;
 
@@ -189,9 +189,11 @@ struct Browser {
 
 impl Browser {
     async fn connect(addr: SocketAddr) -> Self {
-        let (socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
-            .await
-            .unwrap();
+        let mut request = format!("ws://{addr}/ws").into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", format!("http://{addr}").parse().unwrap());
+        let (socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
         let (tx, rx) = socket.split();
         let mut browser = Self {
             tx,
@@ -419,9 +421,16 @@ async fn bad_commands_do_not_close_the_socket_and_assets_share_the_port() {
     assert!(!patches.is_empty());
 
     let mut http = tokio::net::TcpStream::connect(bridge.addr()).await.unwrap();
-    tokio::io::AsyncWriteExt::write_all(&mut http, b"GET /?review=abc HTTP/1.1\r\nhost: x\r\n\r\n")
-        .await
-        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(
+        &mut http,
+        format!(
+            "GET /?review=abc HTTP/1.1\r\nhost: {}\r\n\r\n",
+            bridge.addr()
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
     let mut body = Vec::new();
     tokio::io::AsyncReadExt::read_to_end(&mut http, &mut body)
         .await
@@ -647,3 +656,9 @@ async fn copied_verification_reply_opens_on_another_browser_session_after_resolu
     assert_eq!(b.model.last_error, None);
     bridge.stop();
 }
+
+#[path = "access/mod.rs"]
+mod access;
+
+#[path = "browser/mod.rs"]
+mod browser;
