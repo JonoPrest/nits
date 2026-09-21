@@ -2555,7 +2555,7 @@ async fn create_review_rejects_duplicate_repositories_and_empty_targets_before_e
         )
         .await;
         assert!(
-            error.contains("one base/head pair") || error.contains("at least one repository"),
+            error.contains("one base/head pair") || error.contains("list must not be empty"),
             "{error}"
         );
         assert_eq!(h.daemon.core().last_seq().unwrap(), before);

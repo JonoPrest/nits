@@ -888,10 +888,10 @@ impl ClientCore {
                 Err(message) => CreationStatus::Failed { message },
             };
         }
-        if creation.editable() {
-            if let Err(message) = creation.check_repositories() {
-                creation.status = CreationStatus::Failed { message };
-            }
+        if creation.editable()
+            && let Err(message) = creation.check_repositories()
+        {
+            creation.status = CreationStatus::Failed { message };
         }
         self.view.home.creating = Some(creation);
         self.view.focus = crate::Focus::Composer;

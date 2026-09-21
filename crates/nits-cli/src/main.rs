@@ -10,9 +10,9 @@ use clap::{Args, FromArgMatches, Parser, Subcommand, ValueEnum};
 use nits_config::{Context, ContextName, Selection, SelectionOrigin};
 use nits_protocol::{
     AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, DirectoryReviewOutcome, Event,
-    EventBody, LineNo, LineRange, Mutation, RefSpec, RenderOpts, ReplayCursor,
-    ReplayPosition, ReplayProgress, RepoId, RepoPath, Review, ReviewId, ReviewTarget, Seq, Side,
-    Since, SubscribeScope, ThreadId, Workspace, WorkspaceId,
+    EventBody, LineNo, LineRange, Mutation, RefSpec, RenderOpts, ReplayCursor, ReplayPosition,
+    ReplayProgress, RepoId, RepoPath, Review, ReviewId, ReviewTarget, Seq, Side, Since,
+    SubscribeScope, ThreadId, Workspace, WorkspaceId,
 };
 use nitsd::client::Identity;
 use nitsd::contexts::{self, Status};
