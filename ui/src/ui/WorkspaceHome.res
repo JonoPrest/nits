@@ -131,7 +131,12 @@ let make = (~model: View.ViewModel.t, ~dispatch: Action.t => unit) => {
       model.workspaces->Array.find(w => w.id == id)
     ) {
     | Some(workspace) =>
-      <NewReview workspaces=[workspace] onClose={() => dispatch(CancelNewReview({}))} dispatch />
+      <NewReview
+        key=workspace.id
+        workspaces=[workspace]
+        onClose={() => dispatch(CancelNewReview({}))}
+        dispatch
+      />
     | None => React.null
     }}
   </section>
