@@ -9,7 +9,7 @@
           "channel": "stable",
           "version": "1.0.0"
         },
-        "schema": 9,
+        "schema": 10,
         "worker": 1
       },
       "type": "Available"
@@ -28,7 +28,7 @@
           "channel": "stable",
           "version": "1.0.0"
         },
-        "schema": 9,
+        "schema": 10,
         "worker": 1
       },
       "target": {
@@ -39,7 +39,7 @@
           "channel": "stable",
           "version": "1.1.0"
         },
-        "schema": 9,
+        "schema": 10,
         "worker": 1
       }
     },
@@ -52,7 +52,7 @@
           "channel": "stable",
           "version": "1.0.0"
         },
-        "schema": 9,
+        "schema": 10,
         "worker": 1
       },
       "type": "Running"

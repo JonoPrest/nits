@@ -210,6 +210,8 @@ mod tests {
         vec![ViewPatch::Connection {
             connection: ConnectionView::Subscribed,
             last_error: Some(RpcError::Internal { message: text }),
+            uncertain_mutations: Vec::new(),
+            daemon_management: crate::DaemonManagement::Idle,
         }]
     }
 

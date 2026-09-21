@@ -56,6 +56,8 @@ test("fragments preserve Unicode and typed diff metadata with one atomic notific
   let original = patches()->Array.concat([
     View.ViewPatch.Connection({
       connection: Subscribed({}),
+      uncertainMutations: [],
+      daemonManagement: Idle({}),
       lastError: Some(Internal({message: "λ😀\"\\\r\n"->String.repeat(20000)})),
     }),
   ])
@@ -138,6 +140,8 @@ test("reconnect resets assembly and snapshots replace stale sections atomically"
   let initial = [
     View.ViewPatch.Connection({
       connection: Subscribed({}),
+      uncertainMutations: [],
+      daemonManagement: Idle({}),
       lastError: Some(Internal({message: "old"})),
     }),
   ]
@@ -166,6 +170,8 @@ test("over-budget envelopes and malformed wire data fail once per resync", () =>
   let huge = [
     View.ViewPatch.Connection({
       connection: Subscribed({}),
+      uncertainMutations: [],
+      daemonManagement: Idle({}),
       lastError: Some(Internal({message: "x"->String.repeat(ViewDelivery.messageLimit)})),
     }),
   ]

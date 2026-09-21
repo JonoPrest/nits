@@ -36,6 +36,7 @@ gethostname = { workspace = true }
 nits-config = { workspace = true }
 
 [dev-dependencies]
+redb = "4"
 assert_cmd = "2"
 nits-review-core.workspace = true
 nits-test-support.workspace = true

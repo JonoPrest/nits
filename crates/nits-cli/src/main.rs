@@ -1205,6 +1205,37 @@ fn event_scope(cli: &Cli) -> Result<SubscribeScope, clap::Error> {
     }
 }
 
+/// Private maintenance/worker entry points must be usable even when a saved
+/// context or ordinary application protocol is no longer compatible.
+async fn early_lifecycle_entry(cli: &Cli) -> anyhow::Result<std::ops::ControlFlow<()>> {
+    let program_selection = match &cli.cmd {
+        Some(Cmd::Daemon(
+            DaemonCmd::Stdio(_) | DaemonCmd::ControlStatus(_) | DaemonCmd::ControlUpgrade { .. },
+        )) => nitsd::launch::ProgramSelection::InvokedProgram,
+        _ => nitsd::launch::ProgramSelection::ConfiguredEnvironment,
+    };
+    nitsd::launch::register_cli_program(program_selection)?;
+    let build = nitsd::build::running()?;
+    if matches!(cli.cmd, Some(Cmd::Daemon(DaemonCmd::Inspect))) {
+        println!("{}", serde_json::to_string(&build)?);
+        return Ok(std::ops::ControlFlow::Break(()));
+    }
+    if let Some(Cmd::Daemon(DaemonCmd::UpgradeRun { plan })) = &cli.cmd {
+        nitsd::upgrade::run(plan).await?;
+        return Ok(std::ops::ControlFlow::Break(()));
+    }
+    if matches!(cli.cmd, Some(Cmd::McpWorker)) {
+        init_daemon_logging();
+        nits_mcp::serve_worker_stdio(BuildInfo {
+            name: "nits-mcp".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        })
+        .await?;
+        return Ok(std::ops::ControlFlow::Break(()));
+    }
+    Ok(std::ops::ControlFlow::Continue(()))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let matches = <Cli as clap::CommandFactory>::command().get_matches();
@@ -1216,32 +1247,11 @@ async fn main() -> anyhow::Result<()> {
     };
     let mut cli = Cli::from_arg_matches(&matches)?;
     if matches!(cli.cmd, Some(Cmd::Skill)) {
-        // Instruction discovery must work even with malformed context config,
-        // an unreachable daemon, or a protocol mismatch after an upgrade.
+        // Offline instructions do not depend on build inspection or config.
         return skill::print();
     }
-    let program_selection = match &cli.cmd {
-        Some(Cmd::Daemon(
-            DaemonCmd::Stdio(_) | DaemonCmd::ControlStatus(_) | DaemonCmd::ControlUpgrade { .. },
-        )) => nitsd::launch::ProgramSelection::InvokedProgram,
-        _ => nitsd::launch::ProgramSelection::ConfiguredEnvironment,
-    };
-    nitsd::launch::register_cli_program(program_selection)?;
-    let build = nitsd::build::running()?;
-    if matches!(cli.cmd, Some(Cmd::Daemon(DaemonCmd::Inspect))) {
-        println!("{}", serde_json::to_string(&build)?);
+    if early_lifecycle_entry(&cli).await?.is_break() {
         return Ok(());
-    }
-    if let Some(Cmd::Daemon(DaemonCmd::UpgradeRun { plan })) = &cli.cmd {
-        return Ok(nitsd::upgrade::run(plan).await?);
-    }
-    if matches!(cli.cmd, Some(Cmd::McpWorker)) {
-        init_daemon_logging();
-        return nits_mcp::serve_worker_stdio(BuildInfo {
-            name: "nits-mcp".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-        })
-        .await;
     }
     let event_scope = event_scope(&cli).unwrap_or_else(|error| error.exit());
     if cli.cmd.is_none()
@@ -2121,11 +2131,16 @@ async fn events(
     };
     let mut reconnect_deadline = None;
     loop {
-        let page = match ops.replay_events(scope.clone(), position.clone()).await {
+        let page = match ops.replay_events(scope.clone(), position).await {
             Ok(page) => page,
             Err(error) if follow && events::retry_page(&error) => {
+                if matches!(position, ReplayPosition::Start { since: Since::Now }) {
+                    bail!(
+                        "event stream lost its initial cursor before acknowledgement: {error}. Resume with an explicit --since cursor to avoid skipping events."
+                    );
+                }
                 let deadline = *reconnect_deadline.get_or_insert_with(|| {
-                    tokio::time::Instant::now() + std::time::Duration::from_secs(60)
+                    tokio::time::Instant::now() + std::time::Duration::from_mins(1)
                 });
                 ops = connection.reconnect(deadline).await?;
                 continue;
@@ -2278,6 +2293,63 @@ fn daemon_status_text(s: &Status) -> String {
     }
 }
 
+#[derive(Clone, Copy)]
+enum UpgradeOutput {
+    Command,
+    Transport,
+}
+
+async fn print_upgrade(
+    ctx: &Context,
+    intent: UpgradeMode,
+    expected: Option<nits_protocol::BuildDigest>,
+    output: UpgradeOutput,
+) -> anyhow::Result<()> {
+    let result = match expected {
+        Some(digest) => contexts::upgrade_verified(ctx, intent.into(), digest).await?,
+        None => contexts::upgrade(ctx, intent.into()).await?,
+    };
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    if let (UpgradeOutput::Command, nits_protocol::UpgradeResult::Failed { failure }) =
+        (output, result)
+    {
+        bail!(
+            "upgrade failed during {:?}: {}",
+            failure.stage,
+            failure.message
+        );
+    }
+    Ok(())
+}
+
+async fn serve_command(ctx: &Context, name: &str, args: &ServeArgs) -> anyhow::Result<()> {
+    init_daemon_logging();
+    let opts = serve_opts(&ctx_local(ctx, name)?, args);
+    let data_dir = opts.data_dir.clone();
+    let result = nitsd::serve::serve(opts).await;
+    if let Err(error) = &result {
+        nitsd::upgrade::record_start_failure(&data_dir, error)?;
+    }
+    result
+}
+
+async fn stdio_command(
+    ctx: &Context,
+    name: &str,
+    args: &ServeArgs,
+    start: contexts::StartPolicy,
+) -> anyhow::Result<()> {
+    init_daemon_logging();
+    let opts = serve_opts(&ctx_local(ctx, name)?, args);
+    match nitsd::serve::stdio(opts, start == contexts::StartPolicy::StartIfNeeded).await? {
+        nitsd::serve::StdioOutcome::Proxied => Ok(()),
+        outcome @ (nitsd::serve::StdioOutcome::NotRunning
+        | nitsd::serve::StdioOutcome::Transitioning { .. }) => {
+            std::process::exit(outcome.exit_code())
+        }
+    }
+}
+
 async fn daemon_cmd(
     cfg: &nits_config::Config,
     name: &str,
@@ -2300,45 +2372,18 @@ async fn daemon_cmd(
             intent,
             expected_build,
             ..
-        }
-        | DaemonCmd::ControlUpgrade {
+        } => print_upgrade(ctx, intent, expected_build, UpgradeOutput::Command).await,
+        DaemonCmd::ControlUpgrade {
             intent,
             expected_build,
             ..
-        } => {
-            let result = match expected_build {
-                Some(digest) => contexts::upgrade_verified(ctx, intent.into(), digest).await?,
-                None => contexts::upgrade(ctx, intent.into()).await?,
-            };
-            println!("{}", serde_json::to_string_pretty(&result)?);
-            Ok(())
-        }
+        } => print_upgrade(ctx, intent, expected_build, UpgradeOutput::Transport).await,
         DaemonCmd::UpgradeRun { plan } => Ok(nitsd::upgrade::run(&plan).await?),
         // Being the daemon, and reaching it over a pipe. Both need a place
         // to listen rather than someone to talk to, so only a local context
         // makes sense: a remote one is reached *through* `daemon stdio`.
-        DaemonCmd::Serve(args) => {
-            init_daemon_logging();
-            let opts = serve_opts(&ctx_local(ctx, name)?, &args);
-            let data_dir = opts.data_dir.clone();
-            let result = nitsd::serve::serve(opts).await;
-            if let Err(error) = &result {
-                nitsd::upgrade::record_start_failure(&data_dir, error)?;
-            }
-            result
-        }
-        DaemonCmd::Stdio(args) => {
-            init_daemon_logging();
-            let opts = serve_opts(&ctx_local(ctx, name)?, &args);
-            match nitsd::serve::stdio(opts, start == contexts::StartPolicy::StartIfNeeded).await? {
-                nitsd::serve::StdioOutcome::Proxied => Ok(()),
-                // Not an error: the caller asked whether one was running.
-                outcome @ (nitsd::serve::StdioOutcome::NotRunning
-                | nitsd::serve::StdioOutcome::Transitioning { .. }) => {
-                    std::process::exit(outcome.exit_code())
-                }
-            }
-        }
+        DaemonCmd::Serve(args) => serve_command(ctx, name, &args).await,
+        DaemonCmd::Stdio(args) => stdio_command(ctx, name, &args, start).await,
         DaemonCmd::Status { all } => {
             let mut targets: Vec<(String, Context)> = if all {
                 let mut v: Vec<(String, Context)> = cfg

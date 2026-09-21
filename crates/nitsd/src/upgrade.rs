@@ -642,15 +642,7 @@ pub fn record_start_failure(data_dir: &Path, error: &anyhow::Error) -> io::Resul
         return Ok(());
     };
     let id: UpgradeId = id.to_string_lossy().parse().map_err(io::Error::other)?;
-    let migration = error.chain().any(|error| {
-        matches!(
-            error.downcast_ref::<nits_review_core::store::StoreError>(),
-            Some(
-                nits_review_core::store::StoreError::SchemaTooNew { .. }
-                    | nits_review_core::store::StoreError::Migration(_)
-            )
-        )
-    });
+    let migration = error.chain().any(is_migration_error);
     let failure = failed(
         UpgradeStage::StartingReplacement,
         if migration {
@@ -661,6 +653,26 @@ pub fn record_start_failure(data_dir: &Path, error: &anyhow::Error) -> io::Resul
         format!("{error:#}"),
     );
     write_json(&data_dir.join(format!("upgrade-start-{id}.json")), &failure)
+}
+
+fn is_migration_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    use nits_review_core::{CoreError, store::StoreError};
+    // Transparent thiserror wrappers delegate `source()` to the wrapped
+    // error's source. Inspect those typed wrappers too: a source-less
+    // SchemaTooNew otherwise disappears from anyhow's chain entirely.
+    let store = if let Some(crate::daemon::DaemonError::Core(CoreError::Store(store))) =
+        error.downcast_ref::<crate::daemon::DaemonError>()
+    {
+        Some(store)
+    } else if let Some(CoreError::Store(store)) = error.downcast_ref::<CoreError>() {
+        Some(store)
+    } else {
+        error.downcast_ref::<StoreError>()
+    };
+    matches!(
+        store,
+        Some(StoreError::SchemaTooNew { .. } | StoreError::Migration(_))
+    )
 }
 
 /// Automatic repair needs both a newer release and a candidate this caller can
@@ -810,13 +822,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let owner = lock(dir.path()).await.unwrap();
         let inode = std::fs::metadata(dir.path().join(LOCK)).unwrap().ino();
-        let wait = lock(dir.path());
-        tokio::pin!(wait);
-        assert!(tokio::time::timeout(Duration::from_millis(50), &mut wait).await.is_err());
+        let mut wait = Box::pin(lock(dir.path()));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut wait)
+                .await
+                .is_err()
+        );
         drop(wait);
         drop(owner);
-        let owner = tokio::time::timeout(Duration::from_secs(1), lock(dir.path())).await.unwrap().unwrap();
-        assert_eq!(std::fs::metadata(dir.path().join(LOCK)).unwrap().ino(), inode);
+        let owner = tokio::time::timeout(Duration::from_secs(1), lock(dir.path()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(dir.path().join(LOCK)).unwrap().ino(),
+            inode
+        );
         drop(owner);
         assert!(!coordinator_active(dir.path()).unwrap());
     }

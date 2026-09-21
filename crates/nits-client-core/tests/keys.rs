@@ -237,6 +237,7 @@ fn requests(effects: &[Effect]) -> Vec<Request> {
             Effect::Send(ClientMsg::Request { request, .. }) => Some(request.clone()),
             Effect::Send(ClientMsg::Hello { .. } | ClientMsg::Cancel { .. })
             | Effect::Connect
+            | Effect::ManageDaemon { .. }
             | Effect::Disconnect
             | Effect::Render(_)
             | Effect::Persist { .. }
@@ -253,6 +254,7 @@ fn rendered(effects: &[Effect]) -> Vec<ViewSection> {
             Effect::Render(d) => Some(d.sections.clone()),
             Effect::Send(_)
             | Effect::Connect
+            | Effect::ManageDaemon { .. }
             | Effect::Disconnect
             | Effect::Load { .. }
             | Effect::Persist { .. }
@@ -298,6 +300,7 @@ fn ready() -> ClientCore {
             Effect::Send(ClientMsg::Request { id, .. }) => Some(*id),
             Effect::Send(ClientMsg::Hello { .. } | ClientMsg::Cancel { .. })
             | Effect::Connect
+            | Effect::ManageDaemon { .. }
             | Effect::Disconnect
             | Effect::Render(_)
             | Effect::Persist { .. }
@@ -335,6 +338,7 @@ fn ready() -> ClientCore {
             Effect::Send(ClientMsg::Request { id, .. }) => Some(*id),
             Effect::Send(ClientMsg::Hello { .. } | ClientMsg::Cancel { .. })
             | Effect::Connect
+            | Effect::ManageDaemon { .. }
             | Effect::Disconnect
             | Effect::Render(_)
             | Effect::Persist { .. }
@@ -648,6 +652,7 @@ fn every_action_is_reachable_from_a_binding() {
             Effect::Send(ClientMsg::Request { id, .. }) => Some(*id),
             Effect::Send(ClientMsg::Hello { .. } | ClientMsg::Cancel { .. })
             | Effect::Connect
+            | Effect::ManageDaemon { .. }
             | Effect::Disconnect
             | Effect::Render(_)
             | Effect::Persist { .. }
@@ -1079,6 +1084,7 @@ fn leader_b_toggles_the_persisted_sidebar_preference() {
                 Effect::Persist { key, value } => Some((key, value)),
                 Effect::Send(_)
                 | Effect::Connect
+                | Effect::ManageDaemon { .. }
                 | Effect::Disconnect
                 | Effect::Render(_)
                 | Effect::Load { .. }

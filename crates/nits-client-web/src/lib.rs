@@ -548,6 +548,8 @@ mod tests {
         let writer = tokio::spawn(client(server, handle, rx, shutdown.clone()));
         let original = vec![ViewPatch::Connection {
             connection: ConnectionView::Subscribed,
+            uncertain_mutations: Vec::new(),
+            daemon_management: nits_client_core::DaemonManagement::Idle,
             last_error: Some(RpcError::Internal {
                 message: "source".repeat(3_000_000),
             }),

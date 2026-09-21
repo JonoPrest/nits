@@ -2,7 +2,7 @@
 
 A daemon-backed code review tool. Nits are anchored to content (blobs), not to diffs or line numbers — so they survive rebases, amends and force-pushes.
 
-- One always-running daemon per machine owns workspaces, reviews and comments in an append-only event log (redb). It is the same binary — `nits daemon serve` — started on demand, so client and daemon can never be different versions.
+- One always-running daemon per machine owns workspaces, reviews and comments in an append-only event log (redb). It is the same binary — `nits daemon serve` — started on demand, with coordinated activation and recovery when an installation replaces a running build.
 - Clients — Tauri desktop (first), browser, TUI, CLI (`nits`), agents via MCP — attach over the same JSON protocol, locally or through an SSH tunnel.
 - A workspace groups multiple git repos; a review spans any base vs any head across them, with commit stepping.
 - GitHub-style diff review plus a file explorer over any ref; inline, file-level and review-level comments; human and agent authorship recorded.
@@ -71,6 +71,7 @@ Milestone 1.1–1.2 done: Cargo workspace, CI, `nits-protocol` (all wire types +
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the design and all resolved decisions.
 - [`docs/PLAN.md`](docs/PLAN.md) — four milestones with per-task test strategy. Start at **Milestone 1.1**.
+- [`docs/DAEMON-UPGRADES.md`](docs/DAEMON-UPGRADES.md) — installed-build activation, connected-client recovery and legacy bootstrap.
 - [`docs/REVIEW-TARGETS.md`](docs/REVIEW-TARGETS.md) — repository target rules and preserving older duplicate reviews during repair.
 - [`AGENTS.md`](AGENTS.md) — principles and conventions for anyone (human or agent) contributing.
 

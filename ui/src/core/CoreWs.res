@@ -95,7 +95,11 @@ let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.
                     recovering := false
                   }
                 }
-              | Disconnected(_) | Connecting(_) | Rejected(_) | Restarting(_) | UpgradeRequired(_) => ()
+              | Disconnected(_)
+              | Connecting(_)
+              | Rejected(_)
+              | Restarting(_)
+              | UpgradeRequired(_) => ()
               }
             | (None, _) => recovering := false
             }
