@@ -695,6 +695,7 @@ impl Core {
         kind: ChangeKind,
         opts: RenderOpts,
     ) -> Result<(FileRenderHeader, Rendered), CoreError> {
+        let repo = self.repo(repo_id)?;
         if matches!(kind, ChangeKind::Submodule { .. }) {
             let rendered = Rendered {
                 content: nits_protocol::RenderContent::Submodule,
@@ -712,7 +713,6 @@ impl Core {
                 rendered,
             ));
         }
-        let repo = self.repo(repo_id)?;
         let old = kind.old_blob().map(|b| repo.blob(b)).transpose()?;
         let new = kind.new_blob().map(|b| repo.blob(b)).transpose()?;
         let sample = new.as_deref().or(old.as_deref()).unwrap_or_default();

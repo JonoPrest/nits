@@ -2096,9 +2096,9 @@ fn submodule_only_reviews_list_and_render_commit_metadata() {
         "--workspace",
         &ws,
         "--base",
-        "dependency-base",
+        "tag:dependency-base",
         "--head",
-        "dependency-head",
+        "tag:dependency-head",
     ]);
     assert_eq!(h.out(&["files", &review]), "Submodule dep");
     let expected = format!("Submodule updated\nold commit: {old}\nnew commit: {new}");
