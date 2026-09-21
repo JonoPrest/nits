@@ -50,11 +50,11 @@ impl UnixServer {
     /// Accept until `shutdown` fires. In-flight connections are dropped when
     /// the returned future completes.
     pub async fn run(self, daemon: Arc<Daemon>, shutdown: CancellationToken) {
-        let tasks = tokio::task::JoinSet::<()>::new();
-        let mut tasks = tasks;
+        let mut tasks = tokio::task::JoinSet::<()>::new();
         loop {
             tokio::select! {
                 () = shutdown.cancelled() => break,
+                _ = tasks.join_next(), if !tasks.is_empty() => {},
                 accepted = self.listener.accept() => match accepted {
                     Ok((stream, _)) => {
                         let d = Arc::clone(&daemon);
@@ -70,7 +70,8 @@ impl UnixServer {
                 },
             }
         }
-        tasks.abort_all();
+        // Wait until connection futures (and their owned work/I/O) are dropped.
+        tasks.shutdown().await;
     }
 }
 
@@ -108,6 +109,7 @@ impl WsServer {
         loop {
             tokio::select! {
                 () = shutdown.cancelled() => break,
+                _ = tasks.join_next(), if !tasks.is_empty() => {},
                 accepted = self.listener.accept() => match accepted {
                     Ok((stream, peer)) => {
                         let d = Arc::clone(&daemon);
@@ -131,7 +133,8 @@ impl WsServer {
                 },
             }
         }
-        tasks.abort_all();
+        // Wait until connection futures (and their owned work/I/O) are dropped.
+        tasks.shutdown().await;
     }
 }
 

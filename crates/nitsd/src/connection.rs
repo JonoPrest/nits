@@ -1,21 +1,23 @@
 //! One client connection: handshake, request multiplexing, cancellation,
 //! subscriptions and streamed responses.
 //!
-//! Every request runs in its own task so a long render never delays a
-//! mutation from the same client. Outgoing frames funnel through one
-//! unbounded channel to a writer task; ordering within a request is
-//! preserved because each request task sends sequentially.
+//! Requests are polled concurrently so a long render never delays a mutation
+//! from the same client. Outgoing frames funnel through one unbounded channel;
+//! ordering within a request is preserved because each request sends sequentially.
+//! The serving future owns every request, subscription tail and transport half,
+//! so dropping it cannot detach work that keeps a connection or daemon alive.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use nits_protocol::{
     ChunkIndex, ClientMsg, Envelope, Event, ProtocolVersion, RenderChunk, Request, RequestId,
     Response, ResponseShape, RpcError, Seq, ServerMsg, Since, StreamItem, SubscribeScope,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex, mpsc};
-use tokio::task::AbortHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::codec::CodecError;
 use crate::daemon::{Daemon, DaemonError};
@@ -31,21 +33,21 @@ pub enum ConnectionError {
     Rejected,
 }
 
-/// Outgoing side of a connection, cheap to clone into request tasks.
+/// Outgoing side of a connection, cheap to clone into concurrent requests.
 #[derive(Debug, Clone)]
 pub struct Outbox {
     tx: mpsc::UnboundedSender<ServerMsg>,
 }
 
 impl Outbox {
-    /// Queue a message. A closed connection drops it; the request task will
-    /// notice when it is aborted.
+    /// Queue a message. A closed connection drops it; its request futures are
+    /// dropped along with the serving future.
     pub fn send(&self, msg: ServerMsg) {
         let _ = self.tx.send(msg);
     }
 }
 
-/// Per-connection subscription state, shared with the event tail task.
+/// Per-connection subscription state, shared with the event tail.
 #[derive(Debug, Default)]
 struct Subscriptions {
     /// Live-tail watermark per scope. Explicit replay ignores prior delivery;
@@ -96,7 +98,8 @@ where
 
     let (tx, rx) = mpsc::unbounded_channel();
     let outbox = Outbox { tx };
-    let writer = tokio::spawn(write_loop(wr, rx, negotiated.protocol));
+    let writer = write_loop(wr, rx, negotiated.protocol);
+    tokio::pin!(writer);
 
     let _tracked = daemon.track_connection();
     let conn = Arc::new(Connection {
@@ -107,22 +110,28 @@ where
     });
     // Start observing broadcasts before any subscription request can run.
     let events = conn.daemon.subscribe();
-    let tail = tokio::spawn(event_tail(Arc::clone(&conn), events));
-    let delta_tail = tokio::spawn(delta_tail(Arc::clone(&conn)));
-    let mut in_flight: HashMap<RequestId, AbortHandle> = HashMap::new();
+    let result = {
+        let incoming = async {
+            tokio::select! {
+                result = read_loop(&conn, &mut rd) => result,
+                () = event_tail(Arc::clone(&conn), events) => Ok(()),
+                () = delta_tail(Arc::clone(&conn)) => Ok(()),
+            }
+        };
+        tokio::select! {
+            result = incoming => result,
+            result = &mut writer => return result.map_err(ConnectionError::from),
+        }
+    };
 
-    let result = read_loop(&conn, &mut rd, &mut in_flight).await;
-
-    for (_, h) in in_flight.drain() {
-        h.abort();
-    }
-    tail.abort();
-    delta_tail.abort();
+    // All producers have now been dropped, including pending requests. Clean
+    // EOF drains already queued frames in order. A malformed/failed connection
+    // closes immediately instead of waiting for a peer that may never read.
     drop(conn);
     drop(outbox);
-    // Let queued frames drain before closing.
-    let _ = writer.await;
-    result
+    result?;
+    writer.await?;
+    Ok(())
 }
 
 struct Connection {
@@ -135,10 +144,28 @@ struct Connection {
 async fn read_loop<R: FrameRead>(
     conn: &Arc<Connection>,
     rd: &mut R,
-    in_flight: &mut HashMap<RequestId, AbortHandle>,
 ) -> Result<(), ConnectionError> {
-    while let Some(env) = transport::recv_msg::<_, ClientMsg>(rd).await? {
-        in_flight.retain(|_, h| !h.is_finished());
+    let mut requests = FuturesUnordered::new();
+    let mut in_flight: HashMap<RequestId, Arc<CancellationToken>> = HashMap::new();
+    loop {
+        // Reading a length-prefixed frame is not cancellation-safe. Keep this
+        // future alive while completed requests are removed from the set.
+        let next = transport::recv_msg::<_, ClientMsg>(rd);
+        tokio::pin!(next);
+        let env = loop {
+            tokio::select! {
+                env = &mut next => break env?,
+                Some((id, token)) = requests.next(), if !requests.is_empty() => {
+                    // An older completion must not remove a reused request ID.
+                    if in_flight.get(&id).is_some_and(|current| Arc::ptr_eq(current, &token)) {
+                        in_flight.remove(&id);
+                    }
+                }
+            }
+        };
+        let Some(env) = env else {
+            return Ok(());
+        };
         if let Err(error) = conn.negotiated.check(env.v) {
             // No request id to attach it to for a bad Hello re-send; use 0.
             let id = match &env.msg {
@@ -159,12 +186,20 @@ async fn read_loop<R: FrameRead>(
             }
             ClientMsg::Request { id, request } => {
                 let c = Arc::clone(conn);
-                let handle = tokio::spawn(async move { c.handle(id, request).await });
-                in_flight.insert(id, handle.abort_handle());
+                let token = Arc::new(CancellationToken::new());
+                in_flight.insert(id, Arc::clone(&token));
+                requests.push(async move {
+                    tokio::select! {
+                        biased;
+                        () = token.cancelled() => {},
+                        () = c.handle(id, request) => {},
+                    }
+                    (id, token)
+                });
             }
             ClientMsg::Cancel { id } => {
-                if let Some(h) = in_flight.remove(&id) {
-                    h.abort();
+                if let Some(token) = in_flight.remove(&id) {
+                    token.cancel();
                     conn.outbox.send(ServerMsg::Error {
                         id,
                         error: RpcError::Cancelled,
@@ -174,22 +209,21 @@ async fn read_loop<R: FrameRead>(
             }
         }
     }
-    Ok(())
 }
 
 async fn write_loop<W: FrameWrite>(
     mut wr: W,
     mut rx: mpsc::UnboundedReceiver<ServerMsg>,
     v: ProtocolVersion,
-) {
+) -> Result<(), CodecError> {
     while let Some(msg) = rx.recv().await {
         let env = Envelope { v, msg };
         if let Err(e) = transport::send_msg(&mut wr, &env).await {
             tracing::debug!(error = %e, "write failed; closing");
-            return;
+            return Err(e);
         }
     }
-    let _ = wr.close().await;
+    wr.close().await
 }
 
 /// Forward broadcast events matching this connection's scopes.
@@ -497,6 +531,186 @@ mod tests {
             subs: Mutex::default(),
         };
         (dir, conn, outgoing)
+    }
+
+    struct Incoming(mpsc::UnboundedReceiver<Vec<u8>>);
+
+    impl FrameRead for Incoming {
+        async fn recv(&mut self) -> Result<Option<Vec<u8>>, CodecError> {
+            Ok(self.0.recv().await)
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_input_loop_drops_a_subscription_waiting_for_its_lock() {
+        let (_dir, conn, mut outgoing) = connection();
+        let conn = Arc::new(conn);
+        let locked = conn.subs.lock().await;
+        let (input, frames) = mpsc::unbounded_channel();
+        input
+            .send(
+                crate::codec::encode(&Envelope::current(ClientMsg::Request {
+                    id: RequestId::new(1),
+                    request: Request::Subscribe {
+                        scope: SubscribeScope::All,
+                        since: Since::Now,
+                    },
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let mut read = Incoming(frames);
+        let mut serving = Box::pin(read_loop(&conn, &mut read));
+        // Polling to Pending drives the request up to the held subscription
+        // lock. The extra Arc proves this is an active request, not just a
+        // frame still queued at the transport boundary.
+        assert!(futures_util::poll!(serving.as_mut()).is_pending());
+        assert_eq!(Arc::strong_count(&conn), 2);
+        assert!(outgoing.try_recv().is_err());
+        drop(serving);
+        assert_eq!(Arc::strong_count(&conn), 1);
+        drop(locked);
+        assert!(conn.subs.lock().await.scopes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_completion_preserves_a_partially_read_next_frame() {
+        use tokio::io::AsyncWriteExt;
+        let (_dir, conn, mut outgoing) = connection();
+        let conn = Arc::new(conn);
+        let locked = conn.subs.lock().await;
+        let (mut client, server) = tokio::io::duplex(65536);
+        let (mut read, _write) = transport::byte_stream(server);
+        crate::codec::write_msg(
+            &mut client,
+            &Envelope::current(ClientMsg::Request {
+                id: RequestId::new(1),
+                request: Request::Subscribe {
+                    scope: SubscribeScope::All,
+                    since: Since::Now,
+                },
+            }),
+        )
+        .await
+        .unwrap();
+        let next = crate::codec::encode(&Envelope::current(ClientMsg::Hello {
+            client_id: conn.negotiated.client_id,
+            protocol: ProtocolVersion::CURRENT,
+            client: conn.negotiated.client.clone(),
+            author: conn.negotiated.author.clone(),
+        }))
+        .unwrap();
+        let length = u32::try_from(next.len()).unwrap().to_be_bytes();
+        client.write_all(&length[..2]).await.unwrap();
+        let mut serving = Box::pin(read_loop(&conn, &mut read));
+        // This poll consumes the first two prefix bytes and starts Subscribe,
+        // which is blocked on the lock. Complete it before the remaining bytes.
+        assert!(futures_util::poll!(serving.as_mut()).is_pending());
+        assert_eq!(Arc::strong_count(&conn), 2);
+        drop(locked);
+        let subscribed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut serving => panic!("input loop ended: {result:?}"),
+                message = outgoing.recv() => message.unwrap(),
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            subscribed,
+            ServerMsg::Response {
+                response: Response::Subscribed { .. },
+                ..
+            }
+        ));
+        client.write_all(&length[2..]).await.unwrap();
+        client.write_all(&next).await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut serving => panic!("input loop lost its frame: {result:?}"),
+                message = outgoing.recv() => message.unwrap(),
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            reply,
+            ServerMsg::Error {
+                error: RpcError::Invalid { .. },
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelled_request_completion_does_not_forget_a_reused_id() {
+        let (_dir, conn, mut outgoing) = connection();
+        let conn = Arc::new(conn);
+        let locked = conn.subs.lock().await;
+        let (input, frames) = mpsc::unbounded_channel();
+        let subscribe = ClientMsg::Request {
+            id: RequestId::new(1),
+            request: Request::Subscribe {
+                scope: SubscribeScope::All,
+                since: Since::Now,
+            },
+        };
+        input
+            .send(crate::codec::encode(&Envelope::current(subscribe.clone())).unwrap())
+            .unwrap();
+        let mut read = Incoming(frames);
+        let mut serving = Box::pin(read_loop(&conn, &mut read));
+        assert!(futures_util::poll!(serving.as_mut()).is_pending());
+        for message in [
+            ClientMsg::Cancel {
+                id: RequestId::new(1),
+            },
+            subscribe,
+        ] {
+            input
+                .send(crate::codec::encode(&Envelope::current(message)).unwrap())
+                .unwrap();
+        }
+        assert!(futures_util::poll!(serving.as_mut()).is_pending());
+        assert_eq!(
+            outgoing.try_recv().unwrap(),
+            ServerMsg::Error {
+                id: RequestId::new(1),
+                error: RpcError::Cancelled
+            }
+        );
+        assert_eq!(
+            outgoing.try_recv().unwrap(),
+            ServerMsg::StreamEnd {
+                id: RequestId::new(1)
+            }
+        );
+        // Cancel the replacement too: finishing the old future must not remove
+        // its cancellation token from the request-ID map.
+        input
+            .send(
+                crate::codec::encode(&Envelope::current(ClientMsg::Cancel {
+                    id: RequestId::new(1),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(futures_util::poll!(serving.as_mut()).is_pending());
+        assert_eq!(
+            outgoing.try_recv().unwrap(),
+            ServerMsg::Error {
+                id: RequestId::new(1),
+                error: RpcError::Cancelled
+            }
+        );
+        assert_eq!(
+            outgoing.try_recv().unwrap(),
+            ServerMsg::StreamEnd {
+                id: RequestId::new(1)
+            }
+        );
+        assert_eq!(Arc::strong_count(&conn), 1);
+        drop(locked);
     }
 
     #[tokio::test]
