@@ -136,6 +136,9 @@ type t =
   | @as("OpenOriginalDiff") OpenOriginalDiff({@as("thread_id") threadId: threadId})
   | @as("ExpandContext") ExpandContext({file: View.FileRef.t, full: bool})
   | @as("ExpandGap") ExpandGap({file: View.FileRef.t, gap: int, dir: Render.ExpandDir.t})
+  | @as("SelectBrowseRepo") SelectBrowseRepo({@as("repo_id") repoId: repoId})
+  | @as("OpenBrowseRefSelector") OpenBrowseRefSelector({@as("repo_id") repoId: repoId})
+  | @as("ResetBrowse") ResetBrowse({})
   | @as("SetBrowseRef")
   SetBrowseRef({
       @as("repo_id") repoId: repoId,

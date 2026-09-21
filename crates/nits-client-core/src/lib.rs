@@ -22,6 +22,7 @@
 
 #![deny(clippy::wildcard_enum_match_arm)]
 
+mod browse;
 mod cache;
 mod connection;
 mod content;
@@ -49,6 +50,9 @@ use nits_protocol::{
 };
 use serde::{Deserialize, Serialize};
 use strum::EnumDiscriminants;
+
+use browse::{Browse, BrowseAttempt};
+pub use browse::{BrowseAttemptView, BrowseStatus, BrowseStatusKind, BrowseTarget, BrowseView};
 
 pub use cache::{Bytes, CacheKey, CacheValue, ContentCache, Evicted, RenderKey, TreeKey};
 pub use connection::{Connection, ConnectionKind};
@@ -83,7 +87,8 @@ pub use keymap::{
 };
 pub use patch::{ViewPatch, ViewPatchKind};
 pub use ref_selector::{
-    RefOption, RefSelectorSide, RefSelectorStatus, RefSelectorStatusKind, RefSelectorView,
+    RefOption, RefSelectorPurpose, RefSelectorPurposeKind, RefSelectorSide, RefSelectorStatus,
+    RefSelectorStatusKind, RefSelectorView,
 };
 pub use view::{
     ConnectionView, ConnectionViewKind, ContentSearchView, Draft, DraftPurpose, DraftPurposeKind,
@@ -399,6 +404,16 @@ pub enum Action {
         repo_id: RepoId,
         ref_spec: Option<nits_protocol::RefSpec>,
     },
+    /// Choose the repository for the next Browse ref lookup.
+    SelectBrowseRepo {
+        repo_id: RepoId,
+    },
+    /// Open the searchable ref catalog without modifying review targets.
+    OpenBrowseRefSelector {
+        repo_id: RepoId,
+    },
+    /// Restore the open review's head trees and cancel a candidate lookup.
+    ResetBrowse,
     /// Open, re-query or (`None`) close the content-search palette
     /// (UI-DESIGN §Search). A non-empty query asks the daemon.
     ContentSearch {
@@ -649,10 +664,10 @@ impl InFlight {
     fn is_content(&self) -> bool {
         match self {
             InFlight::TreeSnapshot { .. }
-            | InFlight::BrowseTree { .. }
             | InFlight::FileRender { .. }
             | InFlight::RenderChunk { .. } => true,
             InFlight::Subscribe
+            | InFlight::BrowseTree { .. }
             | InFlight::CreationDefault { .. }
             | InFlight::CreateReview { .. }
             | InFlight::ReconcileCreation { .. }
@@ -758,6 +773,8 @@ pub struct ClientCore {
     file_collapse: std::collections::BTreeMap<(RepoId, RepoPath), bool>,
     /// The Browse tab's custom ref, when one is picked (UI-DESIGN §Browse).
     browse: Option<Browse>,
+    browse_attempt: Option<BrowseAttempt>,
+    browse_repo: Option<RepoId>,
     /// Visual mode (UI-DESIGN: modal keys): the diff row and side `V` was
     /// pressed on; the other end of the selection is the focused row.
     visual_anchor: Option<VisualAnchor>,
@@ -775,16 +792,6 @@ pub struct ClientCore {
     /// Only this request may replace content-search results. Closing or
     /// replacing the query invalidates earlier responses, even for equal text.
     latest_search: Option<RequestId>,
-}
-
-/// Browsing one repo at an arbitrary ref.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Browse {
-    repo_id: RepoId,
-    request_id: RequestId,
-    ref_spec: nits_protocol::RefSpec,
-    /// Root of the snapshot once it arrived.
-    root: Option<nits_protocol::TreeOid>,
 }
 
 /// A mutation applied locally and awaiting the daemon's echo.
@@ -834,6 +841,8 @@ impl ClientCore {
             by_commit_pending: false,
             file_collapse: std::collections::BTreeMap::new(),
             browse: None,
+            browse_attempt: None,
+            browse_repo: None,
             visual_anchor: None,
             realign: None,
             ref_selector: None,
@@ -1019,9 +1028,9 @@ impl ClientCore {
         let (tree, progress) = match (&self.view.review, &self.committed) {
             (Some(open), Some(_)) => {
                 let browse_root = match (self.view.tab, &self.browse) {
-                    (Tab::Browse, Some(b)) => b.root.map(|root| TreeKey {
-                        repo_id: b.repo_id,
-                        root,
+                    (Tab::Browse, Some(b)) => Some(TreeKey {
+                        repo_id: b.target.repo_id,
+                        root: b.root,
                     }),
                     (Tab::Browse | Tab::FilesChanged | Tab::Conversation, _) => None,
                 };
@@ -1264,9 +1273,9 @@ impl ClientCore {
             self.view.scope = scope;
             sections.push(ViewSection::ReviewList);
         }
-        let browse_ref = self.browse.as_ref().map(|b| b.ref_spec.clone());
-        if browse_ref != self.view.browse_ref {
-            self.view.browse_ref = browse_ref;
+        let browse = self.browse_view();
+        if browse != self.view.browse {
+            self.view.browse = browse;
             sections.push(ViewSection::ReviewList);
         }
         let focus = focus::clamp(&self.view, self.view.focus);
@@ -1669,8 +1678,8 @@ impl ClientCore {
                 reference: self
                     .browse
                     .as_ref()
-                    .filter(|b| b.repo_id == repo_id)
-                    .map(|b| b.ref_spec.clone())
+                    .filter(|b| b.target.repo_id == repo_id)
+                    .map(|b| b.target.ref_spec.clone())
                     .or_else(|| {
                         open.current_targets()
                             .into_iter()
@@ -2226,6 +2235,7 @@ impl ClientCore {
                 if self.view.review.is_none() {
                     return Err(CoreError::NoOpenReview);
                 }
+                self.browse_repo = Some(repo_id);
                 let key = (repo_id, path);
                 // Diffing tabs default dirs open (the set records the
                 // collapsed ones); Browse defaults closed. Separate sets,
@@ -2803,41 +2813,21 @@ impl ClientCore {
                 Ok(effects)
             }
             Action::OpenRefSelector { repo_id, side } => {
-                self.require_subscribed()?;
-                let Some(open) = &self.view.review else {
-                    return Err(CoreError::NoOpenReview);
-                };
-                let Some(target) = open
-                    .snapshot
-                    .review
-                    .targets
-                    .iter()
-                    .find(|target| target.repo_id == repo_id)
-                else {
-                    return Err(CoreError::UnknownRepo(repo_id));
-                };
-                let current = match side {
-                    RefSelectorSide::Base => target.base.clone(),
-                    RefSelectorSide::Head => target.head.clone(),
-                };
-                let workspace_id = open.snapshot.review.workspace_id;
-                let repo_name = self
-                    .view
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.id == workspace_id)
-                    .and_then(|workspace| workspace.repos.iter().find(|repo| repo.id == repo_id))
-                    .map_or_else(|| repo_id.to_string(), |repo| repo.display_name.clone());
-                self.ref_selector = Some(ref_selector::RefSelector::loading(
-                    repo_id, repo_name, side, current,
-                ));
-                Ok(vec![
-                    self.request(
-                        Request::ListRefs { repo_id },
-                        InFlight::ListRefs { repo_id },
-                    ),
-                    render(&[ViewSection::RefSelector]),
-                ])
+                self.open_ref_selector(repo_id, RefSelectorPurpose::Review { side })
+            }
+            Action::OpenBrowseRefSelector { repo_id } => {
+                self.open_ref_selector(repo_id, RefSelectorPurpose::Browse)
+            }
+            Action::SelectBrowseRepo { repo_id } => {
+                self.require_browse_repo(repo_id)?;
+                self.close_browse_selector();
+                self.browse_repo = Some(repo_id);
+                self.browse_attempt = None;
+                Ok(Vec::new())
+            }
+            Action::ResetBrowse => {
+                let repo_id = self.browse_repo().ok_or(CoreError::NoOpenReview)?;
+                self.set_browse_ref(repo_id, None)
             }
             Action::RefSelectorQuery { query } => {
                 let Some(selector) = &mut self.ref_selector else {
@@ -2864,50 +2854,13 @@ impl ClientCore {
                 self.select_ref(index)
             }
             Action::CloseRefSelector => {
-                if self.ref_selector.take().is_none() {
-                    return Err(CoreError::NoRefSelector);
+                let selector = self.ref_selector.take().ok_or(CoreError::NoRefSelector)?;
+                if selector.view.purpose == RefSelectorPurpose::Browse {
+                    self.browse_attempt = None;
                 }
                 Ok(vec![render(&[ViewSection::RefSelector])])
             }
-            Action::SetBrowseRef { repo_id, ref_spec } => {
-                if self.view.draft.is_some() {
-                    return Err(CoreError::DraftAlreadyOpen);
-                }
-                self.visual_anchor = None;
-                if let Some(open) = &mut self.view.review {
-                    open.open_file = None;
-                    open.original = None;
-                }
-                if self.view.review.is_none() {
-                    return Err(CoreError::NoOpenReview);
-                }
-                match ref_spec {
-                    None => {
-                        self.browse = None;
-                        // The tree is derived after this returns.
-                        Ok(vec![render(&[ViewSection::ReviewList])])
-                    }
-                    Some(ref_spec) => {
-                        self.require_subscribed()?;
-                        self.browse = Some(Browse {
-                            repo_id,
-                            request_id: RequestId::new(self.next_request),
-                            ref_spec: ref_spec.clone(),
-                            root: None,
-                        });
-                        Ok(vec![
-                            self.request(
-                                Request::TreeSnapshot {
-                                    repo_id,
-                                    ref_spec: ref_spec.clone(),
-                                },
-                                InFlight::BrowseTree { repo_id },
-                            ),
-                            render(&[ViewSection::ReviewList]),
-                        ])
-                    }
-                }
-            }
+            Action::SetBrowseRef { repo_id, ref_spec } => self.set_browse_ref(repo_id, ref_spec),
             Action::InformationalNoteOpened => {
                 let effects = self.user(Action::DraftOpened {
                     anchor: Anchor::Review,
@@ -2972,6 +2925,9 @@ impl ClientCore {
                     return Err(CoreError::FocusOutOfRange(focus));
                 }
                 self.view.focus = focus;
+                if matches!(focus, Focus::Tree { .. } | Focus::Diff { .. }) {
+                    self.browse_repo = focus::target_repo_of(&self.view, focus);
+                }
                 if matches!(focus, Focus::ReviewRequest { .. }) {
                     self.view.tab = Tab::Conversation;
                 }
@@ -3289,8 +3245,20 @@ impl ClientCore {
             return Err(CoreError::NoRefSelector);
         };
         let repo_id = selector.view.repo_id;
-        let Some(revision) = selector.revision_at(index) else {
-            return Err(CoreError::NoSelectedRef);
+        let selection = selector
+            .selection_at(index)
+            .ok_or(CoreError::NoSelectedRef)?;
+        let revision = match selection {
+            ref_selector::RefSelection::Review { revision } => revision,
+            ref_selector::RefSelection::Browse { ref_spec } => {
+                let mut effects = self.set_browse_ref(repo_id, Some(ref_spec))?;
+                if let Some(selector) = &mut self.ref_selector {
+                    selector.view.selected = index;
+                    selector.view.status = RefSelectorStatus::Saving;
+                }
+                effects.push(render(&[ViewSection::RefSelector]));
+                return Ok(effects);
+            }
         };
         self.require_subscribed()?;
         let Some(open) = &self.view.review else {
@@ -3485,6 +3453,8 @@ impl ClientCore {
         self.help_context = None;
         self.by_commit_pending = false;
         self.browse = None;
+        self.browse_attempt = None;
+        self.browse_repo = None;
         self.visual_anchor = None;
         self.view.content_search = None;
         self.latest_search = None;
@@ -3644,6 +3614,7 @@ impl ClientCore {
                 let was_down = matches!(self.connection, Connection::Disconnected { .. });
                 self.connection = Connection::Disconnected { last_seq };
                 self.clear_in_flight();
+                self.browse_disconnected();
                 if was_down {
                     return Vec::new();
                 }
@@ -3795,6 +3766,15 @@ impl ClientCore {
                     InFlight::ReconcileCreation { review_id } => {
                         return Ok(self.creation_lookup_failed(*review_id, &error));
                     }
+                    InFlight::BrowseTree { .. } => return Ok(self.browse_failed(id, &error)),
+                    InFlight::ListRefs { repo_id }
+                        if !self
+                            .ref_selector
+                            .as_ref()
+                            .is_some_and(|selector| selector.matches_request(*repo_id, id)) =>
+                    {
+                        return Ok(Vec::new());
+                    }
                     InFlight::Subscribe
                     | InFlight::ListWorkspaces
                     | InFlight::ListReviews { .. }
@@ -3805,7 +3785,6 @@ impl ClientCore {
                     | InFlight::ListRefs { .. }
                     | InFlight::Search
                     | InFlight::TreeSnapshot { .. }
-                    | InFlight::BrowseTree { .. }
                     | InFlight::FileRender { .. }
                     | InFlight::RenderChunk { .. }
                     | InFlight::Mutate { .. } => {}
@@ -3827,13 +3806,17 @@ impl ClientCore {
                     self.retire_pending(client_seq);
                     sections.extend(self.rebase());
                     sections.push(ViewSection::Threads);
-                    if target_update && let Some(selector) = &mut self.ref_selector {
+                    if target_update
+                        && let Some(selector) = &mut self.ref_selector
+                        && matches!(selector.view.purpose, RefSelectorPurpose::Review { .. })
+                    {
                         selector.view.status = selector_error(&error);
                         sections.push(ViewSection::RefSelector);
                     }
                 }
-                if matches!(waiting, InFlight::ListRefs { .. })
+                if let InFlight::ListRefs { repo_id } = waiting
                     && let Some(selector) = &mut self.ref_selector
+                    && selector.matches_request(repo_id, id)
                 {
                     selector.view.status = RefSelectorStatus::DaemonError {
                         message: rpc_error_message(&error),
@@ -4284,7 +4267,7 @@ impl ClientCore {
                     });
                 }
                 if let Some(selector) = &mut self.ref_selector
-                    && selector.view.repo_id == repo_id
+                    && selector.matches_request(repo_id, id)
                 {
                     selector.install(refs);
                     vec![render(&[ViewSection::RefSelector])]
@@ -4307,29 +4290,7 @@ impl ClientCore {
                 }
             }
             (InFlight::BrowseTree { repo_id }, Response::TreeSnapshot { snapshot }) => {
-                let mut effects = Vec::new();
-                let tree = TreeKey::of_snapshot(&snapshot);
-                if snapshot.repo_id == repo_id
-                    && let Some(browse) = &mut self.browse
-                    && browse.repo_id == repo_id
-                    && browse.request_id == id
-                {
-                    browse.root = Some(tree.root);
-                    if let Some(open) = &mut self.view.review
-                        && !open.trees.contains(&tree)
-                    {
-                        open.trees.push(tree);
-                    }
-                    self.content.cache.pin(CacheKey::Tree { tree });
-                    self.arrived(
-                        CacheKey::Tree { tree },
-                        CacheValue::Tree { snapshot },
-                        content::Arrival::Response,
-                        &mut effects,
-                    );
-                }
-                self.content_done(&mut effects);
-                effects
+                self.browse_answer(id, repo_id, snapshot)?
             }
             (InFlight::TreeSnapshot { tree }, Response::TreeSnapshot { snapshot }) => {
                 if TreeKey::of_snapshot(&snapshot) != tree {
@@ -4486,6 +4447,7 @@ impl ClientCore {
                 }
                 let close = self.ref_selector.as_ref().is_some_and(|selector| {
                     selector.view.repo_id == target.repo_id
+                        && matches!(selector.view.purpose, RefSelectorPurpose::Review { .. })
                         && self
                             .committed
                             .as_ref()

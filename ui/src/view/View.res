@@ -243,6 +243,32 @@ module RefSelectorSide = {
   type t = Base | Head
 }
 
+module BrowseTarget = {
+  @schema type t = {@as("repo_id") repoId: repoId, @as("ref_spec") refSpec: Domain.RefSpec.t}
+}
+module BrowseStatus = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t = | @as("Loading") Loading({}) | @as("Failed") Failed({message: string})
+  @@warning("+27")
+}
+module BrowseAttemptView = {
+  @schema type t = {target: BrowseTarget.t, status: BrowseStatus.t}
+}
+module BrowseView = {
+  @schema
+  type t = {
+    @as("repo_id") repoId: repoId,
+    selection: @s.null option<BrowseTarget.t>,
+    attempt: @s.null option<BrowseAttemptView.t>,
+  }
+}
+module RefSelectorPurpose = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t = | @as("Review") Review({side: RefSelectorSide.t}) | @as("Browse") Browse({})
+  @@warning("+27")
+}
 module RefSelectorStatus = {
   @@warning("-27")
   @schema @tag("type")
@@ -267,9 +293,10 @@ module RefOption = {
 module RefSelectorView = {
   @schema
   type t = {
+    @as("request_id") requestId: requestId,
     @as("repo_id") repoId: repoId,
     @as("repo_name") repoName: string,
-    side: RefSelectorSide.t,
+    purpose: RefSelectorPurpose.t,
     current: Domain.RefSpec.t,
     query: string,
     options: array<RefOption.t>,
@@ -454,6 +481,10 @@ module Command = {
     | TabFiles
     | TabConversation
     | TabBrowse
+    | BrowseRevision
+    | ResetBrowse
+    | NextBrowseRepo
+    | PrevBrowseRepo
     | ToggleSidebar
     | Submit
     | CopyPath
@@ -724,7 +755,7 @@ module ViewModel = {
     @as("open_review") openReview: @s.null option<reviewId>,
     @as("resolved_targets") resolvedTargets: array<Domain.ResolvedTarget.t>,
     scope: Domain.DiffScope.t,
-    @as("browse_ref") browseRef: @s.null option<Domain.RefSpec.t>,
+    browse: @s.null option<BrowseView.t>,
     @as("content_search") contentSearch: @s.null option<ContentSearchView.t>,
     @as("action_palette") actionPalette: bool,
     @as("ref_selector") refSelector: @s.null option<RefSelectorView.t>,
@@ -778,7 +809,7 @@ module ViewModel = {
     openReview: None,
     resolvedTargets: [],
     scope: All({}),
-    browseRef: None,
+    browse: None,
     contentSearch: None,
     actionPalette: false,
     refSelector: None,
@@ -809,7 +840,7 @@ module ViewPatch = {
         @as("open_review") openReview: @s.null option<reviewId>,
         @as("resolved_targets") resolvedTargets: array<Domain.ResolvedTarget.t>,
         scope: Domain.DiffScope.t,
-        @as("browse_ref") browseRef: @s.null option<Domain.RefSpec.t>,
+        browse: @s.null option<BrowseView.t>,
       })
     | @as("Tree") Tree({tree: TreeView.t})
     | @as("Diff")
@@ -879,7 +910,7 @@ module ViewPatch = {
         openReview,
         resolvedTargets,
         scope,
-        browseRef,
+        browse,
       }) => {
         ...model,
         home,
@@ -890,7 +921,7 @@ module ViewPatch = {
         openReview,
         resolvedTargets,
         scope,
-        browseRef,
+        browse,
       }
     | Tree({tree}) => {...model, tree}
     | Diff({diff, diffs, prefs, visual}) => {...model, diff, diffs, prefs, visual}

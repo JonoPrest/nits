@@ -8,7 +8,26 @@
       "label": "next file"
     }
   ],
-  "browse_ref": null,
+  "browse": {
+    "attempt": {
+      "status": {
+        "type": "Loading"
+      },
+      "target": {
+        "ref_spec": {
+          "type": "Head"
+        },
+        "repo_id": "01HF7YAT000000000000000002"
+      }
+    },
+    "repo_id": "01HF7YAT000000000000000002",
+    "selection": {
+      "ref_spec": {
+        "type": "Head"
+      },
+      "repo_id": "01HF7YAT000000000000000002"
+    }
+  },
   "check_current_ready": true,
   "checkpoints": [
     {
@@ -404,11 +423,15 @@
         "subject": null
       }
     ],
+    "purpose": {
+      "side": "Head",
+      "type": "Review"
+    },
     "query": "sel",
     "repo_id": "01HF7YAT000000000000000002",
     "repo_name": "nits",
+    "request_id": 42,
     "selected": 0,
-    "side": "Head",
     "status": {
       "type": "Ready"
     }

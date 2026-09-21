@@ -105,6 +105,11 @@ pub enum Command {
     TabConversation,
     /// Show the "Browse" tab.
     TabBrowse,
+    /// Resolve a revision in the explicitly selected Browse repository.
+    BrowseRevision,
+    ResetBrowse,
+    NextBrowseRepo,
+    PrevBrowseRepo,
     ToggleSidebar,
     /// Submit the open composer. The editor lives in the host, which
     /// handles the chord itself; the binding exists so hints, help and
@@ -578,6 +583,10 @@ impl Keymap {
             b(X::Global, keys!("1"), C::TabFiles, false),
             b(X::Global, keys!("2"), C::TabConversation, false),
             b(X::Global, keys!("3"), C::TabBrowse, false),
+            b(X::Global, keys!("g b"), C::BrowseRevision, false),
+            b(X::Global, keys!("g B"), C::ResetBrowse, false),
+            b(X::Global, keys!("] r"), C::NextBrowseRepo, false),
+            b(X::Global, keys!("[ r"), C::PrevBrowseRepo, false),
             b(X::Global, keys!("s"), C::ToggleLayout, false),
             b(X::Global, keys!("w"), C::ToggleWhitespace, false),
             // `g` is vim's goto group (which-key label "Go"); the
@@ -1102,6 +1111,10 @@ pub fn label(command: Command) -> &'static str {
         Command::TabFiles => "files changed",
         Command::TabConversation => "conversation",
         Command::TabBrowse => "browse",
+        Command::BrowseRevision => "browse revision",
+        Command::ResetBrowse => "return to review heads",
+        Command::NextBrowseRepo => "next Browse repository",
+        Command::PrevBrowseRepo => "previous Browse repository",
         Command::ToggleSidebar => "toggle sidebar",
         Command::Submit => "submit",
         Command::Connect => "connect",
@@ -1193,6 +1206,10 @@ pub fn modes_of(command: Command) -> &'static [Mode] {
         | Command::TabFiles
         | Command::TabConversation
         | Command::TabBrowse
+        | Command::BrowseRevision
+        | Command::ResetBrowse
+        | Command::NextBrowseRepo
+        | Command::PrevBrowseRepo
         | Command::ToggleSidebar
         | Command::Connect
         | Command::Disconnect

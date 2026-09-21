@@ -520,6 +520,13 @@ fn every_action_is_reachable_from_a_binding() {
     // states rather than what happened to run: resolution is the contract.
     let mut states: Vec<ClientCore> = Vec::new();
     let base = ready();
+    let mut browse = ready();
+    browse
+        .handle(Input::User(Action::SetTab {
+            tab: nits_client_core::Tab::Browse,
+        }))
+        .unwrap();
+    states.push(browse);
     let mut with_rounds = ready();
     let targets = snapshot().resolved.unwrap();
     let author = Author::Human {

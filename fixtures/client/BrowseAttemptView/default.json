@@ -1,0 +1,11 @@
+{
+  "status": {
+    "type": "Loading"
+  },
+  "target": {
+    "ref_spec": {
+      "type": "Head"
+    },
+    "repo_id": "01HF7YAT000000000000000002"
+  }
+}

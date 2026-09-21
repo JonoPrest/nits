@@ -366,10 +366,17 @@
     }
   }
   .browse-bar {
-    @apply flex items-center gap-2 border-b border-border bg-panel px-3 py-1 text-sm;
+    @apply flex flex-wrap items-center gap-2 border-b border-border bg-panel px-3 py-1 text-sm;
+  }
+  .browse-bar label {
+    @apply flex min-w-0 items-center gap-2;
   }
   .browse-bar .text-input {
     @apply w-64;
+    max-width: min(24rem, 65vw);
+  }
+  .browse-bar .browse-viewing, .browse-bar .browse-bad {
+    overflow-wrap: anywhere;
   }
   .browse-viewing {
     @apply text-muted;
@@ -643,17 +650,12 @@
   .ref-selector .text-input {
     @apply w-full;
   }
-  .ref-selector-results {
-    @apply mt-2 flex flex-col gap-1;
+  .ref-selector-option {
+    @apply flex cursor-pointer items-center gap-3 p-2;
+    overflow-wrap: anywhere;
   }
-  .ref-selector-results li {
-    @apply flex items-center gap-2;
-  }
-  .ref-selector-results .btn {
-    @apply flex-1 justify-start overflow-hidden text-left font-mono;
-  }
-  .ref-selector-kind {
-    @apply w-24 text-right;
+  .ref-selector-option.selected {
+    background: color-mix(in oklch, var(--color-accent) 12%, var(--color-panel));
   }
   .ref-selector-error {
     @apply mt-2 rounded border p-2 text-sm;

@@ -1,0 +1,20 @@
+{
+  "attempt": {
+    "status": {
+      "type": "Loading"
+    },
+    "target": {
+      "ref_spec": {
+        "type": "Head"
+      },
+      "repo_id": "01HF7YAT000000000000000002"
+    }
+  },
+  "repo_id": "01HF7YAT000000000000000002",
+  "selection": {
+    "ref_spec": {
+      "type": "Head"
+    },
+    "repo_id": "01HF7YAT000000000000000002"
+  }
+}

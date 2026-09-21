@@ -1,7 +1,7 @@
 //! Git-backed base/head selector state. The daemon supplies the catalog;
 //! this module owns filtering and selection so every host behaves identically.
 
-use nits_protocol::{BaseRefSpec, RefCandidate, RefSpec, RepoId, TargetRevision};
+use nits_protocol::{BaseRefSpec, RefCandidate, RefSpec, RepoId, RequestId, TargetRevision};
 use serde::{Deserialize, Serialize};
 use strum::EnumDiscriminants;
 
@@ -10,6 +10,21 @@ use strum::EnumDiscriminants;
 pub enum RefSelectorSide {
     Base,
     Head,
+}
+
+/// Selecting a review target is a mutation; Browse only resolves a tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumDiscriminants)]
+#[strum_discriminants(name(RefSelectorPurposeKind), derive(Hash, strum::EnumIter))]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum RefSelectorPurpose {
+    Review { side: RefSelectorSide },
+    Browse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RefSelection {
+    Review { revision: TargetRevision },
+    Browse { ref_spec: RefSpec },
 }
 
 /// The asynchronous state shown inside the selector.
@@ -37,9 +52,11 @@ pub struct RefOption {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RefSelectorView {
+    /// Catalog request identity also scopes a host's local query buffer.
+    pub request_id: RequestId,
     pub repo_id: RepoId,
     pub repo_name: String,
-    pub side: RefSelectorSide,
+    pub purpose: RefSelectorPurpose,
     pub current: RefSpec,
     pub query: String,
     pub options: Vec<RefOption>,
@@ -57,15 +74,17 @@ impl RefSelector {
     pub(crate) fn loading(
         repo_id: RepoId,
         repo_name: String,
-        side: RefSelectorSide,
+        purpose: RefSelectorPurpose,
         current: RefSpec,
+        request_id: RequestId,
     ) -> Self {
         Self {
             catalog: Vec::new(),
             view: RefSelectorView {
+                request_id,
                 repo_id,
                 repo_name,
-                side,
+                purpose,
                 current,
                 query: String::new(),
                 options: Vec::new(),
@@ -113,14 +132,26 @@ impl RefSelector {
         };
     }
 
-    pub(crate) fn revision_at(&self, index: usize) -> Option<TargetRevision> {
+    pub(crate) fn matches_request(&self, repo_id: RepoId, request_id: RequestId) -> bool {
+        self.view.repo_id == repo_id && self.view.request_id == request_id
+    }
+
+    pub(crate) fn selection_at(&self, index: usize) -> Option<RefSelection> {
         let option = self.view.options.get(index)?;
-        match self.view.side {
-            RefSelectorSide::Head => Some(TargetRevision::Head {
+        match self.view.purpose {
+            RefSelectorPurpose::Browse => Some(RefSelection::Browse {
                 ref_spec: option.ref_spec.clone(),
             }),
-            RefSelectorSide::Base => {
-                base_ref(&option.ref_spec).map(|ref_spec| TargetRevision::Base { ref_spec })
+            RefSelectorPurpose::Review { side } => {
+                let revision = match side {
+                    RefSelectorSide::Head => TargetRevision::Head {
+                        ref_spec: option.ref_spec.clone(),
+                    },
+                    RefSelectorSide::Base => TargetRevision::Base {
+                        ref_spec: base_ref(&option.ref_spec)?,
+                    },
+                };
+                Some(RefSelection::Review { revision })
             }
         }
     }
@@ -130,10 +161,17 @@ impl RefSelector {
         self.view.options = self
             .catalog
             .iter()
-            .filter(|candidate| match (&self.view.side, &candidate.ref_spec) {
-                (RefSelectorSide::Base, RefSpec::WorkingTree) => false,
-                (RefSelectorSide::Base | RefSelectorSide::Head, _) => true,
-            })
+            .filter(
+                |candidate| match (&self.view.purpose, &candidate.ref_spec) {
+                    (
+                        RefSelectorPurpose::Review {
+                            side: RefSelectorSide::Base,
+                        },
+                        RefSpec::WorkingTree,
+                    ) => false,
+                    (RefSelectorPurpose::Review { .. } | RefSelectorPurpose::Browse, _) => true,
+                },
+            )
             .filter(|candidate| {
                 query.is_empty()
                     || fuzzy_match(&search_text(candidate).to_lowercase(), query.as_str())
@@ -144,7 +182,44 @@ impl RefSelector {
                 current: candidate.ref_spec == self.view.current,
             })
             .collect();
+        if self.view.purpose == RefSelectorPurpose::Browse
+            && let Some(ref_spec) = browse_query(&self.view.query)
+            && !self
+                .view
+                .options
+                .iter()
+                .any(|option| option.ref_spec == ref_spec)
+        {
+            self.view.options.push(RefOption {
+                current: ref_spec == self.view.current,
+                ref_spec,
+                subject: Some("Resolve this revision".into()),
+            });
+        }
         self.view.selected = 0;
+    }
+}
+
+// Catalog search also accepts explicit refs outside the recent-commit window.
+// OIDs cross their validating parser here; named revisions are resolved by Git.
+fn browse_query(query: &str) -> Option<RefSpec> {
+    let query = query.trim();
+    if query.is_empty() || query.chars().any(char::is_whitespace) {
+        return None;
+    }
+    match query.to_lowercase().as_str() {
+        "worktree" | "working-tree" => Some(RefSpec::WorkingTree),
+        "head" => Some(RefSpec::Head),
+        "upstream" | "@{upstream}" => Some(RefSpec::Upstream),
+        _ => match query.split_once(':') {
+            Some(("branch", name)) if !name.is_empty() => {
+                Some(RefSpec::Branch { name: name.into() })
+            }
+            Some(("tag", name)) if !name.is_empty() => Some(RefSpec::Tag { name: name.into() }),
+            Some(("commit", oid)) => oid.parse().ok().map(|oid| RefSpec::Commit { oid }),
+            Some(_) => None,
+            None => Some(RefSpec::Branch { name: query.into() }),
+        },
     }
 }
 
@@ -208,8 +283,11 @@ mod tests {
         let mut base = RefSelector::loading(
             repo_id(),
             "repo".into(),
-            RefSelectorSide::Base,
+            RefSelectorPurpose::Review {
+                side: RefSelectorSide::Base,
+            },
             RefSpec::Head,
+            RequestId::new(1),
         );
         base.install(catalog.clone());
         assert!(
@@ -222,8 +300,11 @@ mod tests {
         let mut head = RefSelector::loading(
             repo_id(),
             "repo".into(),
-            RefSelectorSide::Head,
+            RefSelectorPurpose::Review {
+                side: RefSelectorSide::Head,
+            },
             RefSpec::Head,
+            RequestId::new(2),
         );
         head.install(catalog);
         assert!(

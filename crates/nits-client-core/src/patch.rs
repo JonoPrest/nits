@@ -44,7 +44,7 @@ pub enum ViewPatch {
         scope: DiffScope,
         /// The Browse tab's picked ref (UI-DESIGN §Browse).
         #[serde(default)]
-        browse_ref: Option<nits_protocol::RefSpec>,
+        browse: Option<crate::BrowseView>,
     },
     Tree {
         tree: TreeView,
@@ -161,7 +161,7 @@ impl ViewModel {
                 open_review: self.open_review,
                 resolved_targets: self.resolved_targets.clone(),
                 scope: self.scope,
-                browse_ref: self.browse_ref.clone(),
+                browse: self.browse.clone(),
             },
             ViewSection::Tree => ViewPatch::Tree {
                 tree: self.tree.clone(),
@@ -257,7 +257,7 @@ impl ViewModel {
                 open_review,
                 resolved_targets,
                 scope,
-                browse_ref,
+                browse,
             } => {
                 self.home = home;
                 self.daemon_context = daemon_context;
@@ -267,7 +267,7 @@ impl ViewModel {
                 self.open_review = open_review;
                 self.resolved_targets = resolved_targets;
                 self.scope = scope;
-                self.browse_ref = browse_ref;
+                self.browse = browse;
             }
             ViewPatch::Tree { tree } => self.tree = tree,
             ViewPatch::Diff {

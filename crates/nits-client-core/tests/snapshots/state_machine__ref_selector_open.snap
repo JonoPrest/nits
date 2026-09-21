@@ -3,9 +3,13 @@ source: crates/nits-client-core/tests/state_machine.rs
 expression: selector
 ---
 {
+  "request_id": 5,
   "repo_id": "00000000020000000000000002",
   "repo_name": "00000000020000000000000002",
-  "side": "Base",
+  "purpose": {
+    "type": "Review",
+    "side": "Base"
+  },
   "current": {
     "type": "Branch",
     "name": "main"

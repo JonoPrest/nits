@@ -669,12 +669,10 @@ impl ClientCore {
         }
         // A resolved-target refresh must not unpin a custom Browse ref
         // just because its repository's current head moved elsewhere.
-        if let Some(browse) = &self.browse
-            && let Some(root) = browse.root
-        {
+        if let Some(browse) = &self.browse {
             let tree = TreeKey {
-                repo_id: browse.repo_id,
-                root,
+                repo_id: browse.target.repo_id,
+                root: browse.root,
             };
             if !trees.contains(&tree) {
                 trees.push(tree);
@@ -839,10 +837,13 @@ impl ClientCore {
     /// scoped head tree (UI-DESIGN §Browse).
     fn blob_render_of(&self, file: &FileRef) -> Option<RenderKey> {
         let open = self.view.review.as_ref()?;
-        let picked = self.browse.as_ref().filter(|b| b.repo_id == file.repo_id);
+        let picked = self
+            .browse
+            .as_ref()
+            .filter(|b| b.target.repo_id == file.repo_id);
         let root = match (self.view.tab, picked) {
-            // A pending ref must not fall back to the review's head tree.
-            (crate::Tab::Browse, Some(browse)) => browse.root?,
+            // Only a successfully resolved selection changes the visible blob.
+            (crate::Tab::Browse, Some(browse)) => browse.root,
             (crate::Tab::Browse | crate::Tab::FilesChanged | crate::Tab::Conversation, _) => {
                 open.current_targets()
                     .iter()
@@ -924,6 +925,9 @@ impl ClientCore {
         let (first_row, last_row) = (first_row.min(last_row), first_row.max(last_row));
         let mut effects = Vec::new();
         let changed_file = self.open_file().is_none_or(|f| f.render != render);
+        if changed_file {
+            self.browse_repo = Some(render.repo_id);
+        }
         if let Some(open) = &mut self.view.review {
             open.open_file = Some(OpenFile {
                 render: render.clone(),

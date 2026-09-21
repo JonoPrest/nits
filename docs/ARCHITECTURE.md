@@ -780,3 +780,15 @@ Protocol 0.16 adds required cell endings. Disposable daemon renders and client
 header/chunk storage use a shared renderer generation as well as entry identities
 and options: pre-terminator cache entries are misses even when their zero-change
 headers still decode. This does not rewrite persisted event history (schema 9).
+
+Browse owns a committed `BrowseTarget` (repository/ref) and resolved tree separately
+from a candidate's loading request or error. The ViewModel exposes that selection
+and the explicit repository choice. Success commits atomically; failure keeps the
+prior tree, file, and comment context. Late/cancelled candidates cannot change the
+selection, and a comment draft opened while resolving prevents replacement. Reset
+recomputes pins to release custom trees. Ref selectors use a typed Review/Browse
+purpose and correlate catalog replies by request ID as well as repository. The
+same request identity scopes the host's local query buffer, so delayed patches
+cannot erase newer typing or show selectable results for an older query. Browse
+issues only TreeSnapshot, never UpdateReviewTarget. These control requests do not
+consume or release slots in the content prefetch budget.
