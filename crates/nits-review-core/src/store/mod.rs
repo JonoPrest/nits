@@ -21,6 +21,7 @@
 //! All values are JSON. Ids are stored as their canonical strings so keys are
 //! human-readable in a hex dump and sort by ULID time.
 
+mod discovery;
 mod migrate;
 pub mod replay;
 mod tables;

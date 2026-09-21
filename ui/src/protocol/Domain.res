@@ -125,6 +125,53 @@ module Review = {
   }
 }
 
+module ReviewScope = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t = All({}) | Workspace({@as("workspace_id") workspaceId: workspaceId})
+}
+
+module ReviewQuery = {
+  @schema
+  type t = {
+    scope: ReviewScope.t,
+    title: @s.null option<string>,
+    awaiting: @s.null option<string>,
+  }
+}
+
+module ReviewActivity = {
+  @schema
+  type t = {seq: seq, at: timestamp}
+}
+
+module PendingReviewRequest = {
+  @schema
+  type t = {id: reviewRequestId, recipient: string, created: timestamp}
+}
+
+module ReviewSummary = {
+  @schema
+  type t = {
+    id: reviewId,
+    @as("workspace_id") workspaceId: workspaceId,
+    title: string,
+    targets: array<ReviewTarget.t>,
+    created: timestamp,
+    status: ReviewStatus.t,
+    @as("workspace_name") workspaceName: string,
+    repositories: array<Repo.t>,
+    @as("open_findings") openFindings: int,
+    @as("pending_requests") pendingRequests: array<PendingReviewRequest.t>,
+    @as("last_activity") lastActivity: ReviewActivity.t,
+  }
+}
+
+module ReviewDiscovery = {
+  @schema
+  type t = {reviews: array<ReviewSummary.t>, seq: seq}
+}
+
 module Sig = {
   @schema
   type t = {name: string, email: string, time: timestamp, @as("offset_minutes") offsetMinutes: int}

@@ -257,6 +257,20 @@ impl Ops {
         }
     }
 
+    pub async fn discover_reviews(
+        &self,
+        query: nits_protocol::ReviewQuery,
+    ) -> Result<nits_protocol::ReviewDiscovery, OpsError> {
+        match self
+            .client
+            .request(Request::DiscoverReviews { query })
+            .await?
+        {
+            Response::ReviewDiscovery { discovery } => Ok(discovery),
+            _ => Err(OpsError::Shape),
+        }
+    }
+
     /// Ask the daemon beside the repository to choose a working-tree base.
     pub async fn default_base(&self, repo_id: RepoId) -> Result<RefSpec, OpsError> {
         match self

@@ -67,14 +67,37 @@ sessions do not follow later CLI default changes, and MCP switches do not
 rewrite the default.
 
 Select a workspace with `--workspace <ID>` anywhere in the command, including
-before `review list`, `review create`, or `events`. Without it, review commands
-infer the workspace from the current directory. `nits workspace list` lists IDs,
+before `review list`, `review create`, or `events`. `review create` can infer its
+workspace from the current directory. `review list` defaults to all workspaces
+on the selected daemon, even outside a checkout or over SSH. `nits workspace list` lists IDs,
 repository names and paths; `review list` and `review show` also identify each
 repository and its base/head refs, including when using a remote context.
 The `nits PATH` shortcut (including `--headless`) selects its workspace from the
 repository's existing attachment and rejects `--workspace`. For an explicit
 workspace, use `nits --workspace <ID> review create --repo <REPO_ID> --base <REF>
 --head worktree`; `nits workspace list` shows the repository IDs.
+
+`nits review list --all` explicitly selects all workspaces; it conflicts with
+`--workspace`. Narrow discovery with `--title 'PR #247'` (case-insensitive
+substring) or `--awaiting reviewer-a` (exact recipient name), or combine them.
+Rows include the workspace, open-finding count, pending request recipients and
+last activity in UTC. Newest committed review activity sorts first, even if the
+clock moved backward. Archived reviews remain discoverable; deleted reviews do
+not. The query reads persisted metadata, so missing checkouts do not block it.
+
+An open finding is an open actionable thread with a nondeleted root; replies do
+not increase the count, and outdated anchors still count. A request remains
+pending until that named agent records a checkpoint explicitly linked to it.
+Unlinked checkpoints or another reviewer’s checkpoint do not answer it; an
+answered request does not imply approval. Workspace renames change labels without
+pretending there was new review activity.
+
+`--json review list` returns an array retaining the review fields and adding
+`workspace_name`, `repositories`, `open_findings`, `pending_requests` and
+`last_activity: {seq, at}` (`at` is signed Unix milliseconds). MCP `list_reviews`
+uses the same optional `workspace_id`, `title` and `awaiting` filters and returns
+`{context, reviews, seq}` from one coherent store read. Use `get_review` or
+`review show --json` for the full snapshot and its own replay cursor.
 
 A checkout can be attached once per workspace, including through symlinks or its
 `.git` directory. Repeating `workspace attach` reports the existing repository ID;

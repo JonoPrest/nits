@@ -36,10 +36,10 @@ review summary; do not fabricate approval, human authorship, or identity details
 1. Inspect the active daemon context and source of selection. A context names a
    daemon, not a workspace or review. Keep every ID and cursor with its source
    context; await a successful context switch before using that daemon's IDs.
-2. Use an explicit review ID/reference when supplied. Otherwise discover attached
-   workspaces and reviews from the working directory and verify repo paths and
-   base/head targets. The MCP server's working directory can differ from yours;
-   remote paths belong to the daemon's machine. Bootstrap a directory review when
+2. Use an explicit review ID/reference when supplied. Otherwise discover reviews
+   across the selected daemon with `list_reviews {}` or `nits review list --all`,
+   narrowing by title or an awaiting agent when useful. Verify workspace, repo
+   paths and base/head targets; remote paths belong to the daemon's machine. Bootstrap a directory review when
    creating/opening that checkout is part of the task, rather than creating state
    merely to discover an existing review.
 3. Read the review snapshot, including resolved targets, comments, thread states,

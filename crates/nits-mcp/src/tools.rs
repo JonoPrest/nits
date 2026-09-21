@@ -58,7 +58,7 @@ pub enum ToolCall {
     ))]
     ListWorkspaces(NoArgs),
     #[strum_discriminants(strum(
-        message = "Reviews in a workspace. Without `workspace_id`: the workspace whose attached repo contains this server's working directory."
+        message = "Discover reviews across all workspaces by default, newest committed activity first; no checkout or working-directory inference. Optionally filter by workspace_id, case-insensitive title substring or exact awaiting agent. Includes workspace/repository identity, open finding count, pending named requests and last activity. Archived reviews remain visible; deleted reviews do not."
     ))]
     ListReviews(ListReviews),
     #[strum_discriminants(strum(
@@ -518,13 +518,19 @@ impl TryFrom<SessionIdentityFields> for SetSessionIdentity {
 #[serde(deny_unknown_fields)]
 pub struct ListWorkspaces {}
 
-/// Reviews in a workspace. Without `workspace_id`: the workspace whose
-/// attached repo contains this server's working directory.
+/// Discover reviews across the selected daemon, newest activity first. Omit
+/// `workspace_id` for all workspaces; no attached working directory is required.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListReviews {
     #[serde(default)]
     pub workspace_id: Option<WorkspaceId>,
+    /// Case-insensitive title substring, for example a PR number.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Exact recipient of an unanswered review request.
+    #[serde(default)]
+    pub awaiting: Option<String>,
 }
 
 /// Identifies a review for snapshot, content, or conversation queries.
@@ -954,7 +960,9 @@ pub struct Workspaces {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Reviews {
     pub context: ContextIdentity,
-    pub reviews: Vec<Review>,
+    pub reviews: Vec<nits_protocol::ReviewSummary>,
+    /// Store position reflected by every summary in this response.
+    pub seq: Seq,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

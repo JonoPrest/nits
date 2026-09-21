@@ -708,13 +708,21 @@ impl Server {
                 workspaces: ops.workspaces().await?,
             }),
             QueryCall::ListReviews(p) => {
-                let workspace_id = match p.workspace_id {
-                    Some(w) => w,
-                    None => ops.locate(Path::new(".")).await?.workspace.id,
+                let scope = match p.workspace_id {
+                    Some(workspace_id) => nits_protocol::ReviewScope::Workspace { workspace_id },
+                    None => nits_protocol::ReviewScope::All {},
                 };
+                let discovery = ops
+                    .discover_reviews(nits_protocol::ReviewQuery {
+                        scope,
+                        title: p.title,
+                        awaiting: p.awaiting,
+                    })
+                    .await?;
                 ok(tools::Reviews {
                     context: self.context_identity(),
-                    reviews: ops.reviews(workspace_id).await?,
+                    reviews: discovery.reviews,
+                    seq: discovery.seq,
                 })
             }
             QueryCall::GetReview(p) => {

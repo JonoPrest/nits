@@ -108,14 +108,19 @@ fn legacy_alias_inference_rejects_duplicates_and_reuses_the_survivor_after_detac
             seed_duplicates_at(data, repo, &alias);
         });
         let before = events(&h);
-        for args in [vec!["review", "list"], vec![".", "--headless"]] {
-            h.nits()
-                .current_dir(h.repo.path())
-                .args(args)
-                .assert()
-                .failure()
-                .stderr(predicate::str::contains("multiple repository attachments"));
-        }
+        // Discovery needs no checkout inference, so even legacy aliases remain visible.
+        h.nits()
+            .current_dir(h.repo.path())
+            .args(["review", "list"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("preserved legacy review"));
+        h.nits()
+            .current_dir(h.repo.path())
+            .args([".", "--headless"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("multiple repository attachments"));
         assert_eq!(events(&h), before);
         h.out(&[
             "workspace",
@@ -307,9 +312,8 @@ fn cli_detach_repairs_legacy_duplicates_and_missing_checkouts_without_losing_his
         .current_dir(h.repo.path())
         .args(["review", "list"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("multiple repository attachments"))
-        .stderr(predicate::str::contains("workspace detach"));
+        .success()
+        .stdout(predicate::str::contains("preserved legacy review"));
     let before = std::fs::read(h.repo.path().join("a.rs")).unwrap();
     let before_events = events(&h);
     h.nits()

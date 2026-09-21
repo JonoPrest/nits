@@ -13,6 +13,7 @@
 
 pub mod creation;
 pub mod deferral;
+pub mod discovery;
 pub mod domain;
 pub mod events;
 pub mod ids;
@@ -29,6 +30,7 @@ pub mod version;
 
 pub use creation::*;
 pub use deferral::*;
+pub use discovery::*;
 pub use domain::*;
 pub use events::*;
 pub use ids::*;

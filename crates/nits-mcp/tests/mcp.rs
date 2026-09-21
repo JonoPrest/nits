@@ -2801,3 +2801,66 @@ async fn add_comment_preserves_review_file_and_line_anchor_scopes() {
         assert_eq!(actual, expected, "{args}");
     }
 }
+
+#[tokio::test]
+async fn discovery_without_a_workspace_queries_all_metadata_and_keeps_context() {
+    let h = start();
+    let c = human(&h).await;
+    let (workspace, repo) = seed(&h, &c).await;
+    let second = WorkspaceId::from_parts(1, 2);
+    seed_workspace(
+        &c,
+        &h.repo,
+        second,
+        RepoId::from_parts(1, 1),
+        ClientSeq::new(20),
+    )
+    .await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    for (workspace, title) in [
+        (workspace.as_str(), "PR #42 café"),
+        (&second.to_string(), "PR #43"),
+    ] {
+        call(
+            &mut s,
+            "create_review",
+            json!({"workspace_id":workspace,"title":title,"targets":main_feature(&repo)}),
+        )
+        .await;
+    }
+    let before = h.daemon.core().last_seq().unwrap().unwrap();
+    let discovered = call(&mut s, "list_reviews", json!({})).await;
+    assert_eq!(discovered["reviews"].as_array().unwrap().len(), 2);
+    assert_eq!(discovered["reviews"][0]["title"], "PR #43");
+    assert_eq!(discovered["context"]["name"], "test");
+    assert_eq!(discovered["seq"], json!(before));
+    let filtered = call(
+        &mut s,
+        "list_reviews",
+        json!({"title":"CAFÉ","workspace_id":workspace}),
+    )
+    .await;
+    assert_eq!(filtered["reviews"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered["reviews"][0]["workspace_name"], "w");
+    assert_eq!(filtered["reviews"][0]["open_findings"], 0);
+    assert_eq!(filtered["reviews"][0]["pending_requests"], json!([]));
+    let empty = call(
+        &mut s,
+        "list_reviews",
+        json!({"awaiting":"unrequested-agent"}),
+    )
+    .await;
+    assert_eq!(empty["reviews"], json!([]));
+    let error = call_err(
+        &mut s,
+        "list_reviews",
+        json!({"workspace_id":WorkspaceId::nil()}),
+    )
+    .await;
+    assert!(
+        error.contains("NotFound") && error.contains("Workspace"),
+        "{error}"
+    );
+    assert_eq!(h.daemon.core().last_seq().unwrap(), Some(before));
+}

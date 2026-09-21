@@ -278,6 +278,10 @@ pub enum Request {
     ListReviews {
         workspace_id: WorkspaceId,
     },
+    /// Coherent metadata discovery across workspaces; never infers client cwd.
+    DiscoverReviews {
+        query: crate::ReviewQuery,
+    },
     /// Detect the branch a working-tree review should use as its base.
     /// Detection runs beside the repository, in the daemon, so local and
     /// remote clients behave identically.
@@ -405,6 +409,7 @@ impl Request {
             | Request::BlobRender { .. } => ResponseShape::Stream,
             Request::ListWorkspaces
             | Request::ListReviews { .. }
+            | Request::DiscoverReviews { .. }
             | Request::ListRefs { .. }
             | Request::DefaultBase { .. }
             | Request::EnsureDirectoryReview { .. }
@@ -457,6 +462,9 @@ pub enum Response {
     },
     Reviews {
         reviews: Vec<Review>,
+    },
+    ReviewDiscovery {
+        discovery: crate::ReviewDiscovery,
     },
     DefaultBase {
         base: RefSpec,

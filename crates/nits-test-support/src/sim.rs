@@ -522,6 +522,7 @@ impl Sim {
                     ),
                     Request::ListWorkspaces
                     | Request::ListReviews { .. }
+                    | Request::DiscoverReviews { .. }
                     | Request::ListRefs { .. }
                     | Request::DefaultBase { .. }
                     | Request::EnsureDirectoryReview { .. }
@@ -729,6 +730,7 @@ impl Sim {
                 }
             }
             Request::ListReviews { .. }
+            | Request::DiscoverReviews { .. }
             | Request::DefaultBase { .. }
             | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
