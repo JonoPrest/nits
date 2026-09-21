@@ -3,8 +3,8 @@ use std::path::Path;
 use std::sync::{Arc, Barrier};
 
 use nits_protocol::{
-    Anchor, Author, ClientId, ClientSeq, CommentId, CommentKind, EventBody, NonEmpty, RefSpec,
-    Repo, RepoId, ReviewId, ReviewTarget, Timestamp, WorkspaceId,
+    Anchor, Author, ClientId, ClientSeq, CommentId, CommentKind, EnsureDirectoryReview, EventBody,
+    NonEmpty, RefSpec, Repo, RepoId, ReviewId, ReviewTarget, Timestamp, WorkspaceId,
 };
 use nits_review_core::store::{NewEvent, Store};
 use nits_review_core::{Core, CoreError, Ctx, DataDir};
@@ -219,4 +219,64 @@ fn unavailable_legacy_attachment_does_not_block_a_different_checkout_or_repair()
     core.detach_repo(&ctx(), ws(1), rid(1)).unwrap();
     assert_eq!(core.workspace(ws(1)).unwrap().repos[0].id, rid(2));
     assert!(core.tree_snapshot(rid(2), &RefSpec::Head).is_ok());
+}
+
+#[test]
+fn directory_lookup_detects_legacy_aliases_and_reuses_either_survivor_after_restart() {
+    let alpha = repo("alpha.txt");
+    let aliases = tempfile::tempdir().unwrap();
+    let mut paths = vec![alpha.path().join(".git")];
+    #[cfg(unix)]
+    {
+        let alias = aliases.path().join("alias");
+        std::os::unix::fs::symlink(alpha.path(), &alias).unwrap();
+        paths.push(alias);
+    }
+    for path in paths {
+        for removed in [rid(1), rid(2)] {
+            let (_dir, data, core) = setup();
+            attach(&core, ws(1), rid(1), alpha.path()).unwrap();
+            drop(core);
+            legacy_attach(&data, rid(2), &path);
+            let core = Core::open(&data).unwrap();
+            let options = EnsureDirectoryReview {
+                workspace_id: ws(9),
+                repo_id: rid(9),
+                review_id: ReviewId::from_parts(1, 9),
+                path: alpha.path().to_str().unwrap().into(),
+                base: None,
+                head: Some(RefSpec::WorkingTree),
+            };
+            let before = core.last_seq().unwrap();
+            let error = core
+                .ensure_directory_review(&ctx(), options.clone())
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("multiple repository attachments")
+            );
+            assert_eq!(core.last_seq().unwrap(), before);
+            core.detach_repo(&ctx(), ws(1), removed).unwrap();
+            drop(core);
+            let core = Core::open(&data).unwrap();
+            let opened = core
+                .ensure_directory_review(&ctx(), options.clone())
+                .unwrap();
+            let survivor = if removed == rid(1) { rid(2) } else { rid(1) };
+            assert_eq!((opened.workspace_id, opened.repo_id), (ws(1), survivor));
+            assert_eq!(core.workspaces().unwrap().len(), 3);
+            assert_eq!(
+                core.ensure_directory_review(&ctx(), options.clone())
+                    .unwrap()
+                    .review_id,
+                opened.review_id
+            );
+            attach(&core, ws(2), rid(3), alpha.path()).unwrap();
+            let before = core.last_seq().unwrap();
+            let error = core.ensure_directory_review(&ctx(), options).unwrap_err();
+            assert!(error.to_string().contains("several workspaces"));
+            assert_eq!(core.last_seq().unwrap(), before);
+        }
+    }
 }

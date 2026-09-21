@@ -6,6 +6,7 @@ use nits_protocol::{
 };
 use nits_review_core::store::{NewEvent, Store};
 use nits_review_core::{Core, Ctx};
+use nitsd::client::{Client, Identity};
 
 fn workspace() -> WorkspaceId {
     WorkspaceId::from_parts(5, 1)
@@ -29,6 +30,9 @@ fn context() -> Ctx {
 }
 
 fn seed_duplicates(data: &DataDir, repo: &TestRepo) {
+    seed_duplicates_at(data, repo, repo.path());
+}
+fn seed_duplicates_at(data: &DataDir, repo: &TestRepo, alias: &std::path::Path) {
     let ctx = context();
     let core = Core::open(data).unwrap();
     core.create_workspace(&ctx, workspace(), "legacy workspace".into())
@@ -45,7 +49,7 @@ fn seed_duplicates(data: &DataDir, repo: &TestRepo) {
     {
         let store = Store::open(&data.state()).unwrap();
         for (id, path) in [
-            (repo_id(2), repo.path().to_path_buf()),
+            (repo_id(2), alias.to_path_buf()),
             (repo_id(3), repo.path().join("missing-checkout")),
         ] {
             store
@@ -89,6 +93,154 @@ fn seed_duplicates(data: &DataDir, repo: &TestRepo) {
         None,
     )
     .unwrap();
+}
+
+#[test]
+fn legacy_alias_inference_rejects_duplicates_and_reuses_the_survivor_after_detach() {
+    for symlink in [false, cfg!(unix)] {
+        let h = start_seeded(|data, repo| {
+            let mut alias = repo.path().join(".git");
+            if symlink {
+                alias = data.root.join("checkout-alias");
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(repo.path(), &alias).unwrap();
+            }
+            seed_duplicates_at(data, repo, &alias);
+        });
+        let before = events(&h);
+        for args in [vec!["review", "list"], vec![".", "--headless"]] {
+            h.nits()
+                .current_dir(h.repo.path())
+                .args(args)
+                .assert()
+                .failure()
+                .stderr(predicate::str::contains("multiple repository attachments"));
+        }
+        assert_eq!(events(&h), before);
+        h.out(&[
+            "workspace",
+            "detach",
+            &workspace().to_string(),
+            &repo_id(1).to_string(),
+        ]);
+        h.nits()
+            .current_dir(h.repo.path())
+            .args(["review", "list"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("preserved legacy review"));
+        let before = h.out(&["--json", "workspace", "list"]);
+        let result = h
+            .nits()
+            .current_dir(h.repo.path())
+            .args(["--json", ".", "--headless"])
+            .assert()
+            .success();
+        let opened: serde_json::Value =
+            serde_json::from_slice(&result.get_output().stdout).unwrap();
+        assert_eq!(opened["workspace_id"], workspace().to_string());
+        assert_eq!(opened["repo_id"], repo_id(2).to_string());
+        assert_eq!(opened["review_id"], review_id().to_string());
+        assert_eq!(opened["outcome"], "Reused");
+        assert_eq!(h.out(&["--json", "workspace", "list"]), before);
+    }
+}
+
+#[test]
+fn inference_uses_checkout_depth_instead_of_legacy_alias_path_depth() {
+    let h = start_seeded(|data, repo| seed_duplicates_at(data, repo, &repo.path().join(".git")));
+    h.out(&[
+        "workspace",
+        "detach",
+        &workspace().to_string(),
+        &repo_id(1).to_string(),
+    ]);
+    let nested = h.repo.path().join("nested");
+    h.repo
+        .git(&["worktree", "add", "-b", "nested", nested.to_str().unwrap()])
+        .unwrap();
+    let nested_id = h.out(&[
+        "workspace",
+        "attach",
+        &workspace().to_string(),
+        nested.to_str().unwrap(),
+    ]);
+    let located = h.rt.block_on(async {
+        let client = Client::connect_unix(
+            &h.socket,
+            Identity {
+                client_id: ClientId::from_parts(5, 99),
+                client: BuildInfo {
+                    name: "nested-inference".into(),
+                    version: "test".into(),
+                },
+                author: context().author,
+            },
+        )
+        .await
+        .unwrap();
+        nitsd::ops::Ops::new(client).locate(&nested).await.unwrap()
+    });
+    assert_eq!(located.repo.id.to_string(), nested_id);
+}
+
+#[test]
+fn remote_inference_does_not_require_the_advertised_checkout_to_be_local_git() {
+    let h = start_seeded(|data, repo| {
+        let ctx = context();
+        let core = Core::open(data).unwrap();
+        core.create_workspace(&ctx, workspace(), "remote workspace".into())
+            .unwrap();
+        // An unrelated accessible checkout must not become a fallback match.
+        core.attach_repo(
+            &ctx,
+            workspace(),
+            repo_id(2),
+            repo.path().to_str().unwrap(),
+            "other".into(),
+        )
+        .unwrap();
+        drop(core);
+        let path = data.root.join("remote-checkout");
+        std::fs::create_dir_all(path.join("nested")).unwrap();
+        // Simulate daemon metadata for a path that is not a Git repo on this client.
+        Store::open(&data.state())
+            .unwrap()
+            .append(NewEvent {
+                ts: ctx.now,
+                author: ctx.author,
+                client_id: ctx.client_id,
+                client_seq: ctx.client_seq,
+                body: EventBody::RepoAttached {
+                    workspace_id: workspace(),
+                    repo: Repo {
+                        id: repo_id(1),
+                        path: path.to_str().unwrap().into(),
+                        display_name: "remote".into(),
+                    },
+                },
+            })
+            .unwrap();
+    });
+    let path = h.dir.path().join("remote-checkout/nested");
+    let located = h.rt.block_on(async {
+        let client = Client::connect_ws(
+            &h.ws_url,
+            Identity {
+                client_id: ClientId::from_parts(5, 99),
+                client: BuildInfo {
+                    name: "remote-inference".into(),
+                    version: "test".into(),
+                },
+                author: context().author,
+            },
+        )
+        .await
+        .unwrap();
+        nitsd::ops::Ops::new(client).locate(&path).await.unwrap()
+    });
+    assert_eq!(located.workspace.id, workspace());
+    assert_eq!(located.repo.id, repo_id(1));
 }
 fn events(h: &Harness) -> String {
     h.out(&["--json", "events", "--since", "0"])

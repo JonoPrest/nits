@@ -178,18 +178,23 @@ impl Ops {
         let dir = std::fs::canonicalize(dir)
             .map_err(|e| OpsError::Invalid(format!("{}: {e}", dir.display())))?;
         let mut best: Vec<Located> = Vec::new();
+        let mut best_depth = 0;
         for ws in self.workspaces().await? {
             for repo in &ws.repos {
-                let root = Path::new(&repo.path);
+                let advertised = Path::new(&repo.path);
+                // These paths may belong to a remote daemon. Resolve locally
+                // accessible aliases, but retain advertised-path inference when
+                // its checkout cannot be opened on this client. Open exactly the
+                // advertised path; discovering ancestors could match another repo.
+                let git = nits_review_core::git::Repo::open_canonical(advertised).ok();
+                let root = git.as_ref().map_or(advertised, |git| git.workdir());
                 if !dir.starts_with(root) {
                     continue;
                 }
                 let depth = root.components().count();
-                let best_depth = best
-                    .first()
-                    .map_or(0, |b| Path::new(&b.repo.path).components().count());
                 if depth > best_depth {
                     best.clear();
+                    best_depth = depth;
                 }
                 if depth >= best_depth {
                     best.push(Located {
