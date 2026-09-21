@@ -49,13 +49,17 @@ impl Core {
                 .map_err(|error| CoreError::invalid(error.to_string()))?;
         }
         if let Some((workspace_id, repo_id)) = located
-            && let Some(review) = self.matching_directory_review(
+            && let Some(mut review) = self.matching_directory_review(
                 workspace_id,
                 repo_id,
                 requested_base.as_ref(),
                 &head,
             )?
         {
+            self.resolve_targets(ctx, review.review_id)?;
+            review.seq = self
+                .last_seq()?
+                .ok_or_else(|| CoreError::invalid("review has no log position"))?;
             return Ok(review);
         }
         let base = match requested_base {

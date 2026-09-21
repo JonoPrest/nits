@@ -1288,6 +1288,7 @@ fn every_old_schema_migrates_raw_requests_with_unknown_targets_without_invention
         let target = nits_protocol::ResolvedRef {
             tree: nits_protocol::TreeOid::from_bytes([1; 20]),
             source: nits_protocol::ResolvedSource::WorkingTree {
+                head: None,
                 dirty: Vec::new(),
                 branch: None,
             },
@@ -1347,5 +1348,101 @@ fn strip_legacy_request_targets(value: &mut serde_json::Value) {
             .as_object_mut()
             .unwrap()
             .remove("targets");
+    }
+}
+
+#[test]
+fn schema_six_worktree_snapshots_preserve_unknown_head_through_upgrade_and_rebuild() {
+    use nits_protocol::{ResolvedRef, ResolvedSource, ResolvedTarget, TreeOid};
+    use redb::ReadableTable;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy.redb");
+    let targets = NonEmpty::singleton(ResolvedTarget {
+        repo_id: repo_id(),
+        base: ResolvedRef {
+            tree: TreeOid::from_bytes([1; 20]),
+            source: ResolvedSource::Commit {
+                oid: nits_protocol::CommitOid::from_bytes([2; 20]),
+            },
+        },
+        head: ResolvedRef {
+            tree: TreeOid::from_bytes([3; 20]),
+            source: ResolvedSource::WorkingTree {
+                dirty: vec![],
+                branch: Some("feature".into()),
+                head: None,
+            },
+        },
+    });
+    let expected = {
+        let store = Store::open(&path).unwrap();
+        store
+            .append(new_event(EventBody::WorkspaceCreated {
+                workspace: workspace(),
+            }))
+            .unwrap();
+        store
+            .append(new_event(EventBody::ReviewCreated { review: review(1) }))
+            .unwrap();
+        store
+            .append(new_event(EventBody::ReviewTargetsResolved {
+                review_id: review_id(1),
+                targets: targets.clone(),
+            }))
+            .unwrap();
+        store
+            .append(new_event(EventBody::ReviewRequested {
+                review_id: review_id(1),
+                agent: "review-agent".into(),
+                note: "captured".into(),
+                targets: nits_protocol::RequestedTargets::Captured { targets },
+            }))
+            .unwrap();
+        store.review_snapshot(review_id(1)).unwrap().unwrap()
+    };
+    {
+        let db = redb::Database::open(&path).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut log = txn
+                .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
+                .unwrap();
+            let entries: Vec<_> = log
+                .iter()
+                .unwrap()
+                .map(|row| {
+                    let (key, bytes) = row.unwrap();
+                    let mut raw: serde_json::Value = serde_json::from_slice(bytes.value()).unwrap();
+                    raw["schema"] = serde_json::json!(6);
+                    for pointer in [
+                        "/event/body/targets/0/head/source",
+                        "/event/body/targets/targets/0/head/source",
+                    ] {
+                        if let Some(source) = raw.pointer_mut(pointer) {
+                            source.as_object_mut().unwrap().remove("head");
+                        }
+                    }
+                    (key.value(), serde_json::to_vec(&raw).unwrap())
+                })
+                .collect();
+            for (key, bytes) in entries {
+                log.insert(key, bytes.as_slice()).unwrap();
+            }
+        }
+        txn.commit().unwrap();
+    }
+    stamp_schema(&path, 6);
+    for _ in 0..2 {
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SchemaVersion::CURRENT);
+        assert_eq!(
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+            expected
+        );
+        store.rebuild_views().unwrap();
+        assert_eq!(
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+            expected
+        );
     }
 }

@@ -645,6 +645,7 @@ fn browse_comment_arrives_remotely_inline_and_converges() {
     let revision = nits_protocol::ResolvedRef {
         tree: TreeOid::from_bytes([1; 20]),
         source: nits_protocol::ResolvedSource::WorkingTree {
+            head: None,
             dirty: Vec::new(),
             branch: None,
         },
@@ -962,6 +963,7 @@ fn two_reviewers_keep_requested_h1_when_current_h2_arrives_before_checks() {
     let reference = |n| ResolvedRef {
         tree: TreeOid::new(Oid::from_bytes([n; 20])),
         source: ResolvedSource::WorkingTree {
+            head: None,
             dirty: Vec::new(),
             branch: Some("feature".into()),
         },

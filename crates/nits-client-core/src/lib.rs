@@ -659,6 +659,8 @@ pub struct ClientCore {
     snapshot_events: BTreeMap<RequestId, (ReviewId, Vec<Event>)>,
     /// Only the latest file listing may install content after a target/scope refresh.
     latest_files: Option<RequestId>,
+    /// Only the newest commit list may replace the stepper after ref movement.
+    latest_commits: Option<RequestId>,
     /// Mutations sent and not yet echoed by the daemon, in send order.
     pending: Vec<Pending>,
     reference_context: Option<nits_protocol::ReferenceContext>,
@@ -745,6 +747,7 @@ impl ClientCore {
             committed: None,
             snapshot_events: BTreeMap::new(),
             latest_files: None,
+            latest_commits: None,
             pending: Vec::new(),
             reference_context: None,
             pending_reference: None,
@@ -3207,6 +3210,7 @@ impl ClientCore {
         self.view.draft = None;
         self.view.pending_refresh = false;
         self.latest_files = None;
+        self.latest_commits = None;
         self.deferred.clear();
         self.committed = None;
         self.pending.clear();
@@ -3336,6 +3340,9 @@ impl ClientCore {
         }
         if matches!(request, Request::ListFiles { .. }) {
             self.latest_files = Some(id);
+        }
+        if matches!(request, Request::ListCommits { .. }) {
+            self.latest_commits = Some(id);
         }
         self.in_flight.insert(id, waiting);
         Effect::Send(ClientMsg::Request { id, request })
@@ -3886,6 +3893,10 @@ impl ClientCore {
                 effects
             }
             (InFlight::ListCommits { repo_id }, Response::Commits { commits }) => {
+                if self.latest_commits != Some(id) {
+                    return Ok(Vec::new());
+                }
+                self.latest_commits = None;
                 let mut effects = Vec::new();
                 if let Some(open) = &self.view.review {
                     let has_worktree = open.snapshot.review.targets.iter().any(|target| {
@@ -4245,6 +4256,25 @@ impl ClientCore {
                     Request::ListFiles { review_id, scope },
                     InFlight::ListFiles { review_id, scope },
                 ));
+                // Commit identity can move while the content tree is unchanged
+                // (for example an amend). Refresh the visible repository's list
+                // and supersede outstanding answers from an earlier resolution.
+                let repo_id = self
+                    .stepper
+                    .as_ref()
+                    .map(|stepper| stepper.repo_id)
+                    .or_else(|| {
+                        self.view
+                            .review
+                            .as_ref()
+                            .map(|open| open.snapshot.review.targets.first().repo_id)
+                    });
+                if let Some(repo_id) = repo_id {
+                    effects.push(self.request(
+                        Request::ListCommits { review_id, repo_id },
+                        InFlight::ListCommits { repo_id },
+                    ));
+                }
             }
         }
         if !sections.is_empty() {

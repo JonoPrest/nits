@@ -4,8 +4,9 @@
 //! review with a working-tree target on that repo (which emits
 //! `ReviewTargetsResolved` only when something actually moved).
 //!
-//! Paths under `.git` are ignored: the working-tree snapshot itself writes a
-//! temporary index there, which would otherwise re-trigger the watcher.
+//! Git HEAD/index/ref changes also invalidate resolved provenance. Only relevant
+//! metadata is considered: snapshot indexes, objects and Nits retention refs
+//! must not feed back into the watcher that created them.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -144,19 +145,66 @@ fn watch_one(
     path: &Path,
     tx: mpsc::UnboundedSender<RepoId>,
 ) -> notify::Result<notify::RecommendedWatcher> {
-    let root = path.to_path_buf();
+    let paths =
+        WatchPaths::discover(path).map_err(|error| notify::Error::generic(&error.to_string()))?;
+    let callback_paths = paths.clone();
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(ev) = res else { return };
-        let outside_git = ev.paths.iter().any(|p| {
-            !p.strip_prefix(&root)
-                .is_ok_and(|rel| rel.starts_with(".git"))
-        });
-        if outside_git {
+        // Reads while resolving must not schedule another resolution.
+        if !matches!(ev.kind, notify::EventKind::Access(_))
+            && (ev.need_rescan() || ev.paths.iter().any(|p| callback_paths.relevant(p)))
+        {
             let _ = tx.send(id);
         }
     })?;
-    w.watch(path, RecursiveMode::Recursive)?;
+    w.watch(&paths.root, RecursiveMode::Recursive)?;
+    if !paths.metadata.common.starts_with(&paths.root) {
+        w.watch(&paths.metadata.common, RecursiveMode::Recursive)?;
+    }
+    if !paths.metadata.worktree.starts_with(&paths.root)
+        && !paths.metadata.worktree.starts_with(&paths.metadata.common)
+    {
+        w.watch(&paths.metadata.worktree, RecursiveMode::Recursive)?;
+    }
     Ok(w)
+}
+
+#[derive(Clone)]
+struct WatchPaths {
+    root: PathBuf,
+    metadata: nits_review_core::git::GitMetadataPaths,
+}
+
+impl WatchPaths {
+    fn discover(path: &Path) -> Result<Self, nits_review_core::git::GitError> {
+        let repo = nits_review_core::git::Repo::open(path)?;
+        Ok(Self {
+            root: std::fs::canonicalize(repo.workdir())?,
+            metadata: repo.metadata_paths()?,
+        })
+    }
+
+    fn relevant(&self, path: &Path) -> bool {
+        if let Ok(relative) = path.strip_prefix(&self.metadata.worktree)
+            && matches!(
+                relative.to_str(),
+                Some("HEAD" | "index" | "config.worktree")
+            )
+        {
+            return true;
+        }
+        if let Ok(relative) = path.strip_prefix(&self.metadata.common) {
+            return matches!(
+                relative.to_str(),
+                Some("config" | "packed-refs" | "info/exclude")
+            ) || (relative.starts_with("refs") && !relative.starts_with("refs/nits"))
+                || relative.starts_with("reftable");
+        }
+        if path.starts_with(&self.metadata.worktree) {
+            return false;
+        }
+        path.starts_with(&self.root)
+    }
 }
 
 /// Snapshot the working tree, broadcast a delta if it moved, and re-resolve
@@ -170,19 +218,19 @@ async fn process(daemon: &Arc<Daemon>, repo_id: RepoId, last_tree: &mut Option<T
         }
     };
     let previous = last_tree.replace(tree);
-    let Some(from) = previous else {
-        return;
-    };
-    if from == tree {
-        return;
-    }
-    match daemon
-        .read(move |c| c.tree_delta(repo_id, from, tree))
-        .await
+    if let Some(from) = previous
+        && from != tree
     {
-        Ok(delta) => daemon.broadcast_delta(delta),
-        Err(e) => tracing::warn!(repo = %repo_id, error = %e, "tree delta failed"),
+        match daemon
+            .read(move |c| c.tree_delta(repo_id, from, tree))
+            .await
+        {
+            Ok(delta) => daemon.broadcast_delta(delta),
+            Err(e) => tracing::warn!(repo = %repo_id, error = %e, "tree delta failed"),
+        }
     }
+    // An unchanged content tree says nothing about HEAD, dirty paths, the
+    // selected branch or a moving base ref. Core compares all resolved fields.
     let reviews = match daemon.read(move |c| c.working_tree_reviews(repo_id)).await {
         Ok(r) => r,
         Err(e) => {
@@ -210,5 +258,68 @@ async fn process(daemon: &Arc<Daemon>, repo_id: RepoId, last_tree: &mut Option<T
 pub fn daemon_author() -> Author {
     Author::Daemon {
         machine: gethostname::gethostname().to_string_lossy().into_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nits_test_support::{RepoBuilder, files};
+
+    #[test]
+    fn metadata_filter_tracks_shared_and_private_git_state_without_own_writes() {
+        let repo = RepoBuilder::new()
+            .commit("base", files!["a.txt" => "a\n"])
+            .build()
+            .unwrap();
+        let linked = tempfile::tempdir().unwrap();
+        let checkout = linked.path().join("checkout");
+        repo.git(&[
+            "worktree",
+            "add",
+            "-b",
+            "linked",
+            checkout.to_str().unwrap(),
+        ])
+        .unwrap();
+        for checkout in [repo.path(), checkout.as_path()] {
+            let paths = WatchPaths::discover(checkout).unwrap();
+            for path in ["HEAD", "index", "config.worktree"] {
+                assert!(
+                    paths.relevant(&paths.metadata.worktree.join(path)),
+                    "{path}"
+                );
+            }
+            for path in [
+                "packed-refs",
+                "config",
+                "info/exclude",
+                "refs/heads/main",
+                "refs/tags/v1",
+                "refs/remotes/origin/main",
+            ] {
+                assert!(paths.relevant(&paths.metadata.common.join(path)), "{path}");
+            }
+            for path in [
+                "nits-index-123/index",
+                "nits-index-123/index.lock",
+                "objects/ab/cdef",
+                "logs/HEAD",
+            ] {
+                assert!(
+                    !paths.relevant(&paths.metadata.worktree.join(path)),
+                    "{path}"
+                );
+            }
+            for path in [
+                "refs/nits",
+                "refs/nits/reviews/a/trees/b",
+                "refs/nits/reviews/a/commits/c.lock",
+                "logs/refs/nits/reviews/a",
+            ] {
+                assert!(!paths.relevant(&paths.metadata.common.join(path)), "{path}");
+            }
+            assert!(paths.relevant(&paths.root.join("a.txt")));
+        }
     }
 }

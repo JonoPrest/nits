@@ -2145,6 +2145,7 @@ fn commit_stepper_worktree_row_selects_the_worktree_scope() {
         head: ResolvedRef {
             tree: tree_oid(2),
             source: ResolvedSource::WorkingTree {
+                head: None,
                 dirty: vec![path("a.rs")],
                 branch: Some("feature".into()),
             },

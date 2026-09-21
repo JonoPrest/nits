@@ -96,6 +96,13 @@ pub struct Repo {
     workdir: PathBuf,
 }
 
+/// Git stores linked-worktree HEAD/index state separately from shared refs.
+#[derive(Debug, Clone)]
+pub struct GitMetadataPaths {
+    pub worktree: PathBuf,
+    pub common: PathBuf,
+}
+
 impl std::fmt::Debug for Repo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Repo")
@@ -144,6 +151,15 @@ impl Repo {
     #[must_use]
     pub fn workdir(&self) -> &Path {
         &self.workdir
+    }
+
+    /// Actual metadata directories, including paths outside linked checkouts.
+    pub fn metadata_paths(&self) -> Result<GitMetadataPaths, GitError> {
+        let local = self.local();
+        Ok(GitMetadataPaths {
+            worktree: std::fs::canonicalize(local.git_dir())?,
+            common: std::fs::canonicalize(local.common_dir())?,
+        })
     }
 
     fn local(&self) -> gix::Repository {
@@ -807,7 +823,11 @@ impl Repo {
             ],
             &[],
         )?;
-        if let ResolvedSource::Commit { oid } = revision.source {
+        let commit = match revision.source {
+            ResolvedSource::Commit { oid } => Some(oid),
+            ResolvedSource::WorkingTree { head, .. } => head,
+        };
+        if let Some(oid) = commit {
             self.git(
                 &[
                     "update-ref",
@@ -864,7 +884,7 @@ impl Repo {
                 let name = String::from_utf8_lossy(&out).trim().to_owned();
                 (!name.is_empty()).then_some(name)
             });
-        let dirty = match self.rev_parse_commit("HEAD") {
+        let (dirty, head) = match self.rev_parse_commit("HEAD") {
             Ok(head) => {
                 let head_tree = self.commit_tree(head)?;
                 let mut paths: Vec<RepoPath> = Vec::new();
@@ -872,22 +892,28 @@ impl Repo {
                     paths.push(raw.path);
                 }
                 paths.sort();
-                paths
+                (paths, Some(head))
             }
             // Unborn branch: everything is new.
             Err(GitError::Resolve { .. }) => {
                 let snap = self.tree_snapshot(RepoId::nil(), tree)?;
-                snap.entries
+                let paths = snap
+                    .entries
                     .into_iter()
                     .filter(|e| !matches!(e.kind, TreeEntryKind::Dir { .. }))
                     .map(|e| e.path)
-                    .collect()
+                    .collect();
+                (paths, None)
             }
             Err(e) => return Err(e),
         };
         Ok(ResolvedRef {
             tree,
-            source: ResolvedSource::WorkingTree { dirty, branch },
+            source: ResolvedSource::WorkingTree {
+                dirty,
+                branch,
+                head,
+            },
         })
     }
 }

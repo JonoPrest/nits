@@ -644,7 +644,7 @@ fn working_tree_snapshot_reflects_unstaged_edits_untracked_and_deletes() {
         .unwrap();
     let repo = Repo::open(t.path()).unwrap();
     let wt = repo.resolve(&RefSpec::WorkingTree).unwrap();
-    let ResolvedSource::WorkingTree { dirty, branch: _ } = &wt.source else {
+    let ResolvedSource::WorkingTree { dirty, .. } = &wt.source else {
         panic!("expected working tree");
     };
     let dirty: Vec<&str> = dirty.iter().map(nits_protocol::RepoPath::as_str).collect();
@@ -749,6 +749,7 @@ fn working_tree_snapshot_without_index_supports_empty_and_untracked_unborn_repo(
     assert_eq!(
         empty.source,
         ResolvedSource::WorkingTree {
+            head: None,
             dirty: vec![],
             branch: Some("main".into())
         }

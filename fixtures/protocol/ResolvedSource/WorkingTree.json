@@ -4,5 +4,6 @@
     "src/lib.rs",
     "new.txt"
   ],
+  "head": null,
   "type": "WorkingTree"
 }
