@@ -130,6 +130,16 @@ macro_rules! registry {
 }
 
 registry!(
+    CreationBase,
+    CreationTarget,
+    CreationDraft,
+    CreationDefaultState,
+    CreationDefault,
+    CreationSubmission,
+    CreationReconcile,
+    CreationResume,
+    CreationStatus,
+    ReviewCreation,
     HomeView,
     HomeRow,
     HomeRowKind,
@@ -723,6 +733,30 @@ enum_fixture!(
             workspace_id: proto::<Workspace>()?.id
         },
         Action::CancelNewReview,
+        Action::UpdateCreationDraft {
+            review_id: review_id()?,
+            draft: local::<CreationDraft>()?
+        },
+        Action::SubmitReviewCreation {
+            review_id: review_id()?
+        },
+        Action::RetryReviewCreation {
+            review_id: review_id()?
+        },
+        Action::RestoreReviewCreation {
+            creation: local::<ReviewCreation>()?,
+            resume: CreationResume::Submitted
+        },
+        Action::SelectCreationTarget {
+            review_id: review_id()?,
+            index: 0
+        },
+        Action::AddCreationTarget {
+            review_id: review_id()?
+        },
+        Action::RemoveCreationTarget {
+            review_id: review_id()?
+        },
         Action::CopyCheckout {
             repo_id: repo_id()?
         },
@@ -1193,5 +1227,108 @@ struct_fixture!(
         selected_workspace: Some(proto::<Workspace>()?.id),
         expanded: vec![proto::<Workspace>()?.id],
         creating: None,
+    }
+);
+
+enum_fixture!(
+    CreationBase,
+    CreationBaseKind,
+    "CreationBase",
+    [
+        CreationBase::Automatic,
+        CreationBase::Manual {
+            text: "develop".into()
+        }
+    ]
+);
+struct_fixture!(
+    CreationTarget,
+    "CreationTarget",
+    CreationTarget {
+        repo_id: repo_id()?,
+        base: CreationBase::Automatic,
+        head: "worktree".into()
+    }
+);
+struct_fixture!(
+    CreationDraft,
+    "CreationDraft",
+    CreationDraft {
+        title: "Review draft".into(),
+        targets: vec![local::<CreationTarget>()?]
+    }
+);
+enum_fixture!(
+    CreationDefaultState,
+    CreationDefaultStateKind,
+    "CreationDefaultState",
+    [
+        CreationDefaultState::Loading,
+        CreationDefaultState::Ready {
+            base: RefSpec::Branch {
+                name: "develop".into()
+            }
+        },
+        CreationDefaultState::Failed {
+            message: "Choose a base revision".into()
+        }
+    ]
+);
+struct_fixture!(
+    CreationDefault,
+    "CreationDefault",
+    CreationDefault {
+        repo_id: repo_id()?,
+        state: CreationDefaultState::Ready {
+            base: RefSpec::Branch {
+                name: "develop".into()
+            }
+        }
+    }
+);
+struct_fixture!(
+    CreationSubmission,
+    "CreationSubmission",
+    CreationSubmission {
+        title: "Review draft".into(),
+        targets: proto::<Review>()?.targets
+    }
+);
+unit_enum_fixture!(CreationReconcile, "CreationReconcile");
+unit_enum_fixture!(CreationResume, "CreationResume");
+enum_fixture!(
+    CreationStatus,
+    CreationStatusKind,
+    "CreationStatus",
+    [
+        CreationStatus::Editing,
+        CreationStatus::Failed {
+            message: "Missing revision".into()
+        },
+        CreationStatus::Pending {
+            submission: local::<CreationSubmission>()?
+        },
+        CreationStatus::Interrupted {
+            submission: local::<CreationSubmission>()?,
+            message: "Reconnect to check".into()
+        },
+        CreationStatus::Reconciling {
+            submission: local::<CreationSubmission>()?,
+            next: CreationReconcile::Inspect
+        },
+        CreationStatus::Succeeded
+    ]
+);
+struct_fixture!(
+    ReviewCreation,
+    "ReviewCreation",
+    ReviewCreation {
+        review_id: review_id()?,
+        workspace_id: proto::<Workspace>()?.id,
+        context: Some(local::<DaemonContext>()?),
+        draft: local::<CreationDraft>()?,
+        defaults: vec![local::<CreationDefault>()?],
+        selected: Some(0),
+        status: CreationStatus::Editing
     }
 );

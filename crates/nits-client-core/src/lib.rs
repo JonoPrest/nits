@@ -25,6 +25,7 @@
 mod cache;
 mod connection;
 mod content;
+mod creation;
 mod diff;
 mod events;
 mod explorer;
@@ -52,6 +53,11 @@ use strum::EnumDiscriminants;
 pub use cache::{Bytes, CacheKey, CacheValue, ContentCache, Evicted, RenderKey};
 pub use connection::{Connection, ConnectionKind};
 pub use content::{CacheConfig, DiskTier, DiskTierKind, FileRef, PREFETCH_RADIUS};
+pub use creation::{
+    CreationBase, CreationBaseKind, CreationDefault, CreationDefaultState,
+    CreationDefaultStateKind, CreationDraft, CreationReconcile, CreationResume, CreationStatus,
+    CreationStatusKind, CreationSubmission, CreationTarget, ReviewCreation,
+};
 pub use diff::{
     CommentView, CommitStepper, DiffRow, DiffView, PendingIds, RowPlace, RowThread, StepperCommit,
     ThreadPlace, ThreadPlaceKind, ThreadStatus, ThreadView, conversation, threads,
@@ -161,6 +167,30 @@ pub enum Action {
         workspace_id: WorkspaceId,
     },
     CancelNewReview,
+    SelectCreationTarget {
+        review_id: ReviewId,
+        index: usize,
+    },
+    AddCreationTarget {
+        review_id: ReviewId,
+    },
+    RemoveCreationTarget {
+        review_id: ReviewId,
+    },
+    UpdateCreationDraft {
+        review_id: ReviewId,
+        draft: CreationDraft,
+    },
+    SubmitReviewCreation {
+        review_id: ReviewId,
+    },
+    RetryReviewCreation {
+        review_id: ReviewId,
+    },
+    RestoreReviewCreation {
+        creation: ReviewCreation,
+        resume: CreationResume,
+    },
     /// Copy a daemon-side checkout path; repo-relative `RepoPath` is a different type.
     CopyCheckout {
         repo_id: RepoId,
@@ -553,6 +583,21 @@ pub(crate) enum OpeningContent {
 /// What a `RequestId` is waiting for, so the reply can be routed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InFlight {
+    CreationDefault {
+        review_id: ReviewId,
+        repo_id: RepoId,
+    },
+    CreateReview {
+        review_id: ReviewId,
+        client_seq: ClientSeq,
+    },
+    ReconcileCreation {
+        review_id: ReviewId,
+    },
+    CheckFailedCreation {
+        review_id: ReviewId,
+        error: RpcError,
+    },
     Subscribe,
     ListWorkspaces,
     ListReviews {
@@ -607,6 +652,10 @@ impl InFlight {
             | InFlight::FileRender { .. }
             | InFlight::RenderChunk { .. } => true,
             InFlight::Subscribe
+            | InFlight::CreationDefault { .. }
+            | InFlight::CreateReview { .. }
+            | InFlight::ReconcileCreation { .. }
+            | InFlight::CheckFailedCreation { .. }
             | InFlight::ListWorkspaces
             | InFlight::ListReviews { .. }
             | InFlight::OpenReview { .. }
@@ -628,6 +677,10 @@ impl InFlight {
             }),
             InFlight::RenderChunk { key } => Some(key.clone()),
             InFlight::Subscribe
+            | InFlight::CreationDefault { .. }
+            | InFlight::CreateReview { .. }
+            | InFlight::ReconcileCreation { .. }
+            | InFlight::CheckFailedCreation { .. }
             | InFlight::ListWorkspaces
             | InFlight::ListReviews { .. }
             | InFlight::OpenReview { .. }
@@ -837,7 +890,9 @@ impl ClientCore {
         let mut effects = match input {
             Input::User(action) => self.user(action)?,
             Input::InvalidAction { reason } => {
-                if let Some(draft) = &mut self.view.draft {
+                if let Some(creation) = &self.view.home.creating {
+                    self.creation_failure(creation.review_id, reason)
+                } else if let Some(draft) = &mut self.view.draft {
                     draft.submission_error = Some(reason);
                     vec![render(&[ViewSection::Draft])]
                 } else {
@@ -1985,16 +2040,36 @@ impl ClientCore {
                 }
                 Ok(vec![render(&[ViewSection::ReviewList])])
             }
-            Action::StartReview { workspace_id } => {
-                if !self.view.workspaces.iter().any(|w| w.id == workspace_id) {
-                    return Err(CoreError::NoTarget(NoTarget::Nothing(Command::NewReview)));
-                }
-                self.view.home.creating = Some(workspace_id);
-                Ok(vec![render(&[ViewSection::ReviewList])])
-            }
+            Action::StartReview { workspace_id } => self.start_creation(workspace_id),
             Action::CancelNewReview => {
+                if self
+                    .view
+                    .home
+                    .creating
+                    .as_ref()
+                    .is_some_and(|c| !c.editable() && c.status != CreationStatus::Succeeded)
+                {
+                    return Ok(Vec::new());
+                }
                 self.view.home.creating = None;
                 Ok(vec![render(&[ViewSection::ReviewList])])
+            }
+            Action::SelectCreationTarget { review_id, index } => {
+                Ok(self.select_creation_target(review_id, index))
+            }
+            Action::AddCreationTarget { review_id } => Ok(self.add_creation_target(review_id)),
+            Action::RemoveCreationTarget { review_id } => {
+                Ok(self.remove_creation_target(review_id))
+            }
+            Action::UpdateCreationDraft { review_id, draft } => {
+                Ok(self.edit_creation(review_id, draft))
+            }
+            Action::SubmitReviewCreation { review_id } => Ok(self.submit_creation(review_id)),
+            Action::RetryReviewCreation { review_id } => {
+                Ok(self.reconcile_creation(review_id, CreationReconcile::Retry))
+            }
+            Action::RestoreReviewCreation { creation, resume } => {
+                Ok(self.restore_creation(creation, resume))
             }
             Action::GoHome => {
                 self.pending_reference = None;
@@ -3550,6 +3625,9 @@ impl ClientCore {
                 }
                 self.view.connection = ConnectionView::Disconnected;
                 let mut sections = vec![ViewSection::Connection];
+                if self.creation_disconnected() {
+                    sections.push(ViewSection::ReviewList);
+                }
                 if let Some(selector) = &mut self.ref_selector
                     && matches!(selector.view.status, RefSelectorStatus::Loading)
                 {
@@ -3634,6 +3712,10 @@ impl ClientCore {
                         self.content_done(&mut effects);
                     }
                     InFlight::Subscribe
+                    | InFlight::CreationDefault { .. }
+                    | InFlight::CreateReview { .. }
+                    | InFlight::ReconcileCreation { .. }
+                    | InFlight::CheckFailedCreation { .. }
                     | InFlight::ListWorkspaces
                     | InFlight::ListReviews { .. }
                     | InFlight::ReviewSnapshot { .. }
@@ -3668,6 +3750,41 @@ impl ClientCore {
                         return Ok(Vec::new());
                     }
                     self.pending_reference = None;
+                }
+                match &waiting {
+                    InFlight::CreationDefault { review_id, repo_id } => {
+                        return Ok(self.creation_default_answer(
+                            *review_id,
+                            *repo_id,
+                            Err(rpc_error_message(&error)),
+                        ));
+                    }
+                    InFlight::CreateReview { review_id, .. } => {
+                        return Ok(self.creation_write_failed(*review_id, error));
+                    }
+                    InFlight::CheckFailedCreation {
+                        review_id,
+                        error: original,
+                    } => {
+                        return Ok(self.creation_failure_checked(*review_id, original, &error));
+                    }
+                    InFlight::ReconcileCreation { review_id } => {
+                        return Ok(self.creation_lookup_failed(*review_id, &error));
+                    }
+                    InFlight::Subscribe
+                    | InFlight::ListWorkspaces
+                    | InFlight::ListReviews { .. }
+                    | InFlight::OpenReview { .. }
+                    | InFlight::ReviewSnapshot { .. }
+                    | InFlight::ListFiles { .. }
+                    | InFlight::ListCommits { .. }
+                    | InFlight::ListRefs { .. }
+                    | InFlight::Search
+                    | InFlight::TreeSnapshot { .. }
+                    | InFlight::BrowseTree { .. }
+                    | InFlight::FileRender { .. }
+                    | InFlight::RenderChunk { .. }
+                    | InFlight::Mutate { .. } => {}
                 }
                 self.view.last_error = Some(error.clone());
                 let mut effects = Vec::new();
@@ -3913,6 +4030,10 @@ impl ClientCore {
             ) => return Err(unexpected("Header or Chunk")),
             (
                 InFlight::Subscribe
+                | InFlight::CreationDefault { .. }
+                | InFlight::CreateReview { .. }
+                | InFlight::ReconcileCreation { .. }
+                | InFlight::CheckFailedCreation { .. }
                 | InFlight::ListWorkspaces
                 | InFlight::ListReviews { .. }
                 | InFlight::ReviewSnapshot { .. }
@@ -3981,7 +4102,50 @@ impl ClientCore {
                 // The review list is the union of every workspace's reviews;
                 // start with the workspaces.
                 effects.push(self.request(Request::ListWorkspaces, InFlight::ListWorkspaces));
+                effects.extend(self.creation_reconnected());
                 effects.push(render(&[ViewSection::Connection]));
+                effects
+            }
+            (InFlight::CreationDefault { review_id, repo_id }, Response::DefaultBase { base }) => {
+                self.creation_default_answer(review_id, repo_id, Ok(base))
+            }
+            (
+                InFlight::ReconcileCreation { review_id }
+                | InFlight::CheckFailedCreation { review_id, .. },
+                Response::Review { review },
+            ) => {
+                if review.id != review_id {
+                    return Err(CoreError::UnexpectedResponse {
+                        id,
+                        expected: "Review for the attempted ID",
+                        got: "Review for another ID",
+                    });
+                }
+                self.creation_found(&review);
+                self.view.reviews.retain(|r| r.id != review.id);
+                self.view.reviews.push(review);
+                vec![render(&[ViewSection::ReviewList])]
+            }
+            (InFlight::CreateReview { review_id, .. }, Response::Committed { event }) => {
+                if event.body.review_id() != Some(review_id) {
+                    return Err(CoreError::UnexpectedResponse {
+                        id,
+                        expected: "Committed creation for the attempted ID",
+                        got: "Committed event for another review",
+                    });
+                }
+                let mut effects = Vec::new();
+                if self.creation_observe(&event) {
+                    effects.push(render(&[ViewSection::ReviewList]));
+                }
+                if let Connection::Subscribed { last_seq } = self.connection
+                    && event.seq > last_seq
+                {
+                    self.connection = Connection::Subscribed {
+                        last_seq: event.seq,
+                    };
+                    effects.extend(self.apply_event(event));
+                }
                 effects
             }
             (InFlight::ListWorkspaces, Response::Workspaces { workspaces }) => {
@@ -4212,6 +4376,11 @@ impl ClientCore {
             (waiting, _) => {
                 let expected = match waiting {
                     InFlight::Subscribe => "Subscribed",
+                    InFlight::CreationDefault { .. } => "DefaultBase",
+                    InFlight::CreateReview { .. } | InFlight::Mutate { .. } => "Committed",
+                    InFlight::ReconcileCreation { .. } | InFlight::CheckFailedCreation { .. } => {
+                        "Review"
+                    }
                     InFlight::ListWorkspaces => "Workspaces",
                     InFlight::ListReviews { .. } => "Reviews",
                     InFlight::OpenReview { .. } | InFlight::FileRender { .. } => "StreamItem",
@@ -4222,7 +4391,6 @@ impl ClientCore {
                     InFlight::Search => "Search",
                     InFlight::TreeSnapshot { .. } | InFlight::BrowseTree { .. } => "TreeSnapshot",
                     InFlight::RenderChunk { .. } => "RenderChunk",
-                    InFlight::Mutate { .. } => "Committed",
                 };
                 return Err(CoreError::UnexpectedResponse { id, expected, got });
             }
@@ -4258,6 +4426,9 @@ impl ClientCore {
         }
         let mut sections = Vec::new();
         let mut effects = Vec::new();
+        if self.creation_observe(&event) {
+            sections.push(ViewSection::ReviewList);
+        }
         if event.client_id == self.config.client_id {
             // Our own mutation came back: it is committed now.
             self.retire_pending(event.client_seq);

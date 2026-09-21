@@ -4,6 +4,16 @@
 external erase: S.t<'a> => S.t<unknown> = "%identity"
 
 let schemas: dict<S.t<unknown>> = Dict.fromArray([
+  ("CreationBase", erase(View.CreationBase.schema)),
+  ("CreationTarget", erase(View.CreationTarget.schema)),
+  ("CreationDraft", erase(View.CreationDraft.schema)),
+  ("CreationDefaultState", erase(View.CreationDefaultState.schema)),
+  ("CreationDefault", erase(View.CreationDefault.schema)),
+  ("CreationSubmission", erase(View.CreationSubmission.schema)),
+  ("CreationReconcile", erase(View.CreationReconcile.schema)),
+  ("CreationResume", erase(View.CreationResume.schema)),
+  ("CreationStatus", erase(View.CreationStatus.schema)),
+  ("ReviewCreation", erase(View.ReviewCreation.schema)),
   ("HomeView", erase(View.HomeView.schema)),
   ("HomeRow", erase(View.HomeRow.schema)),
   ("HomeRowKind", erase(View.HomeRowKind.schema)),

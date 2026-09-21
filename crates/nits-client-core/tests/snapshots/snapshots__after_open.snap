@@ -1,5 +1,6 @@
 ---
 source: crates/nits-client-core/tests/snapshots.rs
+assertion_line: 447
 expression: core.view()
 ---
 {
@@ -1130,6 +1131,21 @@ expression: core.view()
       "keys": "ctrl+enter",
       "command": "Submit",
       "label": "submit"
+    },
+    {
+      "keys": "alt+a",
+      "command": "AddReviewTarget",
+      "label": "add review target"
+    },
+    {
+      "keys": "alt+d",
+      "command": "RemoveReviewTarget",
+      "label": "remove selected review target"
+    },
+    {
+      "keys": "alt+r",
+      "command": "ReconnectReviewCreation",
+      "label": "reconnect review creation"
     }
   ],
   "bindings": [

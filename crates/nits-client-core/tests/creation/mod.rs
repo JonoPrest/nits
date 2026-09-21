@@ -1,0 +1,421 @@
+//! Creation races exercise the same public effects boundary as every host.
+use super::*;
+use nits_client_core::{
+    CreationBase, CreationDraft, CreationResume, CreationStatus, ReviewCreation,
+};
+
+fn workspace(n: u128) -> nits_protocol::Workspace {
+    nits_protocol::Workspace {
+        id: WorkspaceId::from_parts(10, n),
+        name: format!("workspace {n}"),
+        repos: vec![nits_protocol::Repo {
+            id: RepoId::from_parts(11, n),
+            display_name: "repo".into(),
+            path: format!("/srv/repo-{n}"),
+        }],
+    }
+}
+fn begin() -> (ClientCore, ReviewId, RequestId) {
+    let mut core = subscribed(0);
+    home_workspaces(&mut core, vec![workspace(1), workspace(2)]);
+    let effects = core
+        .handle(Input::User(Action::StartReview {
+            workspace_id: workspace(1).id,
+        }))
+        .unwrap();
+    let (request, payload) = sent_request(&effects).unwrap();
+    assert_eq!(
+        payload,
+        Request::DefaultBase {
+            repo_id: workspace(1).repos[0].id
+        }
+    );
+    let id = creation(&core).review_id;
+    (core, id, request)
+}
+fn creation(core: &ClientCore) -> &ReviewCreation {
+    core.view().home.creating.as_ref().unwrap()
+}
+fn answer(core: &mut ClientCore, id: RequestId, response: Response) -> Vec<Effect> {
+    core.handle(Input::Server(ServerMsg::Response { id, response }))
+        .unwrap()
+}
+fn error(core: &mut ClientCore, id: RequestId, error: RpcError) -> Vec<Effect> {
+    core.handle(Input::Server(ServerMsg::Error { id, error }))
+        .unwrap()
+}
+fn missing(id: ReviewId) -> RpcError {
+    RpcError::NotFound {
+        kind: nits_protocol::EntityKind::Review,
+        id: id.to_string(),
+    }
+}
+fn edit(core: &mut ClientCore, change: impl FnOnce(&mut CreationDraft)) {
+    let current = creation(core);
+    let id = current.review_id;
+    let mut draft = current.draft.clone();
+    change(&mut draft);
+    core.handle(Input::User(Action::UpdateCreationDraft {
+        review_id: id,
+        draft,
+    }))
+    .unwrap();
+}
+fn ready() -> (ClientCore, ReviewId) {
+    let (mut core, id, request) = begin();
+    answer(
+        &mut core,
+        request,
+        Response::DefaultBase {
+            base: RefSpec::Branch {
+                name: "develop".into(),
+            },
+        },
+    );
+    edit(&mut core, |draft| draft.title = "retained title".into());
+    (core, id)
+}
+fn submit(core: &mut ClientCore, id: ReviewId) -> (RequestId, Review) {
+    let effects = core
+        .handle(Input::User(Action::SubmitReviewCreation { review_id: id }))
+        .unwrap();
+    let (request, payload) = sent_request(&effects).unwrap();
+    let Request::Mutate {
+        mutation:
+            Mutation::CreateReview {
+                review_id,
+                workspace_id,
+                title,
+                targets,
+            },
+        ..
+    } = payload
+    else {
+        panic!("create mutation")
+    };
+    assert_eq!(review_id, id);
+    (
+        request,
+        Review {
+            id: review_id,
+            workspace_id,
+            title,
+            targets,
+            created: Timestamp::from_millis(0),
+            status: ReviewStatus::Open,
+        },
+    )
+}
+fn disconnect(core: &mut ClientCore) {
+    core.handle(Input::Transport(TransportEvent::Disconnected))
+        .unwrap();
+}
+
+#[test]
+fn defaults_are_correlated_and_never_replace_manual_input_or_new_workspace() {
+    let (mut core, id, old) = begin();
+    edit(&mut core, |d| {
+        d.targets[0].base = CreationBase::Manual {
+            text: "typed-before-reply".into(),
+        }
+    });
+    answer(
+        &mut core,
+        old,
+        Response::DefaultBase {
+            base: RefSpec::Branch {
+                name: "develop".into(),
+            },
+        },
+    );
+    assert_eq!(
+        creation(&core).draft.targets[0].base,
+        CreationBase::Manual {
+            text: "typed-before-reply".into()
+        }
+    );
+    let effects = core
+        .handle(Input::User(Action::StartReview {
+            workspace_id: workspace(2).id,
+        }))
+        .unwrap();
+    let (b, _) = sent_request(&effects).unwrap();
+    assert_ne!(creation(&core).review_id, id);
+    let effects = core
+        .handle(Input::User(Action::StartReview {
+            workspace_id: workspace(1).id,
+        }))
+        .unwrap();
+    let (a, _) = sent_request(&effects).unwrap();
+    answer(
+        &mut core,
+        b,
+        Response::DefaultBase {
+            base: RefSpec::Branch {
+                name: "other-base".into(),
+            },
+        },
+    );
+    assert!(matches!(
+        creation(&core).defaults[0].state,
+        nits_client_core::CreationDefaultState::Loading
+    ));
+    answer(
+        &mut core,
+        a,
+        Response::DefaultBase {
+            base: RefSpec::Branch {
+                name: "trunk".into(),
+            },
+        },
+    );
+    edit(&mut core, |d| d.title = "new workspace draft".into());
+    let current = creation(&core).review_id;
+    let (_, review) = submit(&mut core, current);
+    assert_eq!(
+        review.targets.first().base,
+        RefSpec::Branch {
+            name: "trunk".into()
+        }
+    );
+}
+
+#[test]
+fn default_failure_is_visible_and_manual_base_can_be_submitted() {
+    let (mut core, id, request) = begin();
+    error(
+        &mut core,
+        request,
+        RpcError::Internal {
+            message: "no default branch".into(),
+        },
+    );
+    edit(&mut core, |d| d.title = "keep me".into());
+    let effects = core
+        .handle(Input::User(Action::SubmitReviewCreation { review_id: id }))
+        .unwrap();
+    assert!(sent_request(&effects).is_none());
+    assert!(
+        matches!(&creation(&core).status,CreationStatus::Failed {message} if message.contains("no default branch"))
+    );
+    edit(&mut core, |d| {
+        d.targets[0].base = CreationBase::Manual {
+            text: "tag:v1".into(),
+        }
+    });
+    let (_, review) = submit(&mut core, id);
+    assert_eq!(
+        review.targets.first().base,
+        RefSpec::Tag { name: "v1".into() }
+    );
+}
+
+#[test]
+fn rejected_creation_retains_all_inputs_then_success_completes_once() {
+    let (mut core, id) = ready();
+    edit(&mut core, |d| {
+        d.targets[0].base = CreationBase::Manual {
+            text: "missing-ref".into(),
+        }
+    });
+    let before = creation(&core).draft.clone();
+    let (request, _) = submit(&mut core, id);
+    assert!(matches!(
+        creation(&core).status,
+        CreationStatus::Pending { .. }
+    ));
+    for action in [
+        Action::SubmitReviewCreation { review_id: id },
+        Action::CancelNewReview,
+        Action::StartReview {
+            workspace_id: workspace(2).id,
+        },
+    ] {
+        assert!(sent_request(&core.handle(Input::User(action)).unwrap()).is_none());
+        assert!(matches!(
+            creation(&core).status,
+            CreationStatus::Pending { .. }
+        ));
+    }
+    let effects = error(
+        &mut core,
+        request,
+        RpcError::Internal {
+            message: "revision missing-ref does not exist".into(),
+        },
+    );
+    let (lookup, payload) = sent_request(&effects).unwrap();
+    assert_eq!(payload, Request::GetReview { review_id: id });
+    error(&mut core, lookup, missing(id));
+    assert_eq!(creation(&core).draft, before);
+    assert!(
+        matches!(&creation(&core).status,CreationStatus::Failed {message} if message.contains("missing-ref"))
+    );
+    edit(&mut core, |d| d.targets[0].base = CreationBase::Automatic);
+    let (request, review) = submit(&mut core, id);
+    core.handle(Input::Server(ServerMsg::Event {
+        event: event(
+            1,
+            EventBody::ReviewCreated {
+                review: review.clone(),
+            },
+        ),
+    }))
+    .unwrap();
+    assert_eq!(creation(&core).status, CreationStatus::Succeeded);
+    answer(
+        &mut core,
+        request,
+        Response::Committed {
+            event: event(1, EventBody::ReviewCreated { review }),
+        },
+    );
+    assert_eq!(core.view().reviews.iter().filter(|r| r.id == id).count(), 1);
+}
+
+#[test]
+fn browser_lost_ack_restore_checks_the_stable_id_without_replaying_creation() {
+    let (mut original, id) = ready();
+    let retained_before_pending_patch = creation(&original).clone();
+    let (_, created) = submit(&mut original, id);
+    let mut restored = subscribed(0);
+    home_workspaces(&mut restored, vec![workspace(1)]);
+    let effects = restored
+        .handle(Input::User(Action::RestoreReviewCreation {
+            creation: retained_before_pending_patch,
+            resume: CreationResume::Submitted,
+        }))
+        .unwrap();
+    let (lookup, payload) = sent_request(&effects).unwrap();
+    assert_eq!(payload, Request::GetReview { review_id: id });
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Send(_)))
+            .count(),
+        1
+    );
+    answer(&mut restored, lookup, Response::Review { review: created });
+    assert_eq!(creation(&restored).status, CreationStatus::Succeeded);
+    assert_eq!(creation(&restored).draft.title, "retained title");
+}
+
+#[test]
+fn uncertain_retry_reuses_frozen_payload_and_recovers_if_original_write_wins() {
+    let (mut original, id) = ready();
+    let (_, created) = submit(&mut original, id);
+    disconnect(&mut original);
+    let retained = creation(&original).clone();
+    assert!(matches!(
+        retained.status,
+        CreationStatus::Interrupted { .. }
+    ));
+    let mut restored = subscribed(0);
+    let effects = restored
+        .handle(Input::User(Action::RestoreReviewCreation {
+            creation: retained,
+            resume: CreationResume::Submitted,
+        }))
+        .unwrap();
+    let (lookup, _) = sent_request(&effects).unwrap();
+    error(&mut restored, lookup, missing(id));
+    assert!(matches!(
+        creation(&restored).status,
+        CreationStatus::Interrupted { .. }
+    ));
+    let effects = restored
+        .handle(Input::User(Action::RetryReviewCreation { review_id: id }))
+        .unwrap();
+    let (lookup, payload) = sent_request(&effects).unwrap();
+    assert_eq!(payload, Request::GetReview { review_id: id });
+    let effects = error(&mut restored, lookup, missing(id));
+    let (retry, payload) = sent_request(&effects).unwrap();
+    assert!(
+        matches!(payload,Request::Mutate {mutation:Mutation::CreateReview {review_id,title,targets,..},..} if review_id==id && title==created.title && targets==created.targets)
+    );
+    let effects = error(
+        &mut restored,
+        retry,
+        RpcError::Invalid {
+            reason: "review id already exists".into(),
+        },
+    );
+    let (lookup, payload) = sent_request(&effects).unwrap();
+    assert_eq!(payload, Request::GetReview { review_id: id });
+    answer(&mut restored, lookup, Response::Review { review: created });
+    assert_eq!(creation(&restored).status, CreationStatus::Succeeded);
+}
+
+#[test]
+fn lookup_failure_never_resends_and_context_change_never_restores_another_daemon_draft() {
+    let (original, id) = ready();
+    let retained = creation(&original).clone();
+    let mut restored = subscribed(0);
+    let effects = restored
+        .handle(Input::User(Action::RestoreReviewCreation {
+            creation: retained.clone(),
+            resume: CreationResume::Submitted,
+        }))
+        .unwrap();
+    let (lookup, _) = sent_request(&effects).unwrap();
+    let effects = error(
+        &mut restored,
+        lookup,
+        RpcError::Internal {
+            message: "offline storage".into(),
+        },
+    );
+    assert!(sent_request(&effects).is_none());
+    assert!(
+        matches!(&creation(&restored).status,CreationStatus::Interrupted {message,..} if message.contains("offline storage"))
+    );
+    let effects = restored
+        .handle(Input::User(Action::UpdateCreationDraft {
+            review_id: id,
+            draft: CreationDraft {
+                title: "must not replace attempt".into(),
+                targets: vec![],
+            },
+        }))
+        .unwrap();
+    assert!(effects.is_empty());
+    assert_eq!(creation(&restored).draft, retained.draft);
+    let mut other = subscribed(0);
+    other
+        .handle(Input::User(Action::SetReferenceContext {
+            context: nits_protocol::ReferenceContext::named("other-daemon").unwrap(),
+        }))
+        .unwrap();
+    let effects = other
+        .handle(Input::User(Action::RestoreReviewCreation {
+            creation: retained,
+            resume: CreationResume::Submitted,
+        }))
+        .unwrap();
+    assert!(sent_request(&effects).is_none());
+    assert!(other.view().home.creating.is_none());
+    assert!(matches!(
+        other.view().last_error,
+        Some(RpcError::Invalid { .. })
+    ));
+}
+
+#[test]
+fn form_commands_use_the_keymap_and_disconnected_submit_is_visible() {
+    let (mut core, id) = ready();
+    home_key(&mut core, "alt+a");
+    assert_eq!(creation(&core).draft.targets.len(), 2);
+    home_key(&mut core, "alt+d");
+    assert_eq!(creation(&core).draft.targets.len(), 1);
+    disconnect(&mut core);
+    let effects = home_key(&mut core, "ctrl+enter");
+    assert!(sent_request(&effects).is_none());
+    assert!(
+        matches!(&creation(&core).status,CreationStatus::Failed {message} if message.contains("disconnected"))
+    );
+    assert_eq!(creation(&core).review_id, id);
+    assert!(home_key(&mut core, "alt+r").contains(&Effect::Connect));
+    assert_eq!(creation(&core).draft.title, "retained title");
+    home_key(&mut core, "esc");
+    assert!(core.view().home.creating.is_none());
+}

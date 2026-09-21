@@ -405,7 +405,10 @@ fn every_action_is_reachable_from_a_binding() {
         ActionKind::DeferThread, // reason and optional URL are host editor input
         ActionKind::Reply,       // `r` opens a reply draft; the text is host's
         ActionKind::EditComment, // edit text is host's
-        ActionKind::CreateReview, // title and targets come from a form
+        ActionKind::CreateReview, // direct typed creation supplied by a host
+        ActionKind::UpdateCreationDraft, // editor text
+        ActionKind::SelectCreationTarget, // native field focus selects its row
+        ActionKind::RestoreReviewCreation, // tab-local browser transport recovery
         ActionKind::ListReviews,
         ActionKind::FileSearch,   // produced (with an empty query) — see below
         ActionKind::SetBrowseRef, // the ref text comes from the Browse picker
@@ -898,6 +901,43 @@ fn every_action_is_reachable_from_a_binding() {
         workspace_id: review().workspace_id,
     }))
     .unwrap();
+    let mut interrupted = home.view().home.creating.as_ref().unwrap().clone();
+    interrupted.status = nits_client_core::CreationStatus::Interrupted {
+        submission: nits_client_core::CreationSubmission {
+            title: "Retained".into(),
+            targets: review().targets,
+        },
+        message: "Connection lost".into(),
+    };
+    let mut recovering = ready();
+    recovering.handle(Input::User(Action::GoHome)).unwrap();
+    let restored = recovering
+        .handle(Input::User(Action::RestoreReviewCreation {
+            creation: interrupted,
+            resume: nits_client_core::CreationResume::Submitted,
+        }))
+        .unwrap();
+    // Restoration immediately reconciles. A temporary lookup failure exposes
+    // the retry command without making a second mutation.
+    let lookup = restored
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Send(ClientMsg::Request {
+                id,
+                request: Request::GetReview { .. },
+            }) => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    recovering
+        .handle(Input::Server(ServerMsg::Error {
+            id: lookup,
+            error: nits_protocol::RpcError::Internal {
+                message: "Try again".into(),
+            },
+        }))
+        .unwrap();
+    states.push(recovering);
     states.push(home);
     for state in &mut states {
         state

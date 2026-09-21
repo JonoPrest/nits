@@ -1,0 +1,25 @@
+{
+  "targets": [
+    {
+      "base": {
+        "name": "main",
+        "type": "Branch"
+      },
+      "head": {
+        "type": "WorkingTree"
+      },
+      "repo_id": "01HF7YAT000000000000000002"
+    },
+    {
+      "base": {
+        "oid": "1f202122232425262728292a2b2c2d2e2f303132",
+        "type": "Commit"
+      },
+      "head": {
+        "type": "Head"
+      },
+      "repo_id": "01HF7YAT000000000000000003"
+    }
+  ],
+  "title": "Review draft"
+}

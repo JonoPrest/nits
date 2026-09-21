@@ -29,9 +29,8 @@ pub struct HomeView {
     pub rows: Vec<HomeRow>,
     pub selected_workspace: Option<WorkspaceId>,
     pub expanded: Vec<WorkspaceId>,
-    /// The create form belongs to core navigation; draft field values remain
-    /// in the editor, like comment text.
-    pub creating: Option<WorkspaceId>,
+    /// Editable inputs and the correlated creation attempt survive daemon errors.
+    pub creating: Option<crate::ReviewCreation>,
 }
 
 /// The actual selected daemon, provided by the host. A browser bridge's HTTP

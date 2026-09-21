@@ -228,6 +228,16 @@ module Badge = {
   }
 }
 
+/// A persistent, native label for filled form controls.
+module Field = {
+  @react.component
+  let make = (~label: string, ~children) =>
+    <label className="flex min-w-0 flex-col gap-1 text-sm">
+      <span> {React.string(label)} </span>
+      children
+    </label>
+}
+
 module Select = {
   /// A native select over `(value, label)` options.
   @react.component
@@ -236,11 +246,20 @@ module Select = {
     ~options: array<(string, string)>,
     ~onChange: string => unit,
     ~ariaLabel=?,
+    ~disabled=false,
+    ~onFocus: unit => unit=() => (),
+    ~onKeyEvent: ReactEvent.Keyboard.t => unit=_ => (),
   ) =>
     <select
       className="text-input"
       value
       ?ariaLabel
+      disabled
+      onFocus={_ => onFocus()}
+      onKeyDown={ev => {
+        onKeyEvent(ev)
+        ReactEvent.Keyboard.stopPropagation(ev)
+      }}
       onChange={ev => onChange(ReactEvent.Form.target(ev)["value"])}
     >
       {options
@@ -258,6 +277,8 @@ module TextInput = {
     ~onChange: string => unit,
     ~placeholder: string,
     ~autoFocus=false,
+    ~disabled=false,
+    ~ariaLabel=?,
     ~onKey: string => unit=_ => (),
     ~preventKeys: array<string>=[],
     ~inputRef=?,
@@ -269,6 +290,8 @@ module TextInput = {
       ref=?inputRef
       onFocus={_ => onFocus()}
       autoFocus
+      disabled
+      ?ariaLabel
       placeholder
       value
       onChange={ev => onChange(ReactEvent.Form.target(ev)["value"])}

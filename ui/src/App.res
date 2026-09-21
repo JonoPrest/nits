@@ -28,17 +28,7 @@ module KeyEvent = {
 }
 
 /// The chord's text, as the keymap spells a binding (`y`, `ctrl+p`).
-let chordText = (chord: Keys.KeyChord.t): string => {
-  let key = switch chord.key {
-  | Char({c}) => c == " " ? "space" : c
-  | Named({key}) => Keys.NamedKeyName.of_(key)
-  }
-  (chord.mods.ctrl ? "ctrl+" : "") ++
-  (chord.mods.alt ? "alt+" : "") ++
-  (chord.mods.shift ? "shift+" : "") ++
-  (chord.mods.meta ? "meta+" : "") ++
-  key
-}
+let chordText = Keys.text
 
 /// The pending chord prefix, tracked in the shell rather than read back
 /// from the model. The shell sends the chords, so it knows what has been
@@ -448,10 +438,8 @@ module Shell = {
             dispatch
           />
           {switch model.lastError {
-          | Some(Invalid({reason})) => <p role="alert"> {React.string(reason)} </p>
-          | Some(NotFound({id})) =>
-            <p role="alert"> {React.string("Reference target was not found: " ++ id)} </p>
-          | _ => React.null
+          | Some(error) => <p role="alert"> {React.string(RpcErrorText.message(error))} </p>
+          | None => React.null
           }}
           {model.openReview == None
             ? <WorkspaceHome model dispatch />

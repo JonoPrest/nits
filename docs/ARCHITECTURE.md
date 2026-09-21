@@ -692,3 +692,24 @@ committed/working-tree scopes, including archived reviews. For commit-headed rev
 continues to inspect the live checkout. A scope needing an unavailable captured HEAD returns an explicit error;
 a commit list with no captured HEAD is empty. Target events also refresh the
 client commit list, and older in-flight list responses cannot replace newer ones.
+
+### Review creation lifecycle
+
+`HomeView.creating` holds a core-owned draft with a stable review ID allocated when
+it opens. Editable base text distinguishes automatic daemon defaults from manual
+input. Default-base requests are correlated with the draft ID and repository, so
+old workspace replies cannot replace a new draft or a manual revision. Creation
+moves through editing, failed, pending, interrupted, reconciling and succeeded
+states. Pending or uncertain attempts retain their parsed submission unchanged;
+duplicate submit actions do not send another mutation. Only confirmed submission success
+closes the form automatically, and definite errors preserve its title and targets for correction.
+
+A lost response does not imply a failed write. Reconnect reads `GetReview` for the
+attempted ID. Explicit retry reads it again, and only `NotFound` permits resending
+the same ID and frozen payload. A rejected retry also reads the ID to handle a
+late original commit without depending on error wording. Creation is separate from
+the generic pending-mutation replay queue. Browser hosts are recreated per socket,
+so `CoreWs` retains a tab-local recovery snapshot before sending submit and restores
+it through a typed core action after reconnect. The snapshot is scoped to the
+bridge and daemon context; it never enters shared KV and never restores into
+another context. The core validates that scope again before any write.

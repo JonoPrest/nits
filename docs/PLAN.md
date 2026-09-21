@@ -259,3 +259,12 @@ Acknowledged event waits may overlap ordinary ordered calls. Each wait owns its
 connection and is cancelled on request, session replacement, or MCP input EOF.
 Timeouts and concurrent waits are bounded; real-daemon and subprocess tests
 cover pipelining, subscription ordering, identities, contexts and disconnects.
+
+### Resilient review creation (#103)
+
+- Review creation retains inputs through validation and daemon errors, obtains
+  per-repository defaults from the daemon, guards pending submissions, and
+  reconciles lost acknowledgements by stable review identity. Browser recovery is
+  tab-local and context-scoped. Form controls use the configurable keymap; shell
+  RPC errors are exhaustive. Core race tests and real-browser interrupted-write
+  checks cover both committed and uncommitted attempts (#103).

@@ -454,6 +454,9 @@ module Command = {
     | CopyPath
     | CopyCheckout
     | NewReview
+    | AddReviewTarget
+    | RemoveReviewTarget
+    | ReconnectReviewCreation
     | GoHome
     | CopyReference
     | NextReply
@@ -555,22 +558,91 @@ module HomeRow = {
   @schema
   type t = {@as("workspace_id") workspaceId: workspaceId, kind: HomeRowKind.t}
 }
-module HomeView = {
-  @schema
-  type t = {
-    rows: array<HomeRow.t>,
-    @as("selected_workspace") selectedWorkspace: @s.null option<workspaceId>,
-    expanded: array<workspaceId>,
-    creating: @s.null option<workspaceId>,
-  }
-  let empty: t = {rows: [], selectedWorkspace: None, expanded: [], creating: None}
-}
 module DaemonContext = {
   @schema @tag("type")
   type t =
     | @as("Named") Named({name: string})
     | @as("Socket") Socket({path: string})
     | @as("WebSocket") WebSocket({url: string})
+}
+
+module CreationBase = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t = | @as("Automatic") Automatic({}) | @as("Manual") Manual({text: string})
+  @@warning("+27")
+}
+module CreationTarget = {
+  @schema
+  type t = {@as("repo_id") repoId: repoId, base: CreationBase.t, head: string}
+}
+module CreationDraft = {
+  @schema
+  type t = {title: string, targets: array<CreationTarget.t>}
+}
+module CreationDefaultState = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t =
+    | @as("Loading") Loading({})
+    | @as("Ready") Ready({base: Domain.RefSpec.t})
+    | @as("Failed") Failed({message: string})
+  @@warning("+27")
+}
+module CreationDefault = {
+  @schema
+  type t = {@as("repo_id") repoId: repoId, state: CreationDefaultState.t}
+}
+module CreationSubmission = {
+  @schema
+  type t = {title: string, targets: array<Domain.ReviewTarget.t>}
+}
+module CreationReconcile = {
+  @schema
+  type t = Inspect | Retry
+}
+module CreationResume = {
+  @schema
+  type t = Editing | Submitted
+}
+module CreationStatus = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t =
+    | @as("Editing") Editing({})
+    | @as("Failed") Failed({message: string})
+    | @as("Pending") Pending({submission: CreationSubmission.t})
+    | @as("Interrupted") Interrupted({submission: CreationSubmission.t, message: string})
+    | @as("Reconciling") Reconciling({submission: CreationSubmission.t, next: CreationReconcile.t})
+    | @as("Succeeded") Succeeded({})
+  @@warning("+27")
+}
+module ReviewCreation = {
+  @schema
+  type t = {
+    @as("review_id") reviewId: reviewId,
+    @as("workspace_id") workspaceId: workspaceId,
+    context: @s.null option<DaemonContext.t>,
+    draft: CreationDraft.t,
+    defaults: array<CreationDefault.t>,
+    selected: @s.null option<int>,
+    status: CreationStatus.t,
+  }
+  let editable = (creation: t) =>
+    switch creation.status {
+    | Editing(_) | Failed(_) => true
+    | Pending(_) | Interrupted(_) | Reconciling(_) | Succeeded(_) => false
+    }
+}
+module HomeView = {
+  @schema
+  type t = {
+    rows: array<HomeRow.t>,
+    @as("selected_workspace") selectedWorkspace: @s.null option<workspaceId>,
+    expanded: array<workspaceId>,
+    creating: @s.null option<ReviewCreation.t>,
+  }
+  let empty: t = {rows: [], selectedWorkspace: None, expanded: [], creating: None}
 }
 
 module ViewModel = {
