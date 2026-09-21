@@ -153,7 +153,8 @@ try {
   }
   const direct = await browser.newPage();
   await direct.goto(bridge);
-  await direct.getByText('review a', {exact:true}).waitFor();
+  await direct.getByRole('region', {name:'Workspace details'})
+    .getByRole('button', {name:'review a', exact:true}).waitFor();
   const supported = await exercise(direct, ws, 'authorized direct');
   assert.equal(supported.read, true);
   assert.equal(supported.dispatched, true);
@@ -174,7 +175,8 @@ try {
 
   const dev = await browser.newPage();
   await dev.goto(`http://127.0.0.1:${process.env.DEV_PORT}`);
-  await dev.getByText('review a', {exact:true}).waitFor();
+  await dev.getByRole('region', {name:'Workspace details'})
+    .getByRole('button', {name:'review a', exact:true}).waitFor();
   const proxied = await exercise(dev, proxyWs, 'authorized proxy');
   assert.equal(proxied.read, true);
   assert.equal(proxied.dispatched, true);
