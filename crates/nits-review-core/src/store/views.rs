@@ -213,6 +213,12 @@ pub(super) fn apply(t: &mut Write<'_>, event: &Event) -> Result<(), StoreError> 
                 (rkey.as_str(), comment.id.to_string().as_str()),
                 serde_json::to_vec(comment)?.as_slice(),
             )?;
+            if let Some(suggestion) = nits_protocol::SuggestionRecord::from_created(comment) {
+                t.suggestions.insert(
+                    (rkey.as_str(), comment.id.to_string().as_str()),
+                    serde_json::to_vec(&suggestion)?.as_slice(),
+                )?;
+            }
             index_anchor(t, comment.review_id, comment)?;
         }
         EventBody::CommentEdited {
@@ -342,7 +348,33 @@ pub(super) fn apply(t: &mut Write<'_>, event: &Event) -> Result<(), StoreError> 
                 )?;
             }
         }
-        EventBody::SuggestionApplied { .. } => {}
+        EventBody::SuggestionApplied {
+            review_id,
+            comment_id,
+            repo_id,
+            path,
+            result_blob,
+        } => {
+            let rkey = review_id.to_string();
+            let ckey = comment_id.to_string();
+            let mut suggestion: nits_protocol::SuggestionRecord =
+                get(t.suggestions.get((rkey.as_str(), ckey.as_str()))?)?
+                    .ok_or_else(|| inconsistent(seq, format!("unknown suggestion {comment_id}")))?;
+            suggestion.outcome = nits_protocol::SuggestionOutcome::Applied {
+                receipt: nits_protocol::SuggestionReceipt {
+                    seq,
+                    at: event.ts,
+                    author: event.author.clone(),
+                    repo_id: *repo_id,
+                    path: path.clone(),
+                    result_blob: *result_blob,
+                },
+            };
+            t.suggestions.insert(
+                (rkey.as_str(), ckey.as_str()),
+                serde_json::to_vec(&suggestion)?.as_slice(),
+            )?;
+        }
     }
     Ok(())
 }

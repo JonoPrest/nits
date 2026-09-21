@@ -22,6 +22,7 @@ fn human(name: &str) -> Author {
 
 fn snapshot() -> ReviewSnapshot {
     ReviewSnapshot {
+        suggestions: Vec::new(),
         review: Review {
             id: ReviewId::from_parts(4, 1),
             workspace_id: WorkspaceId::from_parts(3, 3),

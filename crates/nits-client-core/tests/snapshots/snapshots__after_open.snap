@@ -667,7 +667,6 @@ expression: core.view()
       },
       "outdated": false,
       "pending": false,
-      "suggestion": false,
       "comments": [
         {
           "reference": null,
@@ -679,6 +678,7 @@ expression: core.view()
           },
           "created": 2001,
           "body": "Is `new` the right name?",
+          "suggestion": null,
           "pending": false
         }
       ],
@@ -704,7 +704,6 @@ expression: core.view()
       },
       "outdated": false,
       "pending": false,
-      "suggestion": false,
       "comments": [
         {
           "reference": null,
@@ -716,6 +715,7 @@ expression: core.view()
           },
           "created": 2002,
           "body": "Looks good overall.",
+          "suggestion": null,
           "pending": false
         }
       ],
@@ -743,7 +743,6 @@ expression: core.view()
       },
       "outdated": false,
       "pending": false,
-      "suggestion": false,
       "comments": [
         {
           "reference": null,
@@ -755,6 +754,7 @@ expression: core.view()
           },
           "created": 2002,
           "body": "Looks good overall.",
+          "suggestion": null,
           "pending": false
         }
       ],
@@ -1193,6 +1193,11 @@ expression: core.view()
       "keys": "a",
       "command": "ApplySuggestion",
       "label": "apply suggestion"
+    },
+    {
+      "keys": "v",
+      "command": "PreviewSuggestion",
+      "label": "preview suggestion"
     },
     {
       "keys": "ctrl+enter",
@@ -1761,6 +1766,7 @@ expression: core.view()
           "context": null
         }
       ],
+      "suggestions": [],
       "viewed": [],
       "requests": [],
       "checkpoints": [],

@@ -23,6 +23,7 @@ use nits_protocol::invariants::*;
 use nits_protocol::render::*;
 use nits_protocol::replay::*;
 use nits_protocol::rpc::*;
+use nits_protocol::suggestion::*;
 use nits_protocol::version::*;
 
 /// Why a fixture could not be built or serialised.
@@ -233,6 +234,15 @@ registry!(
     DirectoryReview,
     DirectoryReviewOutcome,
     ReviewSnapshot,
+    SuggestionRecord,
+    SuggestionOutcome,
+    SuggestionReceipt,
+    SuggestionPreview,
+    SuggestionInspection,
+    SuggestionWorktree,
+    SuggestionHunk,
+    SuggestionLine,
+    SuggestionLineKind,
     ReviewRequest,
     ReviewRequestId,
     ReviewCheckpointId,
@@ -739,6 +749,7 @@ fn review_request() -> ReviewRequest {
 
 fn review_snapshot() -> Result<ReviewSnapshot, FixtureError> {
     Ok(ReviewSnapshot {
+        suggestions: vec![suggestion_record()?],
         review: review()?,
         resolved: Some(resolved_targets()?),
         threads: vec![thread()],
@@ -1602,6 +1613,10 @@ enum_fixture!(
         Request::ReviewSnapshot {
             review_id: review_id()
         },
+        Request::PreviewSuggestion {
+            review_id: review_id(),
+            comment_id: reply_id()
+        },
         Request::ListFiles {
             review_id: review_id(),
             scope: DiffScope::All
@@ -1713,6 +1728,9 @@ enum_fixture!(
         Response::Review { review: review()? },
         Response::ReviewSnapshot {
             snapshot: review_snapshot()?
+        },
+        Response::SuggestionPreview {
+            preview: suggestion_preview()?
         },
         Response::Files {
             files: vec![FileChange {
@@ -2005,5 +2023,119 @@ enum_fixture!(
             old: commit(1),
             new: blob_entry(30)
         },
+    ]
+);
+
+fn suggestion_record() -> Result<SuggestionRecord, FixtureError> {
+    SuggestionRecord::from_created(&reply_comment()?)
+        .ok_or_else(|| FixtureError::Invalid("fixture comment must be a suggestion".into()))
+}
+fn suggestion_receipt() -> Result<SuggestionReceipt, FixtureError> {
+    Ok(SuggestionReceipt {
+        seq: Seq::new(44),
+        at: ts(5),
+        author: human_author(),
+        repo_id: repo_id(),
+        path: path("src/lib.rs")?,
+        result_blob: blob(32),
+    })
+}
+fn suggestion_hunk() -> Result<SuggestionHunk, FixtureError> {
+    let line = LineNo::new(10).ok_or(FixtureError::ZeroLine)?;
+    Ok(SuggestionHunk {
+        header: "@@ -10,1 +10,1 @@".into(),
+        lines: vec![
+            SuggestionLine {
+                kind: SuggestionLineKind::Remove { old: line },
+                text: "let x = 1;".into(),
+                ending: LineEnding::Lf,
+            },
+            SuggestionLine {
+                kind: SuggestionLineKind::Add { new: line },
+                text: "let x: u32 = 1;".into(),
+                ending: LineEnding::Lf,
+            },
+        ],
+    })
+}
+fn suggestion_preview() -> Result<SuggestionPreview, FixtureError> {
+    Ok(SuggestionPreview {
+        suggestion: suggestion_record()?,
+        inspection: SuggestionInspection::Checked {
+            hunks: vec![suggestion_hunk()?],
+            worktree: SuggestionWorktree::Original,
+        },
+    })
+}
+struct_fixture!(SuggestionRecord, "SuggestionRecord", suggestion_record()?);
+struct_fixture!(
+    SuggestionReceipt,
+    "SuggestionReceipt",
+    suggestion_receipt()?
+);
+struct_fixture!(
+    SuggestionPreview,
+    "SuggestionPreview",
+    suggestion_preview()?
+);
+struct_fixture!(SuggestionHunk, "SuggestionHunk", suggestion_hunk()?);
+struct_fixture!(
+    SuggestionLine,
+    "SuggestionLine",
+    SuggestionLine {
+        kind: SuggestionLineKind::Add { new: LineNo::FIRST },
+        text: "proposed".into(),
+        ending: LineEnding::Missing
+    }
+);
+enum_fixture!(
+    SuggestionLineKind,
+    SuggestionLineKindTag,
+    "SuggestionLineKind",
+    [
+        SuggestionLineKind::Context {
+            old: LineNo::FIRST,
+            new: LineNo::FIRST
+        },
+        SuggestionLineKind::Remove { old: LineNo::FIRST },
+        SuggestionLineKind::Add { new: LineNo::FIRST },
+    ]
+);
+enum_fixture!(
+    SuggestionOutcome,
+    SuggestionOutcomeTag,
+    "SuggestionOutcome",
+    [
+        SuggestionOutcome::Unapplied,
+        SuggestionOutcome::Applied {
+            receipt: suggestion_receipt()?
+        }
+    ]
+);
+enum_fixture!(
+    SuggestionInspection,
+    SuggestionInspectionTag,
+    "SuggestionInspection",
+    [
+        SuggestionInspection::Checked {
+            hunks: vec![suggestion_hunk()?],
+            worktree: SuggestionWorktree::Original
+        },
+        SuggestionInspection::Rejected {
+            reason: "patch header is malformed".into()
+        },
+    ]
+);
+enum_fixture!(
+    SuggestionWorktree,
+    SuggestionWorktreeTag,
+    "SuggestionWorktree",
+    [
+        SuggestionWorktree::Original,
+        SuggestionWorktree::Proposed,
+        SuggestionWorktree::Changed,
+        SuggestionWorktree::Unavailable {
+            reason: "checkout file is unavailable".into()
+        }
     ]
 );

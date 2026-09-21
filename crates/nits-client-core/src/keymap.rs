@@ -93,6 +93,7 @@ pub enum Command {
     Delete,
     /// Apply the focused suggestion thread's patch to the working tree.
     ApplySuggestion,
+    PreviewSuggestion,
     ToggleResolved,
     DeferFinding,
     FileSearch,
@@ -706,6 +707,7 @@ impl Keymap {
             b(X::Thread, keys!("D"), C::DeferFinding, true),
             b(X::Thread, keys!("d"), C::Delete, false),
             b(X::Thread, keys!("a"), C::ApplySuggestion, false),
+            b(X::Thread, keys!("v"), C::PreviewSuggestion, false),
             // Composer: everything else is text; the host submits.
             b(X::Composer, keys!("ctrl+enter"), C::Submit, true),
             b(X::Composer, keys!("alt+a"), C::AddReviewTarget, false),
@@ -1102,6 +1104,7 @@ pub fn label(command: Command) -> &'static str {
         Command::Reply => "reply",
         Command::Delete => "delete",
         Command::ApplySuggestion => "apply suggestion",
+        Command::PreviewSuggestion => "preview suggestion",
         Command::ToggleResolved => "resolve / reopen",
         Command::DeferFinding => "defer finding",
         Command::FileSearch => "find file",
@@ -1197,6 +1200,7 @@ pub fn modes_of(command: Command) -> &'static [Mode] {
         | Command::Reply
         | Command::Delete
         | Command::ApplySuggestion
+        | Command::PreviewSuggestion
         | Command::DeferFinding
         | Command::ToggleResolved
         | Command::FileSearch

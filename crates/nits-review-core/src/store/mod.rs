@@ -280,6 +280,7 @@ impl Store {
         }
         let threads = txn.open_table(tables::THREADS)?;
         let comments = txn.open_table(tables::COMMENTS)?;
+        let suggestions = txn.open_table(tables::SUGGESTIONS)?;
         let viewed = txn.open_table(tables::VIEWED)?;
         let requests = txn.open_table(tables::REVIEW_REQUESTS)?;
         let checkpoints = txn.open_table(tables::CHECKPOINTS)?;
@@ -291,6 +292,10 @@ impl Store {
                 .map(|e| Ok(serde_json::from_slice(e?.1.value())?))
                 .collect::<Result<_, StoreError>>()?,
             comments: comments
+                .range((rid.as_str(), "")..(rid.as_str(), "\u{10FFFF}"))?
+                .map(|e| Ok(serde_json::from_slice(e?.1.value())?))
+                .collect::<Result<_, StoreError>>()?,
+            suggestions: suggestions
                 .range((rid.as_str(), "")..(rid.as_str(), "\u{10FFFF}"))?
                 .map(|e| Ok(serde_json::from_slice(e?.1.value())?))
                 .collect::<Result<_, StoreError>>()?,
@@ -320,6 +325,18 @@ impl Store {
         t.range((rid.as_str(), "")..(rid.as_str(), "\u{10FFFF}"))?
             .map(|e| Ok(serde_json::from_slice(e?.1.value())?))
             .collect()
+    }
+
+    pub fn suggestion(
+        &self,
+        review: ReviewId,
+        comment: nits_protocol::CommentId,
+    ) -> Result<Option<nits_protocol::SuggestionRecord>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(tables::SUGGESTIONS)?;
+        t.get((review.to_string().as_str(), comment.to_string().as_str()))?
+            .map(|v| Ok(serde_json::from_slice(v.value())?))
+            .transpose()
     }
 
     pub fn comment(
@@ -405,6 +422,7 @@ impl Store {
             workspaces: rows(&txn.open_table(tables::WORKSPACES)?)?,
             reviews: rows(&txn.open_table(tables::REVIEWS)?)?,
             comments: rows(&txn.open_table(tables::COMMENTS)?)?,
+            suggestions: rows(&txn.open_table(tables::SUGGESTIONS)?)?,
             threads: rows(&txn.open_table(tables::THREADS)?)?,
             viewed: rows(&txn.open_table(tables::VIEWED)?)?,
             requests: rows(&txn.open_table(tables::REVIEW_REQUESTS)?)?,
@@ -431,6 +449,7 @@ pub struct ViewDump {
     pub workspaces: Vec<Workspace>,
     pub reviews: Vec<ReviewRecord>,
     pub comments: Vec<Comment>,
+    pub suggestions: Vec<nits_protocol::SuggestionRecord>,
     pub threads: Vec<Thread>,
     pub viewed: Vec<ViewedMark>,
     pub requests: Vec<nits_protocol::ReviewRequest>,

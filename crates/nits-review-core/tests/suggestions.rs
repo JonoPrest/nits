@@ -160,6 +160,25 @@ fn git_generated_patches_apply_exact_bytes_and_record_the_result() {
             let id = CommentId::from_parts(5, 1);
             fixture.add(id, &patch);
             let before = fixture.core.last_seq().unwrap();
+            let preview = fixture.core.preview_suggestion(fixture.review, id).unwrap();
+            assert_eq!(preview.suggestion.patch, patch);
+            assert!(
+                matches!(
+                    preview.inspection,
+                    nits_protocol::SuggestionInspection::Checked {
+                        worktree: nits_protocol::SuggestionWorktree::Original,
+                        ..
+                    }
+                ),
+                "{name}, {context}: {preview:?}"
+            );
+            assert_eq!(
+                nits_review_core::patch::preview(original, &patch)
+                    .unwrap()
+                    .result,
+                expected
+            );
+            assert_eq!(fixture.core.last_seq().unwrap(), before);
             let result = fixture
                 .core
                 .apply_suggestion(&fixture.ctx, fixture.review, id)
@@ -204,6 +223,12 @@ fn malformed_patches_leave_file_and_log_untouched_then_valid_suggestion_succeeds
         let id = CommentId::from_parts(5, index as u128);
         fixture.add(id, patch);
         let before = fixture.core.last_seq().unwrap();
+        let preview = fixture.core.preview_suggestion(fixture.review, id).unwrap();
+        assert_eq!(&preview.suggestion.patch, patch);
+        assert!(matches!(
+            preview.inspection,
+            nits_protocol::SuggestionInspection::Rejected { .. }
+        ));
         let error = fixture
             .core
             .apply_suggestion(&fixture.ctx, fixture.review, id)
@@ -283,6 +308,17 @@ fn linked_suggestion_targets_never_modify_outside_bytes_or_append_success() {
             }
         }
         let before = fixture.core.last_seq().unwrap();
+        let preview = fixture.core.preview_suggestion(fixture.review, id).unwrap();
+        assert!(
+            matches!(
+                preview.inspection,
+                nits_protocol::SuggestionInspection::Checked {
+                    worktree: nits_protocol::SuggestionWorktree::Unavailable { .. },
+                    ..
+                }
+            ),
+            "{kind}: {preview:?}"
+        );
         let error = fixture
             .core
             .apply_suggestion(&fixture.ctx, fixture.review, id)
@@ -321,4 +357,210 @@ fn executable_suggestion_preserves_permissions_and_exact_unterminated_crlf_bytes
                 .to_string_lossy()
                 .starts_with("nits-suggestion-"))
     );
+}
+
+#[test]
+fn preview_is_read_only_and_preserves_unicode_and_source_terminators() {
+    use nits_protocol::{LineEnding, SuggestionInspection, SuggestionLineKind, SuggestionWorktree};
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::MetadataExt;
+    fn files_under(dir: &std::path::Path) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
+        let mut result = BTreeMap::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                result.extend(files_under(&path));
+            } else {
+                result.insert(path.clone(), std::fs::read(path).unwrap());
+            }
+        }
+        result
+    }
+    let original = "héllo\r\nunchanged\n尾\r".as_bytes();
+    let fixture = Suggestion::new(original);
+    let id = CommentId::from_parts(5, 1);
+    fixture.add(id, "@@ -1 +1 @@\n-héllo\r\n+世界\r\n@@ -3 +3 @@\n-尾\r\n\\ No newline at end of file\n+終\n\\ No newline at end of file\n");
+    let seq = fixture.core.last_seq().unwrap();
+    let objects = files_under(&fixture.repo.path().join(".git/objects"));
+    let index_path = fixture.repo.path().join(".git/index");
+    let index = std::fs::read(&index_path).unwrap();
+    let index_meta = std::fs::metadata(&index_path).unwrap();
+    let file = fixture.repo.path().join("file.txt");
+    let file_meta = std::fs::metadata(&file).unwrap();
+    let preview = fixture.core.preview_suggestion(fixture.review, id).unwrap();
+    let SuggestionInspection::Checked { hunks, worktree } = preview.inspection else {
+        panic!("preview rejected")
+    };
+    assert_eq!(worktree, SuggestionWorktree::Original);
+    assert_eq!(hunks.len(), 2);
+    assert_eq!(
+        (hunks[0].lines[0].text.as_str(), hunks[0].lines[0].ending),
+        ("héllo", LineEnding::CrLf)
+    );
+    assert_eq!(
+        (hunks[0].lines[1].text.as_str(), hunks[0].lines[1].ending),
+        ("世界", LineEnding::CrLf)
+    );
+    assert_eq!(
+        (hunks[1].lines[0].text.as_str(), hunks[1].lines[0].ending),
+        ("尾\r", LineEnding::Missing)
+    );
+    assert_eq!(
+        (hunks[1].lines[1].text.as_str(), hunks[1].lines[1].ending),
+        ("終", LineEnding::Missing)
+    );
+    assert!(matches!(hunks[1].lines[1].kind, SuggestionLineKind::Add { new } if new.get() == 3));
+    assert_eq!(fixture.core.last_seq().unwrap(), seq);
+    assert_eq!(
+        files_under(&fixture.repo.path().join(".git/objects")),
+        objects
+    );
+    assert_eq!(std::fs::read(&index_path).unwrap(), index);
+    let after = std::fs::metadata(&index_path).unwrap();
+    assert_eq!(
+        (after.ino(), after.mtime_nsec()),
+        (index_meta.ino(), index_meta.mtime_nsec())
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), original);
+    let after = std::fs::metadata(&file).unwrap();
+    assert_eq!(
+        (after.ino(), after.mtime_nsec()),
+        (file_meta.ino(), file_meta.mtime_nsec())
+    );
+}
+
+#[test]
+fn preview_observes_stale_and_proposed_bytes_without_inventing_an_applied_receipt() {
+    use nits_protocol::{SuggestionInspection, SuggestionOutcome, SuggestionWorktree};
+    let fixture = Suggestion::new(b"base\n");
+    let id = CommentId::from_parts(5, 1);
+    fixture.add(id, "@@ -1 +1 @@\n-base\n+proposed\n");
+    let seq = fixture.core.last_seq().unwrap();
+    for (bytes, expected) in [
+        (b"external\n".as_slice(), SuggestionWorktree::Changed),
+        (b"proposed\n".as_slice(), SuggestionWorktree::Proposed),
+    ] {
+        fixture.repo.write_file("file.txt", bytes).unwrap();
+        let preview = fixture.core.preview_suggestion(fixture.review, id).unwrap();
+        assert_eq!(preview.suggestion.outcome, SuggestionOutcome::Unapplied);
+        assert!(
+            matches!(preview.inspection, SuggestionInspection::Checked { worktree, ref hunks } if worktree == expected && !hunks.is_empty())
+        );
+        assert!(
+            fixture
+                .core
+                .apply_suggestion(&fixture.ctx, fixture.review, id)
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(fixture.repo.path().join("file.txt")).unwrap(),
+            bytes
+        );
+        assert_eq!(fixture.core.last_seq().unwrap(), seq);
+    }
+    fixture.repo.write_file("file.txt", b"base\n").unwrap();
+    fixture
+        .core
+        .apply_suggestion(&fixture.ctx, fixture.review, id)
+        .unwrap();
+    assert!(matches!(
+        fixture
+            .core
+            .preview_suggestion(fixture.review, id)
+            .unwrap()
+            .suggestion
+            .outcome,
+        SuggestionOutcome::Applied { .. }
+    ));
+}
+
+#[test]
+fn applied_receipt_survives_manual_revert_and_restart_and_blocks_a_second_write() {
+    use nits_protocol::SuggestionOutcome;
+    let fixture = Suggestion::new(b"base\n");
+    let id = CommentId::from_parts(5, 1);
+    fixture.add(id, "@@ -1 +1 @@\n-base\n+proposed\n");
+    let result = fixture
+        .core
+        .apply_suggestion(&fixture.ctx, fixture.review, id)
+        .unwrap();
+    let seq = fixture.core.last_seq().unwrap();
+    let snapshot = fixture.core.review_snapshot(fixture.review).unwrap();
+    let SuggestionOutcome::Applied { receipt } = &snapshot.suggestions[0].outcome else {
+        panic!("missing receipt")
+    };
+    assert_eq!(receipt.result_blob, result);
+    assert_eq!(Some(receipt.seq), seq);
+    assert_eq!(receipt.author, fixture.ctx.author);
+    assert_eq!(receipt.at, fixture.ctx.now);
+    fixture.repo.write_file("file.txt", b"base\n").unwrap();
+    let Suggestion {
+        _data: data,
+        core,
+        repo,
+        ctx,
+        review,
+        ..
+    } = fixture;
+    drop(core);
+    let core = Core::open(&DataDir::new(data.path())).unwrap();
+    assert_eq!(
+        core.review_snapshot(review).unwrap().suggestions,
+        snapshot.suggestions
+    );
+    assert!(
+        core.apply_suggestion(&ctx, review, id)
+            .unwrap_err()
+            .to_string()
+            .contains("already applied")
+    );
+    assert_eq!(
+        std::fs::read(repo.path().join("file.txt")).unwrap(),
+        b"base\n"
+    );
+    assert_eq!(core.last_seq().unwrap(), seq);
+}
+
+#[test]
+fn reanchoring_cannot_redirect_a_suggestion_to_a_renamed_file() {
+    use nits_protocol::{SuggestionInspection, SuggestionWorktree};
+    let fixture = Suggestion::new(b"base\n");
+    let id = CommentId::from_parts(5, 1);
+    fixture.add(id, "@@ -1 +1 @@\n-base\n+proposed\n");
+    std::fs::rename(
+        fixture.repo.path().join("file.txt"),
+        fixture.repo.path().join("moved.txt"),
+    )
+    .unwrap();
+    fixture
+        .core
+        .resolve_targets(&fixture.ctx, fixture.review)
+        .unwrap();
+    let snapshot = fixture.core.review_snapshot(fixture.review).unwrap();
+    assert!(
+        matches!(&snapshot.comments[0].anchor, Anchor::File { path, .. } if path.as_str() == "moved.txt")
+    );
+    let preview = fixture.core.preview_suggestion(fixture.review, id).unwrap();
+    assert!(
+        matches!(&preview.suggestion.anchor, Anchor::File { path, .. } if path.as_str() == "file.txt")
+    );
+    assert!(matches!(
+        preview.inspection,
+        SuggestionInspection::Checked {
+            worktree: SuggestionWorktree::Unavailable { .. },
+            ..
+        }
+    ));
+    let seq = fixture.core.last_seq().unwrap();
+    assert!(
+        fixture
+            .core
+            .apply_suggestion(&fixture.ctx, fixture.review, id)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(fixture.repo.path().join("moved.txt")).unwrap(),
+        b"base\n"
+    );
+    assert_eq!(fixture.core.last_seq().unwrap(), seq);
 }

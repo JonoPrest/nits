@@ -23,6 +23,7 @@ pub mod replay;
 pub mod rpc;
 #[cfg(feature = "schema")]
 mod schema;
+pub mod suggestion;
 pub mod version;
 
 pub use creation::*;
@@ -35,4 +36,5 @@ pub use reference::*;
 pub use render::*;
 pub use replay::*;
 pub use rpc::*;
+pub use suggestion::*;
 pub use version::*;

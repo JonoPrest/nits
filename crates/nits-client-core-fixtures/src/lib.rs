@@ -194,6 +194,8 @@ registry!(
     RowThread,
     RowPlace,
     CommentView,
+    SuggestionView,
+    SuggestionStatus,
     ThreadView,
     ThreadPlace,
     CommitStepper,
@@ -658,7 +660,6 @@ struct_fixture!(
         place: local_named::<ThreadPlace>("Lines")?,
         outdated: false,
         pending: true,
-        suggestion: true,
         comments: vec![local::<CommentView>()?],
         context: proto::<Comment>()?.context,
     }
@@ -673,6 +674,7 @@ struct_fixture!(CommentView, "CommentView", {
         author: c.author,
         created: c.created,
         body: c.body,
+        suggestion: None,
         pending: false,
     }
 });
@@ -912,6 +914,9 @@ enum_fixture!(
         },
         Action::ApplySuggestion {
             comment_id: comment_id()?,
+        },
+        Action::PreviewSuggestion {
+            comment_id: comment_id()?
         },
         Action::Viewport {
             file: file_ref()?,
@@ -1504,4 +1509,34 @@ struct_fixture!(
             patches: Vec::new()
         },
     }
+);
+
+struct_fixture!(
+    SuggestionView,
+    "SuggestionView",
+    SuggestionView {
+        record: proto::<SuggestionRecord>()?,
+        inspection: Some(proto_named::<SuggestionInspection>("Checked")?),
+        status: SuggestionStatus::Ready,
+        notice: None,
+    }
+);
+enum_fixture!(
+    SuggestionStatus,
+    SuggestionStatusKind,
+    "SuggestionStatus",
+    [
+        SuggestionStatus::Unloaded,
+        SuggestionStatus::Loading,
+        SuggestionStatus::Ready,
+        SuggestionStatus::Stale,
+        SuggestionStatus::Rejected {
+            message: "patch is malformed".into()
+        },
+        SuggestionStatus::Applying,
+        SuggestionStatus::Uncertain {
+            message: "application outcome must be checked".into()
+        },
+        SuggestionStatus::Applied,
+    ]
 );

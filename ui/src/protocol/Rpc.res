@@ -274,6 +274,10 @@ module Request = {
     | @as("DefaultBase") DefaultBase({@as("repo_id") repoId: repoId})
     | @as("GetReview") GetReview({@as("review_id") reviewId: reviewId})
     | @as("ReviewSnapshot") ReviewSnapshot({@as("review_id") reviewId: reviewId})
+    | PreviewSuggestion({
+        @as("review_id") reviewId: reviewId,
+        @as("comment_id") commentId: commentId,
+      })
     | @as("ListFiles") ListFiles({@as("review_id") reviewId: reviewId, scope: DiffScope.t})
     | @as("Search")
     Search({
@@ -340,6 +344,7 @@ module Response = {
     | @as("DefaultBase") DefaultBase({base: RefSpec.t})
     | @as("Review") Review({review: Review.t})
     | @as("ReviewSnapshot") ReviewSnapshot({snapshot: ReviewSnapshot.t})
+    | SuggestionPreview({preview: Suggestion.Preview.t})
     | @as("Files") Files({files: array<FileChange.t>, resolved: array<ResolvedTarget.t>})
     | @as("Search") Search({hits: array<Domain.ContentHit.t>, truncated: bool})
     | @as("Resolved") Resolved({targets: array<ResolvedTarget.t>, changed: bool})
@@ -359,6 +364,7 @@ module StreamItem = {
   @schema @tag("type")
   type t =
     | @as("ReviewSnapshot") ReviewSnapshot({snapshot: ReviewSnapshot.t})
+    | SuggestionPreview({preview: Suggestion.Preview.t})
     | @as("TreeSnapshot") TreeSnapshot({snapshot: TreeSnapshot.t})
     | @as("Header") Header({header: Render.FileRenderHeader.t})
     | @as("Chunk") Chunk({@as("repo_id") repoId: repoId, path: string, chunk: Render.RenderChunk.t})

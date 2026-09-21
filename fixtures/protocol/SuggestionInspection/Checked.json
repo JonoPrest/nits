@@ -1,0 +1,29 @@
+{
+  "hunks": [
+    {
+      "header": "@@ -10,1 +10,1 @@",
+      "lines": [
+        {
+          "ending": "Lf",
+          "kind": {
+            "old": 10,
+            "type": "Remove"
+          },
+          "text": "let x = 1;"
+        },
+        {
+          "ending": "Lf",
+          "kind": {
+            "new": 10,
+            "type": "Add"
+          },
+          "text": "let x: u32 = 1;"
+        }
+      ]
+    }
+  ],
+  "type": "Checked",
+  "worktree": {
+    "type": "Original"
+  }
+}

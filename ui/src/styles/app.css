@@ -1031,3 +1031,17 @@
 @media (max-width: 700px) {
   .submodule-change pre { font-size: 0.8125rem; }
 }
+
+/* Exact suggestion rows share source-byte annotations with the file renderer. */
+.suggestion-patch, .suggestion-raw { max-width: 100%; min-width: 0; overflow: auto; }
+.suggestion-raw { margin: 0; padding: .5rem; white-space: pre; font-family: var(--font-mono); }
+.suggestion-diff { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: .8rem; }
+.suggestion-diff th { text-align: left; font-weight: 500; padding: .25rem .5rem; }
+.suggestion-diff td { vertical-align: top; padding: .1rem .4rem; }
+.suggestion-number { width: 2.5rem; text-align: right; color: var(--color-muted); user-select: none; }
+.suggestion-hunk { background: var(--color-diff-hunk-bg); white-space: pre; }
+.suggestion-add { background: var(--color-diff-add-bg); }
+.suggestion-remove { background: var(--color-diff-remove-bg); }
+.suggestion-source { display: flex; white-space: pre; }
+.suggestion-prefix { display: inline-block; min-width: 1.25rem; user-select: none; }
+.suggestion-ending { display: block; margin-left: 1.25rem; color: var(--color-muted); font-size: .7rem; user-select: none; }

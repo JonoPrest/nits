@@ -403,3 +403,19 @@ The visible repository/ref and a loading or failed candidate are separate. A fai
 lookup leaves the previous file and comment provenance usable; only a successful
 matching lookup replaces the tree. Reset, repository changes, and cancellation
 invalidate late candidates. Browse selection never edits review targets.
+
+### Suggestions
+
+Each suggestion, including a reply, shows its original repository/path and patch
+in Conversation and inline threads. Preview (`v` in Thread context) checks and
+renders exact old/new lines with LF, CRLF and missing-final-newline annotations.
+Malformed patches remain visible as raw evidence. Apply (`a`) is enabled only
+when that inspection finds the original checkout bytes, and checks them again
+when writing. These control hints derive from the shared keymap; the existing
+next/previous-comment keys select which reply the commands address.
+
+Pending, stale, rejected, uncertain and applied results retain the preview.
+Applied status includes the durable receipt's actor, time and actual target.
+After a disconnect or ambiguous write failure, Nits checks the outcome instead
+of replaying the write. Proposed bytes without a receipt are labelled unconfirmed;
+any recovery location from a failed replacement remains visible after another check.

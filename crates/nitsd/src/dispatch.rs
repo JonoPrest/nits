@@ -77,6 +77,15 @@ pub async fn single(
             let snapshot = daemon.read(move |c| c.review_snapshot(review_id)).await?;
             Ok(Response::ReviewSnapshot { snapshot })
         }
+        Request::PreviewSuggestion {
+            review_id,
+            comment_id,
+        } => {
+            let preview = daemon
+                .read(move |c| c.preview_suggestion(review_id, comment_id))
+                .await?;
+            Ok(Response::SuggestionPreview { preview })
+        }
         Request::ListFiles { review_id, scope } => {
             let (files, resolved) = daemon
                 .read(move |c| c.files_scoped(review_id, &scope))

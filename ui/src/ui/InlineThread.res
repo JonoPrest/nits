@@ -58,6 +58,10 @@ let make = (
           <div className="thread-body">
             <UI.Markdown source=c.body />
           </div>
+          {switch c.suggestion {
+          | Some(suggestion) => <SuggestionCard suggestion repositories chrome dispatch />
+          | None => React.null
+          }}
         </div>
       )
       ->React.array}
@@ -72,12 +76,6 @@ let make = (
             kind=Primary
             onClick={() => dispatch(ReplyOpened({threadId: thread.id}))}
           />
-          {thread.suggestion
-            ? <UI.Button
-                label="Apply suggestion (a)"
-                onClick={() => dispatch(ApplySuggestion({commentId: thread.root}))}
-              />
-            : React.null}
           <Threads.FindingActions thread chrome dispatch />
         </div>
       }}

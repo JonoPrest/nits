@@ -9,9 +9,9 @@
 //! good anchor and flagged; deleted ones are not placed at all.
 
 use nits_protocol::{
-    Anchor, Author, BlobOid, ChunkIndex, Comment, CommentId, CommentKind, CommentState, CommitInfo,
-    CommitOid, FileRenderHeader, RenderChunk, RenderContent, RenderTarget, RepoId, ReviewSnapshot,
-    Row, Side, Thread, ThreadId, ThreadResolution, Timestamp,
+    Anchor, Author, BlobOid, ChunkIndex, Comment, CommentId, CommentState, CommitInfo, CommitOid,
+    FileRenderHeader, RenderChunk, RenderContent, RenderTarget, RepoId, ReviewSnapshot, Row, Side,
+    Thread, ThreadId, ThreadResolution, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use strum::EnumDiscriminants;
@@ -59,8 +59,6 @@ pub struct ThreadView {
     pub outdated: bool,
     /// Some comment in the thread is still awaiting the daemon.
     pub pending: bool,
-    /// The root is a `CommentKind::Suggestion` (a patch that can be applied).
-    pub suggestion: bool,
     /// Root then replies, oldest first; deleted comments are omitted.
     pub comments: Vec<CommentView>,
     /// The diff or Browse revision the root was made on, when recorded — the
@@ -78,6 +76,7 @@ pub struct CommentView {
     pub author: Author,
     pub created: Timestamp,
     pub body: String,
+    pub suggestion: Option<crate::SuggestionView>,
     /// Still awaiting the daemon (optimistic).
     pub pending: bool,
 }
@@ -239,7 +238,6 @@ fn thread_view(snapshot: &ReviewSnapshot, t: &Thread, pending: &PendingIds) -> O
         place: place_of(anchor),
         outdated,
         pending: pending.comments.iter().any(in_thread) || pending.threads.contains(&t.id),
-        suggestion: matches!(root.kind, CommentKind::Suggestion { .. }),
         comments: std::iter::once(&t.root)
             .chain(t.replies.iter())
             .filter_map(|id| snapshot.comments.iter().find(|c| c.id == *id))
@@ -250,6 +248,11 @@ fn thread_view(snapshot: &ReviewSnapshot, t: &Thread, pending: &PendingIds) -> O
                 author: c.author.clone(),
                 created: c.created,
                 body: c.body.clone(),
+                suggestion: snapshot
+                    .suggestions
+                    .iter()
+                    .find(|record| record.comment_id == c.id)
+                    .map(|record| crate::suggestion::SuggestionState::default().view(record)),
                 pending: pending.comments.contains(&c.id),
             })
             .collect(),

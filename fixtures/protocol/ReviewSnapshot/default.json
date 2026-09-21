@@ -238,6 +238,28 @@
     "workspace_id": "01HF7YAT000000000000000001"
   },
   "seq": 42,
+  "suggestions": [
+    {
+      "anchor": {
+        "blob_oid": "a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5",
+        "context_hash": "0123456789abcdef",
+        "lines": {
+          "end": 12,
+          "start": 10
+        },
+        "path": "src/lib.rs",
+        "repo_id": "01HF7YAT000000000000000002",
+        "side": "Head",
+        "type": "Lines"
+      },
+      "comment_id": "01HF7YAWXR0000000000000006",
+      "outcome": {
+        "type": "Unapplied"
+      },
+      "patch": "@@ -10,1 +10,1 @@\n-let x = 1;\n+let x: u32 = 1;\n",
+      "review_id": "01HF7YATZ80000000000000004"
+    }
+  ],
   "threads": [
     {
       "id": "01HF7YAVYG0000000000000005",

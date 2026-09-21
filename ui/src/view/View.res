@@ -370,6 +370,30 @@ module ThreadPlace = {
   @@warning("+27")
 }
 
+module SuggestionStatus = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t =
+    | Unloaded({})
+    | Loading({})
+    | Ready({})
+    | Stale({})
+    | Rejected({message: string})
+    | Applying({})
+    | Uncertain({message: string})
+    | Applied({})
+  @@warning("+27")
+}
+module SuggestionView = {
+  @schema
+  type t = {
+    record: Domain.SuggestionRecord.t,
+    inspection: @s.null option<Suggestion.Inspection.t>,
+    status: SuggestionStatus.t,
+    notice: @s.null option<string>,
+  }
+}
+
 module CommentView = {
   @schema
   type t = {
@@ -378,6 +402,7 @@ module CommentView = {
     author: Domain.Author.t,
     created: timestamp,
     body: string,
+    suggestion: @s.null option<SuggestionView.t>,
     pending: bool,
   }
 }
@@ -398,7 +423,6 @@ module ThreadView = {
     place: ThreadPlace.t,
     outdated: bool,
     pending: bool,
-    suggestion: bool,
     comments: array<CommentView.t>,
     context: @s.null option<Domain.CommentContext.t>,
   }
@@ -472,6 +496,7 @@ module Command = {
     | Reply
     | Delete
     | ApplySuggestion
+    | PreviewSuggestion
     | ToggleResolved
     | DeferFinding
     | FileSearch

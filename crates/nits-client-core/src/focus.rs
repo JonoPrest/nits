@@ -587,6 +587,7 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 | Command::Reply
                 | Command::Delete
                 | Command::ApplySuggestion
+                | Command::PreviewSuggestion
                 | Command::DeferFinding
                 | Command::ToggleResolved
                 | Command::FileSearch
@@ -1093,15 +1094,28 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             }
             Ok(Action::DeleteComment { comment_id: t.root })
         }
-        Command::ApplySuggestion => {
+        Command::ApplySuggestion | Command::PreviewSuggestion => {
             let Focus::Thread { index } = focus else {
                 return Err(nothing());
             };
             let t = view.threads.get(index).ok_or_else(nothing)?;
-            if !t.suggestion {
+            let comment = view
+                .focused_comment
+                .and_then(|id| t.comments.iter().find(|comment| comment.id == id))
+                .or_else(|| t.comments.iter().find(|comment| comment.id == t.root))
+                .ok_or_else(nothing)?;
+            if comment.suggestion.is_none() {
                 return Err(nothing());
             }
-            Ok(Action::ApplySuggestion { comment_id: t.root })
+            Ok(if command == Command::PreviewSuggestion {
+                Action::PreviewSuggestion {
+                    comment_id: comment.id,
+                }
+            } else {
+                Action::ApplySuggestion {
+                    comment_id: comment.id,
+                }
+            })
         }
         Command::DeferFinding => {
             let Focus::Thread { index } = focus else {

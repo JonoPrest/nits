@@ -812,3 +812,39 @@ same request identity scopes the host's local query buffer, so delayed patches
 cannot erase newer typing or show selectable results for an older query. Browse
 issues only TreeSnapshot, never UpdateReviewTarget. These control requests do not
 consume or release slots in the content prefetch budget.
+
+### Suggestion inspection and application
+
+A suggestion's `(ReviewId, CommentId)` permanently identifies its creation-time
+anchor and patch. `CommentReanchored` moves the discussion without changing the
+file or blob to which the proposed edit applies. The materialized `suggestions`
+table retains that original identity and the latest committed `SuggestionApplied`
+receipt (event sequence, actor, time, actual repository/path and result blob).
+Schema 9 → 10 rebuilds these records from existing events without rewriting
+history. Historical receipts preserve the actual application location even when
+an older client applied a suggestion after its comment had moved.
+
+`PreviewSuggestion` reads the original Git blob and uses the same strict patch
+parser and byte checks as Apply. Its typed hunks retain old/new line numbers and
+LF, CRLF and missing-final-newline endings. The read checks checkout eligibility
+through the descriptor-based suggestion file traversal, but writes no checkout,
+index, Git object or event. A stale checkout can still show the original proposed
+change; malformed or unavailable original content retains the raw patch and an
+explanation. The result distinguishes original, proposed, changed and unavailable
+checkout bytes. Preview is an observation, not a lease on those bytes.
+
+Apply reloads the immutable record, refuses an existing durable receipt, checks
+the original bytes again, and uses the protected replacement described above.
+The daemon's writer orders concurrent applications. Filesystem replacement and
+event persistence are separate operations: a crash or store error after replacement
+may leave proposed bytes without a receipt. Clients therefore never replay an Apply
+automatically. They preserve its preview/error, read after reconnect, and distinguish
+a committed receipt from merely finding proposed bytes. A fresh original-byte check
+can enable an explicit retry; matching proposed bytes never invents actor provenance
+or an applied receipt, including for a no-op patch.
+
+Client suggestion state belongs to each comment, including replies. Pending writes
+are excluded from the ordinary optimistic mutation resend list. Request/review/comment
+checks reject stale or mismatched preview replies; a durable event/snapshot receipt
+wins over older previews and errors. The UI keeps patch evidence visible while a
+request is pending or rejected, and offers Apply only after a ready preview.

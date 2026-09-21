@@ -87,6 +87,7 @@ type t =
   | @as("ResolveThread") ResolveThread({@as("thread_id") threadId: threadId})
   | @as("UnresolveThread") UnresolveThread({@as("thread_id") threadId: threadId})
   | @as("ApplySuggestion") ApplySuggestion({@as("comment_id") commentId: commentId})
+  | PreviewSuggestion({@as("comment_id") commentId: commentId})
   | @as("Viewport")
   Viewport({
       file: View.FileRef.t,

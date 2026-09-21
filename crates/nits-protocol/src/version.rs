@@ -36,7 +36,7 @@ impl ProtocolVersion {
     /// The version this crate serialises.
     pub const CURRENT: ProtocolVersion = ProtocolVersion {
         major: 0,
-        minor: 16,
+        minor: 17,
         patch: 0,
     };
 
@@ -117,7 +117,7 @@ pub struct SchemaVersion(u32);
 
 impl SchemaVersion {
     /// The layout this build writes.
-    pub const CURRENT: SchemaVersion = SchemaVersion(9);
+    pub const CURRENT: SchemaVersion = SchemaVersion(10);
 
     #[must_use]
     pub const fn new(n: u32) -> Self {
@@ -196,7 +196,7 @@ mod tests {
         }
         assert_eq!(
             serde_json::to_string(&ProtocolVersion::CURRENT).unwrap(),
-            "\"0.16.0\""
+            "\"0.17.0\""
         );
     }
 
