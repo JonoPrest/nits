@@ -696,3 +696,208 @@ async fn index_only_change_reconciles_previously_skipped_worktree_content() {
     assert_eq!(source_head(&target).0, ["a.txt"]);
     assert_eq!(h.changed_paths().await, ["a.txt"]);
 }
+
+#[derive(Clone, Copy)]
+enum SubmoduleLayout {
+    Absorbed,
+    OldForm,
+    Separate,
+    Linked,
+}
+
+struct SubmoduleRepo {
+    superproject: TestRepo,
+    _dependency: TestRepo,
+    _external: tempfile::TempDir,
+    old: nits_protocol::CommitOid,
+    alternate: nits_protocol::CommitOid,
+}
+
+fn submodule_repo(layout: SubmoduleLayout) -> SubmoduleRepo {
+    let dependency = RepoBuilder::new()
+        .commit("first", files!["lib.txt" => "same content\n"])
+        .build()
+        .unwrap();
+    let old = dependency.rev_parse("HEAD").unwrap().parse().unwrap();
+    dependency
+        .git(&["commit", "--allow-empty", "-qm", "same-tree revision"])
+        .unwrap();
+    let alternate = dependency.rev_parse("HEAD").unwrap().parse().unwrap();
+    let superproject = RepoBuilder::new()
+        .commit("base", files!["README" => "project\n"])
+        .build()
+        .unwrap();
+    let external = tempfile::tempdir().unwrap();
+    let checkout = superproject.path().join("dep");
+    match layout {
+        SubmoduleLayout::Absorbed => {
+            superproject
+                .git(&[
+                    "-c",
+                    "protocol.file.allow=always",
+                    "submodule",
+                    "add",
+                    "--",
+                    dependency.path().to_str().unwrap(),
+                    "dep",
+                ])
+                .unwrap();
+        }
+        SubmoduleLayout::OldForm => {
+            superproject
+                .git(&["clone", "--", dependency.path().to_str().unwrap(), "dep"])
+                .unwrap();
+        }
+        SubmoduleLayout::Separate => {
+            superproject
+                .git(&[
+                    "clone",
+                    "--separate-git-dir",
+                    external.path().join("metadata").to_str().unwrap(),
+                    "--",
+                    dependency.path().to_str().unwrap(),
+                    "dep",
+                ])
+                .unwrap();
+        }
+        SubmoduleLayout::Linked => {
+            dependency
+                .git(&["worktree", "add", "--detach", checkout.to_str().unwrap()])
+                .unwrap();
+        }
+    }
+    superproject
+        .git(&["-C", "dep", "checkout", "-q", &format!("{old}")])
+        .unwrap();
+    superproject.git(&["add", "dep"]).unwrap();
+    superproject
+        .git(&["commit", "-qm", "add dependency"])
+        .unwrap();
+    SubmoduleRepo {
+        superproject,
+        _dependency: dependency,
+        _external: external,
+        old,
+        alternate,
+    }
+}
+
+async fn assert_submodule_pointer(
+    client: &Client,
+    old: nits_protocol::CommitOid,
+    new: nits_protocol::CommitOid,
+) {
+    next_resolution(client).await;
+    let Response::Files { files, .. } = client
+        .request(Request::ListFiles {
+            review_id: review_id(),
+            scope: nits_protocol::DiffScope::All,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("files");
+    };
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path.as_str(), "dep");
+    assert_eq!(
+        files[0].kind,
+        nits_protocol::ChangeKind::Submodule {
+            change: nits_protocol::SubmoduleChange::Updated { old, new },
+        }
+    );
+    assert_eq!(
+        resolved_count(&collect(client, Duration::from_millis(400)).await),
+        0,
+        "resolution must settle without retention/index feedback"
+    );
+}
+
+#[tokio::test]
+async fn empty_submodule_commit_refreshes_working_tree_review() {
+    let SubmoduleRepo {
+        superproject,
+        _dependency,
+        _external,
+        old,
+        ..
+    } = submodule_repo(SubmoduleLayout::Absorbed);
+    let h = start_repo(superproject, RefSpec::Head, Checkout::Main).await;
+    h.repo
+        .git(&[
+            "-C",
+            "dep",
+            "-c",
+            "user.name=Ada",
+            "-c",
+            "user.email=ada@example.com",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "pointer only",
+        ])
+        .unwrap();
+    let new = h
+        .repo
+        .git(&["-C", "dep", "rev-parse", "HEAD"])
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_submodule_pointer(&h.client, old, new).await;
+}
+
+#[tokio::test]
+async fn identical_tree_submodule_checkout_refreshes_working_tree_review() {
+    for layout in [
+        SubmoduleLayout::Absorbed,
+        SubmoduleLayout::OldForm,
+        SubmoduleLayout::Separate,
+        SubmoduleLayout::Linked,
+    ] {
+        let SubmoduleRepo {
+            superproject,
+            _dependency,
+            _external,
+            old,
+            alternate,
+        } = submodule_repo(layout);
+        let h = start_repo(superproject, RefSpec::Head, Checkout::Main).await;
+        h.repo
+            .git(&["-C", "dep", "checkout", "-q", &alternate.to_string()])
+            .unwrap();
+        assert_submodule_pointer(&h.client, old, alternate).await;
+    }
+}
+
+#[tokio::test]
+async fn newly_attached_external_submodule_metadata_is_watched() {
+    let dependency = RepoBuilder::new()
+        .commit("first", files!["lib.txt" => "same\n"])
+        .build()
+        .unwrap();
+    let old = dependency.rev_parse("HEAD").unwrap();
+    dependency
+        .git(&["commit", "--allow-empty", "-qm", "same-tree second"])
+        .unwrap();
+    let new = dependency.rev_parse("HEAD").unwrap();
+    let h = start().await;
+    dependency
+        .git(&[
+            "worktree",
+            "add",
+            "--detach",
+            h.checkout.join("dep").to_str().unwrap(),
+            &old,
+        ])
+        .unwrap();
+    h.repo.git(&["add", "dep"]).unwrap();
+    h.repo
+        .git(&["commit", "-qm", "add dependency after watcher started"])
+        .unwrap();
+    // Wait for the staged gitlink/root HEAD update, proving registration has run.
+    next_resolution(&h.client).await;
+    collect(&h.client, Duration::from_millis(400)).await;
+    h.repo.git(&["-C", "dep", "checkout", "-q", &new]).unwrap();
+    assert_submodule_pointer(&h.client, old.parse().unwrap(), new.parse().unwrap()).await;
+}

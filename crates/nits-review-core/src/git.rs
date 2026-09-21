@@ -97,7 +97,7 @@ pub struct Repo {
 }
 
 /// Git stores linked-worktree HEAD/index state separately from shared refs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitMetadataPaths {
     pub worktree: PathBuf,
     pub common: PathBuf,
@@ -160,6 +160,45 @@ impl Repo {
             worktree: std::fs::canonicalize(local.git_dir())?,
             common: std::fs::canonicalize(local.common_dir())?,
         })
+    }
+
+    /// Metadata for initialized gitlink checkouts, including nested submodules.
+    /// The index identifies paths without relying on `.gitmodules` names; opening
+    /// each checkout follows old-form, absorbed, separate and linked Git dirs.
+    pub fn submodule_metadata_paths(&self) -> Result<Vec<GitMetadataPaths>, GitError> {
+        let mut pending = vec![self.workdir.clone()];
+        let mut seen = std::collections::BTreeSet::new();
+        let mut metadata = Vec::new();
+        while let Some(path) = pending.pop() {
+            let path = std::fs::canonicalize(path)?;
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let repo = Self::open(&path)?;
+            if seen.len() > 1 {
+                metadata.push(repo.metadata_paths()?);
+            }
+            let index = repo.git(&["ls-files", "--stage", "-z"], &[])?;
+            for entry in index.split(|byte| *byte == 0) {
+                if !entry.starts_with(b"160000 ") {
+                    continue;
+                }
+                let Some(tab) = entry.iter().position(|byte| *byte == b'\t') else {
+                    return Err(GitError::Parse("gitlink index entry has no path".into()));
+                };
+                let relative = std::str::from_utf8(&entry[tab + 1..])
+                    .map_err(|error| GitError::Parse(error.to_string()))?;
+                let relative =
+                    RepoPath::new(relative).map_err(|error| GitError::Parse(error.to_string()))?;
+                let checkout = path.join(relative.as_str());
+                // Deinitialized submodules have no checked-out HEAD to watch.
+                if checkout.join(".git").exists() {
+                    pending.push(checkout);
+                }
+            }
+        }
+        metadata.sort_by(|left, right| left.worktree.cmp(&right.worktree));
+        Ok(metadata)
     }
 
     fn local(&self) -> gix::Repository {

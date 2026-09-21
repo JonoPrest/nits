@@ -50,6 +50,7 @@ impl Drop for Watcher {
 
 struct Watched {
     _watcher: notify::RecommendedWatcher,
+    paths: WatchPaths,
     /// Last tree we told subscribers about; `None` until the first pass.
     last_tree: Option<TreeOid>,
 }
@@ -92,6 +93,9 @@ async fn run(daemon: Arc<Daemon>, shutdown: CancellationToken) {
                 for repo_id in due {
                     pending.remove(&repo_id);
                     if let Some(w) = watched.get_mut(&repo_id) {
+                        // Index and checkout changes can initialize, remove or relocate
+                        // a submodule whose metadata needs an external watch.
+                        refresh_paths(w, repo_id, &fs_tx).await;
                         process(&daemon, repo_id, &mut w.last_tree).await;
                     }
                 }
@@ -123,12 +127,11 @@ async fn sync_repos(
         if watched.contains_key(&id) {
             continue;
         }
-        match watch_one(id, &path, fs_tx.clone()) {
-            Ok(w) => {
-                let mut w = Watched {
-                    _watcher: w,
-                    last_tree: None,
-                };
+        match discover_paths(path.clone())
+            .await
+            .and_then(|paths| watch_one(id, paths, fs_tx.clone()))
+        {
+            Ok(mut w) => {
                 // Seed the baseline so the first real change yields a delta.
                 process(daemon, id, &mut w.last_tree).await;
                 watched.insert(id, w);
@@ -142,11 +145,9 @@ async fn sync_repos(
 
 fn watch_one(
     id: RepoId,
-    path: &Path,
+    paths: WatchPaths,
     tx: mpsc::UnboundedSender<RepoId>,
-) -> notify::Result<notify::RecommendedWatcher> {
-    let paths =
-        WatchPaths::discover(path).map_err(|error| notify::Error::generic(&error.to_string()))?;
+) -> notify::Result<Watched> {
     let callback_paths = paths.clone();
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(ev) = res else { return };
@@ -157,22 +158,49 @@ fn watch_one(
             let _ = tx.send(id);
         }
     })?;
-    w.watch(&paths.root, RecursiveMode::Recursive)?;
-    if !paths.metadata.common.starts_with(&paths.root) {
-        w.watch(&paths.metadata.common, RecursiveMode::Recursive)?;
+    for path in paths.watch_roots() {
+        w.watch(&path, RecursiveMode::Recursive)?;
     }
-    if !paths.metadata.worktree.starts_with(&paths.root)
-        && !paths.metadata.worktree.starts_with(&paths.metadata.common)
-    {
-        w.watch(&paths.metadata.worktree, RecursiveMode::Recursive)?;
-    }
-    Ok(w)
+    Ok(Watched {
+        _watcher: w,
+        paths,
+        last_tree: None,
+    })
 }
 
-#[derive(Clone)]
+async fn discover_paths(path: PathBuf) -> notify::Result<WatchPaths> {
+    tokio::task::spawn_blocking(move || WatchPaths::discover(&path))
+        .await
+        .map_err(|error| notify::Error::generic(&error.to_string()))?
+        .map_err(|error| notify::Error::generic(&error.to_string()))
+}
+
+async fn refresh_paths(watched: &mut Watched, id: RepoId, tx: &mpsc::UnboundedSender<RepoId>) {
+    let updated = discover_paths(watched.paths.root.clone())
+        .await
+        .and_then(|paths| {
+            if paths == watched.paths {
+                Ok(None)
+            } else {
+                watch_one(id, paths, tx.clone()).map(Some)
+            }
+        });
+    match updated {
+        Ok(Some(mut replacement)) => {
+            // Install the replacement before dropping the previous registration.
+            replacement.last_tree = watched.last_tree;
+            *watched = replacement;
+        }
+        Ok(None) => {}
+        Err(error) => tracing::warn!(repo = %id, %error, "updating submodule watches"),
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 struct WatchPaths {
     root: PathBuf,
     metadata: nits_review_core::git::GitMetadataPaths,
+    submodules: Vec<nits_review_core::git::GitMetadataPaths>,
 }
 
 impl WatchPaths {
@@ -181,30 +209,64 @@ impl WatchPaths {
         Ok(Self {
             root: std::fs::canonicalize(repo.workdir())?,
             metadata: repo.metadata_paths()?,
+            submodules: repo.submodule_metadata_paths()?,
         })
     }
 
+    fn all_metadata(&self) -> impl Iterator<Item = &nits_review_core::git::GitMetadataPaths> {
+        std::iter::once(&self.metadata).chain(&self.submodules)
+    }
+
+    fn watch_roots(&self) -> Vec<PathBuf> {
+        let mut candidates = vec![self.root.clone()];
+        for metadata in self.all_metadata() {
+            candidates.extend([metadata.worktree.clone(), metadata.common.clone()]);
+        }
+        candidates.sort_by_key(|path| path.components().count());
+        let mut roots = Vec::new();
+        for path in candidates {
+            if !roots.iter().any(|root: &PathBuf| path.starts_with(root)) {
+                roots.push(path);
+            }
+        }
+        roots
+    }
+
     fn relevant(&self, path: &Path) -> bool {
-        if let Ok(relative) = path.strip_prefix(&self.metadata.worktree)
-            && matches!(
-                relative.to_str(),
-                Some("HEAD" | "index" | "config.worktree")
-            )
+        // Check every repository first: a child's .git/modules HEAD is inside
+        // the parent's otherwise-ignored Git directory.
+        if self
+            .all_metadata()
+            .any(|metadata| metadata_relevant(metadata, path))
         {
             return true;
         }
-        if let Ok(relative) = path.strip_prefix(&self.metadata.common) {
-            return matches!(
-                relative.to_str(),
-                Some("config" | "packed-refs" | "info/exclude")
-            ) || (relative.starts_with("refs") && !relative.starts_with("refs/nits"))
-                || relative.starts_with("reftable");
-        }
-        if path.starts_with(&self.metadata.worktree) {
+        if self.all_metadata().any(|metadata| {
+            path.starts_with(&metadata.worktree) || path.starts_with(&metadata.common)
+        }) {
             return false;
         }
         path.starts_with(&self.root)
     }
+}
+
+fn metadata_relevant(metadata: &nits_review_core::git::GitMetadataPaths, path: &Path) -> bool {
+    if let Ok(relative) = path.strip_prefix(&metadata.worktree)
+        && matches!(
+            relative.to_str(),
+            Some("HEAD" | "index" | "config.worktree")
+        )
+    {
+        return true;
+    }
+    if let Ok(relative) = path.strip_prefix(&metadata.common) {
+        return matches!(
+            relative.to_str(),
+            Some("config" | "packed-refs" | "info/exclude")
+        ) || (relative.starts_with("refs") && !relative.starts_with("refs/nits"))
+            || relative.starts_with("reftable");
+    }
+    false
 }
 
 /// Snapshot the working tree, broadcast a delta if it moved, and re-resolve
@@ -282,44 +344,62 @@ mod tests {
             checkout.to_str().unwrap(),
         ])
         .unwrap();
+        let dependency = RepoBuilder::new()
+            .commit("dependency", files!["lib.txt" => "source\n"])
+            .build()
+            .unwrap();
+        repo.git(&[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--",
+            dependency.path().to_str().unwrap(),
+            "dep",
+        ])
+        .unwrap();
         for checkout in [repo.path(), checkout.as_path()] {
             let paths = WatchPaths::discover(checkout).unwrap();
-            for path in ["HEAD", "index", "config.worktree"] {
-                assert!(
-                    paths.relevant(&paths.metadata.worktree.join(path)),
-                    "{path}"
-                );
-            }
-            for path in [
-                "packed-refs",
-                "config",
-                "info/exclude",
-                "refs/heads/main",
-                "refs/tags/v1",
-                "refs/remotes/origin/main",
-            ] {
-                assert!(paths.relevant(&paths.metadata.common.join(path)), "{path}");
-            }
-            for path in [
-                "nits-index-123/index",
-                "nits-index-123/index.lock",
-                "objects/ab/cdef",
-                "logs/HEAD",
-            ] {
-                assert!(
-                    !paths.relevant(&paths.metadata.worktree.join(path)),
-                    "{path}"
-                );
-            }
-            for path in [
-                "refs/nits",
-                "refs/nits/reviews/a/trees/b",
-                "refs/nits/reviews/a/commits/c.lock",
-                "logs/refs/nits/reviews/a",
-            ] {
-                assert!(!paths.relevant(&paths.metadata.common.join(path)), "{path}");
+            for metadata in paths.all_metadata() {
+                for path in ["HEAD", "index", "config.worktree"] {
+                    assert!(paths.relevant(&metadata.worktree.join(path)), "{path}");
+                }
+                for path in [
+                    "packed-refs",
+                    "config",
+                    "info/exclude",
+                    "refs/heads/main",
+                    "refs/tags/v1",
+                    "refs/remotes/origin/main",
+                ] {
+                    assert!(paths.relevant(&metadata.common.join(path)), "{path}");
+                }
+                for path in [
+                    "nits-index-123/index",
+                    "nits-index-123/index.lock",
+                    "objects/ab/cdef",
+                    "logs/HEAD",
+                ] {
+                    assert!(!paths.relevant(&metadata.worktree.join(path)), "{path}");
+                }
+                for path in [
+                    "refs/nits",
+                    "refs/nits/reviews/a/trees/b",
+                    "refs/nits/reviews/a/commits/c.lock",
+                    "logs/refs/nits/reviews/a",
+                ] {
+                    assert!(!paths.relevant(&metadata.common.join(path)), "{path}");
+                }
             }
             assert!(paths.relevant(&paths.root.join("a.txt")));
+            if checkout == repo.path() {
+                assert_eq!(
+                    paths.submodules.len(),
+                    1,
+                    "absorbed submodule metadata is included"
+                );
+                assert_eq!(paths.watch_roots(), vec![paths.root.clone()]);
+            }
         }
     }
 }
