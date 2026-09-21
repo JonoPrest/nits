@@ -25,20 +25,7 @@ impl Core {
             .find(|path| path.join(".git").exists())
             .ok_or_else(|| CoreError::invalid("path is not inside a git working tree"))?;
         let git = Repo::open(root).map_err(|error| CoreError::invalid(error.to_string()))?;
-        let workspaces = self.workspaces()?;
-        let mut matches = workspaces.iter().flat_map(|workspace| {
-            workspace
-                .repos
-                .iter()
-                .filter(|repo| Path::new(&repo.path) == root)
-                .map(move |repo| (workspace.id, repo.id))
-        });
-        let located = matches.next();
-        if matches.next().is_some() {
-            return Err(CoreError::invalid(
-                "checkout is attached in several workspaces; use create_review with explicit workspace_id and repo_id",
-            ));
-        }
+        let located = self.directory_attachment(root)?;
         let head = options.head.unwrap_or(RefSpec::WorkingTree);
         let requested_base = options.base.map(RefSpec::from);
         // An explicit missing ref must fail even if a stale review still names it.
@@ -115,6 +102,40 @@ impl Core {
             outcome: DirectoryReviewOutcome::Created,
             seq,
         })
+    }
+
+    /// Distinguish legacy duplicates in one workspace from intentional sharing.
+    fn directory_attachment(
+        &self,
+        root: &Path,
+    ) -> Result<Option<(nits_protocol::WorkspaceId, nits_protocol::RepoId)>, CoreError> {
+        let workspaces = self.workspaces()?;
+        let matches: Vec<_> = workspaces
+            .iter()
+            .flat_map(|workspace| {
+                workspace
+                    .repos
+                    .iter()
+                    .filter(|repo| Path::new(&repo.path) == root)
+                    .map(move |repo| (workspace.id, repo.id))
+            })
+            .collect();
+        if let Some((workspace, _)) = matches.first()
+            && matches.len() > 1
+            && matches.iter().all(|(id, _)| id == workspace)
+        {
+            return Err(CoreError::invalid(format!(
+                "checkout has multiple repository attachments in workspace {workspace}; detach duplicate memberships before opening this directory"
+            )));
+        }
+        let mut matches = matches.into_iter();
+        let located = matches.next();
+        if matches.next().is_some() {
+            return Err(CoreError::invalid(
+                "checkout is attached in several workspaces; use create_review with explicit workspace_id and repo_id",
+            ));
+        }
+        Ok(located)
     }
 
     fn matching_directory_review(

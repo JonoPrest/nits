@@ -145,11 +145,25 @@ impl Core {
         let workspace = self.workspace(workspace_id)?;
         if workspace.repos.iter().any(|repo| repo.id == repo_id) {
             return Err(CoreError::invalid(format!(
-                "repo {repo_id} already attached"
+                "repo {repo_id} already attached to workspace {workspace_id}; reuse this repository ID or detach this membership before attaching again"
             )));
         }
         let opened = OpenedRepo::open(Path::new(path))?;
         self.check_repo_owner(&registry, repo_id, &opened)?;
+        for member in workspace.repos {
+            // Compare opened workdirs so legacy Git-directory and symlink
+            // aliases are equivalent. An unavailable unrelated attachment must
+            // remain repairable without blocking another valid checkout.
+            if let Ok(existing) = OpenedRepo::open(Path::new(&member.path))
+                && existing.checkout == opened.checkout
+            {
+                return Err(CoreError::invalid(format!(
+                    "checkout {} is already attached to workspace {workspace_id} as repo {}; reuse this repository ID or detach that membership before attaching again. Attaching it to another workspace is allowed",
+                    opened.checkout.0.display(),
+                    member.id
+                )));
+            }
+        }
         self.publish_attachment(
             &mut registry,
             ctx,

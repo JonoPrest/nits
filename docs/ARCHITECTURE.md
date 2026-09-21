@@ -173,9 +173,12 @@ Filesystem watches use the same validated checkout ownership and reconcile their
 roots when memberships change, so repair also restores automatic refresh.
 Review source reads, suggestions and revision retention also require the target's
 membership in that review's workspace, so detaching a conflicting member cannot
-redirect an old review to a surviving checkout elsewhere. A fresh ID for an
-already-attached checkout retains its existing behavior; path deduplication is a
-separate policy.
+redirect an old review to a surviving checkout elsewhere. Within one workspace,
+a canonical checkout may have only one attachment: a fresh ID for an existing
+checkout is rejected before any event or cache change, naming the existing ID.
+Intentional membership in another workspace remains allowed. `nits workspace
+detach WORKSPACE REPO` removes a selected membership, including legacy duplicates
+or unavailable checkouts, while preserving files and review/comment history.
 
 A root's kind sets its thread lifecycle: `Note`, `Suggestion` and `Request` create
 `Open` actionable threads; `Informational` creates a review-level conversation with

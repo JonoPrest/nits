@@ -305,3 +305,61 @@ async fn assert_detached_review_blocks_sources(h: &Harness) {
         "unchanged files still work in the surviving review"
     );
 }
+
+#[tokio::test]
+async fn concurrent_fresh_ids_cannot_duplicate_one_workspace_checkout() {
+    let alpha = RepoBuilder::new()
+        .commit("initial", files!["alpha.txt" => "alpha\n"])
+        .build()
+        .unwrap();
+    let h = start().await;
+    let before = h.daemon.core().last_seq().unwrap();
+    let first = RepoId::from_parts(9, 1);
+    let second = RepoId::from_parts(9, 2);
+    let attach = |repo_id| Mutation::AttachRepo {
+        workspace_id: workspace(1),
+        repo_id,
+        path: alpha.path().to_str().unwrap().into(),
+        display_name: "repository".into(),
+    };
+    let (a, b) = tokio::join!(
+        mutate(&h.first, attach(first)),
+        mutate(&h.second, attach(second))
+    );
+    let results = [a, b];
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Ok(Response::Committed { .. })))
+            .count(),
+        1
+    );
+    assert_eq!(h.daemon.core().events_after(before).unwrap().len(), 1);
+    let memberships = h.daemon.core().workspace(workspace(1)).unwrap().repos;
+    assert_eq!(memberships.len(), 1);
+    let winner = memberships[0].id;
+    let rejected = results
+        .iter()
+        .find_map(|result| match result {
+            Err(ClientError::Rpc(RpcError::Invalid { reason })) => Some(reason),
+            _ => None,
+        })
+        .unwrap();
+    assert!(rejected.contains(&winner.to_string()) && rejected.contains(&workspace(1).to_string()));
+    // The same checkout may still join another workspace under a fresh ID.
+    mutate(
+        &h.first,
+        Mutation::AttachRepo {
+            workspace_id: workspace(2),
+            repo_id: RepoId::from_parts(9, 3),
+            path: alpha.path().to_str().unwrap().into(),
+            display_name: "shared".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        h.daemon.core().workspace(workspace(2)).unwrap().repos.len(),
+        1
+    );
+}
