@@ -2337,7 +2337,10 @@ fn home_inventory_navigation_copies_daemon_checkout_and_preserves_row_identity()
         "empty inventory has no phantom repository"
     );
     home_key(&mut core, "N");
-    assert_eq!(core.view().home.creating, Some(empty.id));
+    assert_eq!(
+        core.view().home.creating.as_ref().map(|c| c.workspace_id),
+        Some(empty.id)
+    );
     home_key(&mut core, "esc");
     assert_eq!(core.view().home.creating, None);
 }
@@ -2537,3 +2540,5 @@ fn submodule_metadata_counts_as_a_file_and_tracks_typed_viewed_identity() {
         assert_eq!(core.view().progress.viewed, 1);
     }
 }
+#[path = "creation/mod.rs"]
+mod creation;

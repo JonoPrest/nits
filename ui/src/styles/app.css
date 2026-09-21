@@ -349,7 +349,21 @@
     @apply mt-2 text-sm text-muted;
   }
   .new-review-target {
-    @apply my-1 flex gap-1;
+    @apply my-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] gap-1;
+  }
+  .new-review .text-input {
+    @apply min-w-0 w-full;
+  }
+  .new-review p {
+    @apply col-span-full break-words text-sm;
+  }
+  @media (max-width: 640px) {
+    .new-review-target {
+      @apply grid-cols-1;
+    }
+    .new-review-target .btn {
+      @apply justify-self-end;
+    }
   }
   .browse-bar {
     @apply flex items-center gap-2 border-b border-border bg-panel px-3 py-1 text-sm;

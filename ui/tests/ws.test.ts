@@ -105,3 +105,66 @@ describe("CoreWs", () => {
     expect(FakeWebSocket.instances.length).toBe(2);
   });
 });
+
+const creationFixture = () => JSON.parse(readFileSync(join(fixtures, "ReviewCreation", "default.json"), "utf8"));
+const creationPatch = (creation: unknown, context = { type: "Named", name: "review-box" }) => {
+  const patch = patchFixture("ReviewList");
+  patch.home.creating = creation;
+  patch.daemon_context = context;
+  return patch;
+};
+const dispatchJson = (core: any, action: unknown) => {
+  const decoded = Core.actionOfJson(action);
+  expect(decoded.TAG).toBe("Ok");
+  core.dispatch(decoded._0);
+};
+
+it("recovers a browser-host lost ACK using the stable ID and frozen latest draft", () => {
+  vi.useFakeTimers();
+  const core = CoreWs.make("ws://test", () => {});
+  const first = FakeWebSocket.instances[0];
+  first.open();
+  const creation = creationFixture();
+  first.message([creationPatch(creation), patchFixture("Connection")]);
+  const draft = { ...creation.draft, title: "latest input before submit" };
+  dispatchJson(core, { type: "UpdateCreationDraft", review_id: creation.review_id, draft });
+  dispatchJson(core, { type: "RunCommand", command: "Submit" });
+  // Neither edit nor submit ACK arrived. A late key event cannot alter the
+  // frozen attempt that may already have committed in the daemon.
+  dispatchJson(core, { type: "UpdateCreationDraft", review_id: creation.review_id, draft: { ...draft, title: "too late" } });
+  first.message([creationPatch(creation)]);
+  first.close();
+  vi.advanceTimersByTime(1000);
+  const second = FakeWebSocket.instances[1];
+  second.open();
+  second.message([creationPatch(null), patchFixture("Connection")]);
+  const actions = second.sent.map(text => JSON.parse(text)).filter(message => message.cmd === "dispatch");
+  expect(actions).toHaveLength(1);
+  expect(actions[0].action).toMatchObject({ type: "RestoreReviewCreation", resume: "Submitted", creation: { review_id: creation.review_id, draft } });
+  expect(actions.some(message => ["SubmitReviewCreation", "CreateReview", "RunCommand"].includes(message.action.type))).toBe(false);
+  second.message([creationPatch(null)]);
+  expect(second.sent.filter(text => text.includes("RestoreReviewCreation"))).toHaveLength(1);
+  second.message([creationPatch({ ...creation, status: { type: "Succeeded" } })]);
+  second.close();
+  vi.advanceTimersByTime(1000);
+  const third = FakeWebSocket.instances[2];
+  third.open();
+  third.message([creationPatch(null), patchFixture("Connection")]);
+  expect(third.sent).toHaveLength(1);
+});
+
+it("never restores a tab-local draft into another daemon context", () => {
+  vi.useFakeTimers();
+  const errors: string[] = [];
+  const core = CoreWs.make("ws://test", (message: string) => errors.push(message));
+  const first = FakeWebSocket.instances[0];
+  first.open();
+  first.message([creationPatch(creationFixture()), patchFixture("Connection")]);
+  first.close();
+  vi.advanceTimersByTime(1000);
+  const second = FakeWebSocket.instances[1];
+  second.open();
+  second.message([creationPatch(null, { type: "Named", name: "another-daemon" }), patchFixture("Connection")]);
+  expect(second.sent).toHaveLength(1);
+  expect(errors.some(message => message.includes("different daemon context"))).toBe(true);
+});

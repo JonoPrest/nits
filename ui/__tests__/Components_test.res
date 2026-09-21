@@ -574,65 +574,6 @@ describe("RefSpecText", () => {
   })
 })
 
-describe("NewReview", () => {
-  test("creates a multi-repo review with parsed targets", () => {
-    let dispatch = fn()
-    let ws = Fixtures.parse(Domain.Workspace.schema, "protocol", "Workspace", "default")
-    let _ = render(<NewReview workspaces=[ws] onClose={() => ()} dispatch />)
-    FireEvent.change(Screen.getByPlaceholderText("Title"), {"target": {"value": "  Parser  "}})
-    FireEvent.click(Screen.getByText("+ target"))
-    FireEvent.click(Screen.getByText("Create"))
-    let calls = mock(dispatch).calls
-    switch calls->Array.getUnsafe(0)->Array.getUnsafe(0) {
-    | Action.CreateReview({workspaceId, title, targets}) => {
-        expect(workspaceId)->toBe(ws.id)
-        expect(title)->toBe("Parser")
-        expect(Array.length(targets))->toBe(2)
-        expect((targets->Array.getUnsafe(0)).base)->toEqual(Domain.RefSpec.Branch({name: "main"}))
-        expect((targets->Array.getUnsafe(0)).head)->toEqual(Domain.RefSpec.WorkingTree({}))
-      }
-    | _ => expect(false)->toBe(true)
-    }
-  })
-
-  test("does not submit without a title", () => {
-    let dispatch = fn()
-    let ws = Fixtures.parse(Domain.Workspace.schema, "protocol", "Workspace", "default")
-    let _ = render(<NewReview workspaces=[ws] onClose={() => ()} dispatch />)
-    FireEvent.click(Screen.getByText("Create"))
-    expect(dispatch)->not_->toHaveBeenCalled
-  })
-})
-
-describe("NewReview (no repos)", () => {
-  test("explains how to attach a repo instead of offering Create", () => {
-    let dispatch = fn()
-    let _ = render(<NewReview workspaces=[] onClose={() => ()} dispatch />)
-    expect(Array.length(Screen.queryAllByText("Create")))->toBe(0)
-    let _ = Screen.getByTextRe(/workspace attach/)
-    expect(dispatch)->not_->toHaveBeenCalled
-  })
-})
-
-describe("NewReview (late workspaces)", () => {
-  test("offers Create once workspaces arrive after mount", () => {
-    let dispatch = fn()
-    let ws = Fixtures.parse(Domain.Workspace.schema, "protocol", "Workspace", "default")
-    let {rerender} = render(<NewReview workspaces=[] onClose={() => ()} dispatch />)
-    expect(Array.length(Screen.queryAllByText("Create")))->toBe(0)
-    rerender(<NewReview workspaces=[ws] onClose={() => ()} dispatch />)
-    FireEvent.change(Screen.getByPlaceholderText("Title"), {"target": {"value": "Late"}})
-    FireEvent.click(Screen.getByText("Create"))
-    switch mock(dispatch).calls->Array.getUnsafe(0)->Array.getUnsafe(0) {
-    | Action.CreateReview({workspaceId, targets}) => {
-        expect(workspaceId)->toBe(ws.id)
-        expect(Array.length(targets))->toBe(1)
-      }
-    | _ => expect(false)->toBe(true)
-    }
-  })
-})
-
 describe("ReviewList", () => {
   test(
     "groups review target summaries beneath workspace inventory and dispatches the shared create action",

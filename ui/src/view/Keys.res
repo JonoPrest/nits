@@ -104,3 +104,16 @@ let ofBrowser = (ev: browserKey): option<KeyChord.t> => {
 }
 
 let toJson = (chord: KeyChord.t): JSON.t => S.reverseConvertToJsonOrThrow(chord, KeyChord.schema)
+
+/// The keymap spelling used in the core's applicable bindings.
+let text = (chord: KeyChord.t): string => {
+  let key = switch chord.key {
+  | Char({c}) => c == " " ? "space" : c
+  | Named({key}) => NamedKeyName.of_(key)
+  }
+  (chord.mods.ctrl ? "ctrl+" : "") ++
+  (chord.mods.alt ? "alt+" : "") ++
+  (chord.mods.shift ? "shift+" : "") ++
+  (chord.mods.meta ? "meta+" : "") ++
+  key
+}

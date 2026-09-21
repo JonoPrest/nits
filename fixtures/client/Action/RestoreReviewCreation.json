@@ -1,0 +1,40 @@
+{
+  "creation": {
+    "context": {
+      "name": "review-box",
+      "type": "Named"
+    },
+    "defaults": [
+      {
+        "repo_id": "01HF7YAT000000000000000002",
+        "state": {
+          "base": {
+            "name": "develop",
+            "type": "Branch"
+          },
+          "type": "Ready"
+        }
+      }
+    ],
+    "draft": {
+      "targets": [
+        {
+          "base": {
+            "type": "Automatic"
+          },
+          "head": "worktree",
+          "repo_id": "01HF7YAT000000000000000002"
+        }
+      ],
+      "title": "Review draft"
+    },
+    "review_id": "01HF7YATZ80000000000000004",
+    "selected": 0,
+    "status": {
+      "type": "Editing"
+    },
+    "workspace_id": "01HF7YAT000000000000000001"
+  },
+  "resume": "Submitted",
+  "type": "RestoreReviewCreation"
+}

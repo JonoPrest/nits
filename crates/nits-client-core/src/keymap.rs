@@ -132,6 +132,9 @@ pub enum Command {
     CopyPath,
     CopyCheckout,
     NewReview,
+    AddReviewTarget,
+    RemoveReviewTarget,
+    ReconnectReviewCreation,
     GoHome,
     /// Copy the focused thread or selected reply's portable reference.
     CopyReference,
@@ -696,6 +699,14 @@ impl Keymap {
             b(X::Thread, keys!("a"), C::ApplySuggestion, false),
             // Composer: everything else is text; the host submits.
             b(X::Composer, keys!("ctrl+enter"), C::Submit, true),
+            b(X::Composer, keys!("alt+a"), C::AddReviewTarget, false),
+            b(X::Composer, keys!("alt+d"), C::RemoveReviewTarget, false),
+            b(
+                X::Composer,
+                keys!("alt+r"),
+                C::ReconnectReviewCreation,
+                true,
+            ),
             b(X::Composer, keys!("esc"), C::Back, true),
             // Commit stepper
             b(X::CommitStepper, keys!("j"), C::MoveDown, true),
@@ -1106,6 +1117,9 @@ pub fn label(command: Command) -> &'static str {
         Command::CopyPath => "copy path",
         Command::CopyCheckout => "copy checkout path",
         Command::NewReview => "new review",
+        Command::AddReviewTarget => "add review target",
+        Command::RemoveReviewTarget => "remove selected review target",
+        Command::ReconnectReviewCreation => "reconnect review creation",
         Command::GoHome => "workspaces",
         Command::CopyReference => "copy reference",
         Command::NextReply => "next reply",
@@ -1143,7 +1157,10 @@ pub fn modes_of(command: Command) -> &'static [Mode] {
         // The composer owns these; motions and Comment also run in Visual
         // (they extend / resolve the line selection); the rest is
         // Normal-only.
-        Command::Submit => &[M::Insert],
+        Command::Submit
+        | Command::AddReviewTarget
+        | Command::RemoveReviewTarget
+        | Command::ReconnectReviewCreation => &[M::Insert],
         Command::Back => &[M::Normal, M::Insert, M::Visual],
         Command::MoveDown
         | Command::MoveUp

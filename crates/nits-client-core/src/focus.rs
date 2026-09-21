@@ -245,7 +245,13 @@ pub fn clamp(view: &ViewModel, focus: Focus) -> Focus {
     };
     match focus {
         Focus::Composer => {
-            if view.draft.is_some() {
+            if view.draft.is_some()
+                || view
+                    .home
+                    .creating
+                    .as_ref()
+                    .is_some_and(|c| c.status != crate::CreationStatus::Succeeded)
+            {
                 focus
             } else {
                 fallback
@@ -599,6 +605,9 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 | Command::CopyPath
                 | Command::CopyCheckout
                 | Command::NewReview
+                | Command::AddReviewTarget
+                | Command::RemoveReviewTarget
+                | Command::ReconnectReviewCreation
                 | Command::GoHome
                 | Command::CopyReference
                 | Command::NextReply
@@ -1269,7 +1278,45 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
         },
         // The composer lives in the host, which handles the submit chord
         // itself; the binding exists for hints and tooltips only.
-        Command::Submit => Err(nothing()),
+        Command::Submit => view
+            .home
+            .creating
+            .as_ref()
+            .map(|creation| match creation.status {
+                crate::CreationStatus::Interrupted { .. } => Action::RetryReviewCreation {
+                    review_id: creation.review_id,
+                },
+                crate::CreationStatus::Editing
+                | crate::CreationStatus::Failed { .. }
+                | crate::CreationStatus::Pending { .. }
+                | crate::CreationStatus::Reconciling { .. }
+                | crate::CreationStatus::Succeeded => Action::SubmitReviewCreation {
+                    review_id: creation.review_id,
+                },
+            })
+            .ok_or_else(nothing),
+        Command::AddReviewTarget => view
+            .home
+            .creating
+            .as_ref()
+            .map(|creation| Action::AddCreationTarget {
+                review_id: creation.review_id,
+            })
+            .ok_or_else(nothing),
+        Command::RemoveReviewTarget => view
+            .home
+            .creating
+            .as_ref()
+            .map(|creation| Action::RemoveCreationTarget {
+                review_id: creation.review_id,
+            })
+            .ok_or_else(nothing),
+        Command::ReconnectReviewCreation => view
+            .home
+            .creating
+            .as_ref()
+            .map(|_| Action::Connect)
+            .ok_or_else(nothing),
         Command::Connect => Ok(Action::Connect),
         Command::Disconnect => Ok(Action::Disconnect),
         Command::Refresh => Ok(Action::ListWorkspaces),

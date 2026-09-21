@@ -100,12 +100,18 @@ test("switching workspace during review creation resets the draft and repository
   let creating = workspaceId => {
     ...m,
     workspaces: [first, second],
-    home: {...m.home, selectedWorkspace: Some(workspaceId), creating: Some(workspaceId)},
+    home: {
+      ...m.home,
+      selectedWorkspace: Some(workspaceId),
+      creating: Some(
+        CreationFixtures.make(~workspace=workspaceId == first.id ? first : second, ~id=workspaceId),
+      ),
+    },
   }
   let {rerender} = render(<WorkspaceHome model={creating(first.id)} dispatch />)
   FireEvent.change(Screen.getByPlaceholderText("Title"), {"target": {"value": "First draft"}})
   FireEvent.change(
-    Screen.getByPlaceholderText("base (main, tag:v1, commit:…)"),
+    Screen.getByPlaceholderText("Base revision"),
     {
       "target": {"value": "first-base"},
     },
@@ -118,19 +124,22 @@ test("switching workspace during review creation resets the draft and repository
   expect(Element.value(Screen.getByLabelText("repo")))->toBe((second.repos->Array.getUnsafe(0)).id)
   FireEvent.change(Screen.getByPlaceholderText("Title"), {"target": {"value": "Second draft"}})
   FireEvent.click(Screen.getByText("Create"))
-  expect(mock(dispatch).calls->Array.getUnsafe(0)->Array.getUnsafe(0))->toEqual(
-    Action.CreateReview({
-      workspaceId: second.id,
-      title: "Second draft",
-      targets: [
-        {
-          repoId: (second.repos->Array.getUnsafe(0)).id,
-          base: Domain.RefSpec.Branch({name: "main"}),
-          head: Domain.RefSpec.WorkingTree({}),
-        },
-      ],
-    }),
-  )
+  let calls = mock(dispatch).calls
+  expect(
+    calls->Array.some(args =>
+      switch args->Array.getUnsafe(0) {
+      | Action.UpdateCreationDraft({reviewId, draft}) =>
+        reviewId == second.id &&
+        draft.title == "Second draft" &&
+        Array.length(draft.targets) == 1 &&
+        (draft.targets->Array.getUnsafe(0)).repoId == (second.repos->Array.getUnsafe(0)).id
+      | _ => false
+      }
+    ),
+  )->toBe(true)
+  expect(
+    calls->Array.some(args => args->Array.getUnsafe(0) == Action.RunCommand({command: Submit})),
+  )->toBe(true)
 })
 
 test(

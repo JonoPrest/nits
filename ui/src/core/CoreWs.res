@@ -26,6 +26,10 @@ let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.
   // A stale socket may report close after its successor exists. Only the
   // current generation may reset the store or schedule another connection.
   let generation = ref(0)
+  let recovery = CreationRecovery.make()
+  let recovering = ref(false)
+  let restoreSent = ref(false)
+  let keyPrefix = ref("")
   let send = (text: string) =>
     switch (socket.contents, open_.contents) {
     | (Some(ws), true) => Ws.send(ws, text)
@@ -62,7 +66,44 @@ let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.
         } {
         | Ok(json) =>
           switch Core.patchesOfJson(json) {
-          | Ok(patches) => Core.Store.apply(store, patches)
+          | Ok(patches) =>
+            Core.Store.apply(store, patches)
+            if recovering.contents {
+              switch (recovery.snapshot, store.model.home.creating) {
+              | (Some(saved), Some(creation)) if saved.creation.reviewId == creation.reviewId =>
+                recovering := false
+                restoreSent := false
+                CreationRecovery.observe(recovery, Some(creation))
+              | (Some(saved), _) =>
+                switch store.model.connection {
+                | Subscribed(_) =>
+                  if !restoreSent.contents {
+                    if saved.creation.context == store.model.daemonContext {
+                      restoreSent := true
+                      command([
+                        ("cmd", JSON.Encode.string("dispatch")),
+                        (
+                          "action",
+                          Core.actionToJson(
+                            RestoreReviewCreation({creation: saved.creation, resume: saved.resume}),
+                          ),
+                        ),
+                      ])
+                    } else {
+                      onError(
+                        "The retained review belongs to a different daemon context and was not restored.",
+                      )
+                      CreationRecovery.observe(recovery, None)
+                      recovering := false
+                    }
+                  }
+                | Disconnected(_) | Connecting(_) | Rejected(_) => ()
+                }
+              | (None, _) => recovering := false
+              }
+            } else {
+              CreationRecovery.observe(recovery, store.model.home.creating)
+            }
           | Error(e) => onError("view message: " ++ e)
           }
         | Error(e) => onError("view message: " ++ e)
@@ -76,6 +117,9 @@ let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.
         }
         open_ := false
         socket := None
+        recovering := recovery.snapshot != None
+        restoreSent := false
+        keyPrefix := ""
         Core.Store.reset(store)
         setTimeout(connect, retryMs)
       }
@@ -84,9 +128,33 @@ let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.
   }
   connect()
   {
-    dispatch: action =>
-      command([("cmd", JSON.Encode.string("dispatch")), ("action", Core.actionToJson(action))]),
-    key: chord => command([("cmd", JSON.Encode.string("key")), ("chord", Keys.toJson(chord))]),
+    dispatch: action => {
+      let creationIntent = CreationRecovery.beforeAction(recovery, action)
+      if creationIntent && (!open_.contents || recovering.contents) {
+        onError(
+          "The connection is recovering. Your review inputs are retained; wait before retrying.",
+        )
+      } else {
+        command([("cmd", JSON.Encode.string("dispatch")), ("action", Core.actionToJson(action))])
+      }
+    },
+    key: chord => {
+      let text = keyPrefix.contents ++ Keys.text(chord)
+      switch store.model.bindings->Array.find(h => h.keys == text) {
+      | Some(hint) =>
+        keyPrefix := ""
+        let _ = CreationRecovery.beforeAction(recovery, RunCommand({command: hint.command}))
+      | None =>
+        keyPrefix := (
+            store.model.bindings->Array.some(h => h.keys->String.startsWith(text ++ " "))
+              ? text ++ " "
+              : ""
+          )
+      }
+      if open_.contents && !recovering.contents {
+        command([("cmd", JSON.Encode.string("key")), ("chord", Keys.toJson(chord))])
+      }
+    },
     subscribe: listener => Core.Store.subscribe(store, listener),
     attach,
   }

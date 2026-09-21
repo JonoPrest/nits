@@ -34,6 +34,25 @@ type t =
   | @as("SelectWorkspace") SelectWorkspace({@as("workspace_id") workspaceId: workspaceId})
   | @as("StartReview") StartReview({@as("workspace_id") workspaceId: workspaceId})
   | @as("CancelNewReview") CancelNewReview({})
+  | @as("UpdateCreationDraft")
+  UpdateCreationDraft({
+      @as("review_id") reviewId: reviewId,
+      draft: View.CreationDraft.t,
+    })
+  | @as("SubmitReviewCreation") SubmitReviewCreation({@as("review_id") reviewId: reviewId})
+  | @as("RetryReviewCreation") RetryReviewCreation({@as("review_id") reviewId: reviewId})
+  | @as("RestoreReviewCreation")
+  RestoreReviewCreation({
+      creation: View.ReviewCreation.t,
+      resume: View.CreationResume.t,
+    })
+  | @as("SelectCreationTarget")
+  SelectCreationTarget({
+      @as("review_id") reviewId: reviewId,
+      index: int,
+    })
+  | @as("AddCreationTarget") AddCreationTarget({@as("review_id") reviewId: reviewId})
+  | @as("RemoveCreationTarget") RemoveCreationTarget({@as("review_id") reviewId: reviewId})
   | @as("CopyCheckout") CopyCheckout({@as("repo_id") repoId: repoId})
   | @as("GoHome") GoHome({})
   | @as("ListReviews") ListReviews({@as("workspace_id") workspaceId: workspaceId})

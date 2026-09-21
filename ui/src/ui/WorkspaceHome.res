@@ -127,16 +127,21 @@ let make = (~model: View.ViewModel.t, ~dispatch: Action.t => unit) => {
             </ul>}
       </>
     }}
-    {switch model.home.creating->Option.flatMap(id =>
-      model.workspaces->Array.find(w => w.id == id)
-    ) {
-    | Some(workspace) =>
-      <NewReview
-        key=workspace.id
-        workspaces=[workspace]
-        onClose={() => dispatch(CancelNewReview({}))}
-        dispatch
-      />
+    {switch model.home.creating {
+    | Some(creation) =>
+      switch creation.status {
+      | Succeeded(_) => React.null
+      | Editing(_) | Failed(_) | Pending(_) | Interrupted(_) | Reconciling(_) =>
+        <NewReview
+          key=creation.reviewId
+          creation
+          workspaces=model.workspaces
+          chrome=model.chrome
+          connection=model.connection
+          bindings=model.bindings
+          dispatch
+        />
+      }
     | None => React.null
     }}
   </section>
