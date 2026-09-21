@@ -128,11 +128,11 @@ it("recovers a browser-host lost ACK using the stable ID and frozen latest draft
   const creation = creationFixture();
   first.message([creationPatch(creation), patchFixture("Connection")]);
   const draft = { ...creation.draft, title: "latest input before submit" };
-  dispatchJson(core, { type: "UpdateCreationDraft", review_id: creation.review_id, draft });
+  dispatchJson(core, { type: "EditCreationDraft", review_id: creation.review_id, edit: {type:"Title", text: draft.title} });
   dispatchJson(core, { type: "RunCommand", command: "Submit" });
   // Neither edit nor submit ACK arrived. A late key event cannot alter the
   // frozen attempt that may already have committed in the daemon.
-  dispatchJson(core, { type: "UpdateCreationDraft", review_id: creation.review_id, draft: { ...draft, title: "too late" } });
+  dispatchJson(core, { type: "EditCreationDraft", review_id: creation.review_id, edit: {type:"Title", text:"too late"} });
   first.message([creationPatch(creation)]);
   first.close();
   vi.advanceTimersByTime(1000);
@@ -152,6 +152,41 @@ it("recovers a browser-host lost ACK using the stable ID and frozen latest draft
   third.open();
   third.message([creationPatch(null), patchFixture("Connection")]);
   expect(third.sent).toHaveLength(1);
+});
+
+it("retains unacknowledged structural and row edits when the browser host loses submit", () => {
+  vi.useFakeTimers();
+  const core = CoreWs.make("ws://test", () => {});
+  const first = FakeWebSocket.instances[0];
+  first.open();
+  const creation = creationFixture();
+  first.message([creationPatch(creation), patchFixture("Connection")]);
+  dispatchJson(core, { type: "RunCommand", command: "AddReviewTarget" });
+  dispatchJson(core, { type: "EditCreationDraft", review_id: creation.review_id,
+    edit: { type: "Base", target_id: 1, text: "chosen-base" } });
+  dispatchJson(core, { type: "SelectCreationTarget", review_id: creation.review_id, target_id: 0 });
+  dispatchJson(core, { type: "RunCommand", command: "RemoveReviewTarget" });
+  dispatchJson(core, { type: "EditCreationDraft", review_id: creation.review_id,
+    edit: { type: "Title", text: "last editor value" } });
+  dispatchJson(core, { type: "RunCommand", command: "Submit" });
+  // No structural, field or submit ACK reached this tab. An old model patch
+  // and socket replacement must preserve exactly the submitted row and text.
+  first.message([creationPatch(creation)]);
+  first.close();
+  vi.advanceTimersByTime(1000);
+  const second = FakeWebSocket.instances[1];
+  second.open();
+  second.message([creationPatch(null), patchFixture("Connection")]);
+  const actions = second.sent.map(text => JSON.parse(text)).filter(message => message.cmd === "dispatch");
+  expect(actions).toHaveLength(1);
+  const restored = actions[0].action;
+  expect(restored.type).toBe("RestoreReviewCreation");
+  expect(restored.resume).toBe("Submitted");
+  expect(restored.creation.review_id).toBe(creation.review_id);
+  expect(restored.creation.revision).toBe(5);
+  expect(restored.creation.draft.title).toBe("last editor value");
+  expect(restored.creation.draft.targets).toHaveLength(1);
+  expect(restored.creation.draft.targets[0]).toMatchObject({ id: 1, base: { type: "Manual", text: "chosen-base" } });
 });
 
 it("never restores a tab-local draft into another daemon context", () => {

@@ -12,6 +12,7 @@ let make = (
     ->Array.filterWithIndex((_, i) => i == 0)
     ->Array.map(repo => {
       View.CreationTarget.repoId: repo.id,
+      id: 0,
       base: Automatic({}),
       head: "worktree",
     }),
@@ -21,6 +22,7 @@ let make = (
     state: Ready({base: Branch({name: "develop"})}),
   }),
   selected: None,
+  revision: 0,
   status: Editing({}),
 }
 let hints: array<View.Hint.t> = [

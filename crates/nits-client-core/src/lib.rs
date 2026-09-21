@@ -55,8 +55,9 @@ pub use connection::{Connection, ConnectionKind};
 pub use content::{CacheConfig, DiskTier, DiskTierKind, FileRef, PREFETCH_RADIUS};
 pub use creation::{
     CreationBase, CreationBaseKind, CreationDefault, CreationDefaultState,
-    CreationDefaultStateKind, CreationDraft, CreationReconcile, CreationResume, CreationStatus,
-    CreationStatusKind, CreationSubmission, CreationTarget, ReviewCreation,
+    CreationDefaultStateKind, CreationDraft, CreationEdit, CreationEditKind, CreationReconcile,
+    CreationResume, CreationRevision, CreationStatus, CreationStatusKind, CreationSubmission,
+    CreationTarget, CreationTargetId, ReviewCreation,
 };
 pub use diff::{
     CommentView, CommitStepper, DiffRow, DiffView, PendingIds, RowPlace, RowThread, StepperCommit,
@@ -169,17 +170,17 @@ pub enum Action {
     CancelNewReview,
     SelectCreationTarget {
         review_id: ReviewId,
-        index: usize,
+        target_id: CreationTargetId,
+    },
+    EditCreationDraft {
+        review_id: ReviewId,
+        edit: CreationEdit,
     },
     AddCreationTarget {
         review_id: ReviewId,
     },
     RemoveCreationTarget {
         review_id: ReviewId,
-    },
-    UpdateCreationDraft {
-        review_id: ReviewId,
-        draft: CreationDraft,
     },
     SubmitReviewCreation {
         review_id: ReviewId,
@@ -2054,15 +2055,16 @@ impl ClientCore {
                 self.view.home.creating = None;
                 Ok(vec![render(&[ViewSection::ReviewList])])
             }
-            Action::SelectCreationTarget { review_id, index } => {
-                Ok(self.select_creation_target(review_id, index))
+            Action::SelectCreationTarget {
+                review_id,
+                target_id,
+            } => Ok(self.select_creation_target(review_id, target_id)),
+            Action::EditCreationDraft { review_id, edit } => {
+                Ok(self.edit_creation_field(review_id, edit))
             }
             Action::AddCreationTarget { review_id } => Ok(self.add_creation_target(review_id)),
             Action::RemoveCreationTarget { review_id } => {
                 Ok(self.remove_creation_target(review_id))
-            }
-            Action::UpdateCreationDraft { review_id, draft } => {
-                Ok(self.edit_creation(review_id, draft))
             }
             Action::SubmitReviewCreation { review_id } => Ok(self.submit_creation(review_id)),
             Action::RetryReviewCreation { review_id } => {

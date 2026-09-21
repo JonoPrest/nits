@@ -22,12 +22,14 @@
           "type": "Automatic"
         },
         "head": "worktree",
+        "id": 0,
         "repo_id": "01HF7YAT000000000000000002"
       }
     ],
     "title": "Review draft"
   },
   "review_id": "01HF7YATZ80000000000000004",
+  "revision": 0,
   "selected": 0,
   "status": {
     "type": "Editing"

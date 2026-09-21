@@ -566,6 +566,26 @@ module DaemonContext = {
     | @as("WebSocket") WebSocket({url: string})
 }
 
+module CreationTargetId = {
+  @schema type t = int
+}
+module CreationRevision = {
+  @schema type t = int
+}
+module CreationEdit = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t =
+    | @as("Title") Title({text: string})
+    | @as("Repository")
+    Repository({
+        @as("target_id") targetId: CreationTargetId.t,
+        @as("repo_id") repoId: repoId,
+      })
+    | @as("Base") Base({@as("target_id") targetId: CreationTargetId.t, text: string})
+    | @as("Head") Head({@as("target_id") targetId: CreationTargetId.t, text: string})
+  @@warning("+27")
+}
 module CreationBase = {
   @@warning("-27")
   @schema @tag("type")
@@ -574,7 +594,12 @@ module CreationBase = {
 }
 module CreationTarget = {
   @schema
-  type t = {@as("repo_id") repoId: repoId, base: CreationBase.t, head: string}
+  type t = {
+    id: CreationTargetId.t,
+    @as("repo_id") repoId: repoId,
+    base: CreationBase.t,
+    head: string,
+  }
 }
 module CreationDraft = {
   @schema
@@ -625,7 +650,8 @@ module ReviewCreation = {
     context: @s.null option<DaemonContext.t>,
     draft: CreationDraft.t,
     defaults: array<CreationDefault.t>,
-    selected: @s.null option<int>,
+    selected: @s.null option<CreationTargetId.t>,
+    revision: CreationRevision.t,
     status: CreationStatus.t,
   }
   let editable = (creation: t) =>
