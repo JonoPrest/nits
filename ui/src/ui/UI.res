@@ -61,6 +61,7 @@ module Button = {
     ~expanded: option<bool>=?,
     ~hasPopup=?,
     ~disabled=false,
+    ~buttonRef=?,
   ) => {
     let className = switch kind {
     | Primary => "btn btn-primary"
@@ -73,6 +74,7 @@ module Button = {
     // listens for Enter and Space. Stopping both keys prevents one gesture
     // from running a focused core command as well as clicking the button.
     <button
+      ref=?buttonRef
       type_="button"
       tabIndex=?{navigation == Chord ? Some(-1) : None}
       disabled

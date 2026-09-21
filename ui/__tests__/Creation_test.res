@@ -471,3 +471,34 @@ test("one repo is exhausted immediately and restored duplicates remain correctab
     },
   )
 })
+
+[false, true]->Array.forEach(movedElsewhere => {
+  test(
+    "interrupted recovery offers keyboard retry without stealing chosen focus: " ++
+    Bool.toString(movedElsewhere),
+    () => {
+      let dispatch = fn()
+      let creation = CreationFixtures.make()
+      let submission: View.CreationSubmission.t = {title: "retained", targets: []}
+      let element = status =>
+        <div>
+          {view({...creation, status}, dispatch)}
+          <button> {React.string("elsewhere")} </button>
+        </div>
+      let {rerender} = render(element(Reconciling({submission, next: Inspect})))
+      let other = Screen.getByText("elsewhere")
+      if movedElsewhere {
+        Element.focus(other)
+      }
+      rerender(element(Interrupted({submission, message: "Check before retrying"})))
+      let retry = Screen.getByText("Check and retry")
+      expect(Document.activeElement)->toEqual(Nullable.make(movedElsewhere ? other : retry))
+      expect(dispatch)->not_->toHaveBeenCalled
+      if !movedElsewhere {
+        FireEvent.keyDown(retry, {"key": "Enter", "ctrlKey": false})
+        expect(dispatch)->toHaveBeenCalledWith(Action.RunCommand({command: Submit}))
+        expect(Array.length(mock(dispatch).calls))->toBe(1)
+      }
+    },
+  )
+})
