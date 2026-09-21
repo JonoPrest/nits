@@ -127,12 +127,23 @@ pub enum RenderTarget {
     Blob { oid: BlobOid },
 }
 
+impl RenderTarget {
+    pub fn viewed_content(&self) -> crate::ViewedContent {
+        match self {
+            Self::Diff { change } => change.viewed_content(),
+            Self::Blob { oid } => crate::ViewedContent::Blob { oid: *oid },
+        }
+    }
+}
+
 /// Row-level shape of a rendered file, known before any chunk.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, EnumDiscriminants)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[strum_discriminants(name(RenderContentKind), derive(EnumIter, Hash))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum RenderContent {
+    /// No source rows: the diff target describes typed gitlink identities.
+    Submodule,
     /// No rows; UI shows a binary placeholder.
     Binary,
     Text {

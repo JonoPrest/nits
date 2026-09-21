@@ -444,7 +444,7 @@ pub(crate) fn total_rows_of(cache: &ContentCache, render: &RenderKey) -> Option<
     })? {
         CacheValue::Header { header } => match header.content {
             RenderContent::Text { total_rows, .. } => Some(total_rows),
-            RenderContent::Binary => None,
+            RenderContent::Binary | nits_protocol::RenderContent::Submodule => None,
         },
         CacheValue::Tree { .. } | CacheValue::Chunk { .. } => None,
     }
@@ -514,7 +514,7 @@ pub(crate) fn diff_view(
         viewer,
         render.repo_id,
         &render.path,
-        blob_on(&render.target, Side::Head),
+        render.target.viewed_content(),
     );
     let draft_range = draft_range(draft, render);
     let placements = placements(snapshot, render);

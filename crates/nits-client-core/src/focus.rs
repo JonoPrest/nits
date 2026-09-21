@@ -141,7 +141,7 @@ fn extent(view: &ViewModel, context: Context) -> usize {
         Context::Tree => visible_nodes(view).len(),
         Context::Diff => view.diff.as_ref().map_or(0, |d| match d.content {
             nits_protocol::RenderContent::Text { total_rows, .. } => total_rows as usize,
-            nits_protocol::RenderContent::Binary => 0,
+            nits_protocol::RenderContent::Binary | nits_protocol::RenderContent::Submodule => 0,
         }),
         Context::Thread => view.threads.len(),
         Context::Requests => view.requests.len(),
@@ -962,10 +962,8 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
                 .files
                 .iter()
                 .find(|k| k.repo_id == file.repo_id && k.path == file.path)
-                .and_then(|k| match &k.target {
-                    RenderTarget::Diff { change } => change.new_blob(),
-                    RenderTarget::Blob { oid } => Some(*oid),
-                });
+                .map(|key| key.target.viewed_content())
+                .ok_or_else(nothing)?;
             let state = crate::explorer::viewed_state(
                 &open.snapshot,
                 core.author(),

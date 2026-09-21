@@ -37,7 +37,7 @@ let make = (
   let (drag, setDrag) = React.useState(() => None)
   let total = switch diff.content {
   | Text({totalRows}) => totalRows
-  | Binary(_) => 0
+  | Binary(_) | Submodule(_) => 0
   }
   let virtualizer = Virtual.useVirtualizer({
     count: total,
@@ -115,10 +115,11 @@ let make = (
       <span className="stat-add"> {React.string("+" ++ Int.toString(additions))} </span>
       <span className="stat-del"> {React.string("−" ++ Int.toString(deletions))} </span>
     </span>
-  | Binary(_) => React.null
+  | Binary(_) | Submodule(_) => React.null
   }
   let binary = switch diff.content {
-  | Binary(_) => <div className="diff-binary"> {React.string("binary file")} </div>
+  | Submodule(_) => <SubmoduleView target=diff.target />
+          | Binary(_) => <div className="diff-binary"> {React.string("binary file")} </div>
   | Text(_) => React.null
   }
   <section className="diff-panel panel" role="grid" ariaLabel=title>

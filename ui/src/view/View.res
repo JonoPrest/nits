@@ -119,7 +119,7 @@ module ViewedState = {
 
 module ChangeKindKind = {
   @schema
-  type t = Added | Deleted | Modified | Renamed
+  type t = Added | Deleted | Modified | Renamed | Submodule
 }
 
 module TreeNode = {

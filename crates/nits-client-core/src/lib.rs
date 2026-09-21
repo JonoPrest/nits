@@ -3215,9 +3215,9 @@ impl ClientCore {
         else {
             return Err(CoreError::UnknownFile(file));
         };
-        let blob_oid = match &render.target {
-            RenderTarget::Diff { change } => change.new_blob(),
-            RenderTarget::Blob { oid } => Some(*oid),
+        let content = match &render.target {
+            RenderTarget::Diff { change } => change.viewed_content(),
+            RenderTarget::Blob { oid } => nits_protocol::ViewedContent::Blob { oid: *oid },
         };
         let (mutation, body) = if viewed {
             (
@@ -3231,7 +3231,7 @@ impl ClientCore {
                     repo_id: file.repo_id,
                     path: file.path,
                     viewer: human,
-                    blob_oid,
+                    content,
                 },
             )
         } else {

@@ -526,7 +526,25 @@ pub struct Thread {
     pub resolution: ThreadResolution,
 }
 
-/// A human marked a file as viewed at a specific head blob. Agents cannot set
+/// Content identity of a reviewed tree entry. Git stores a gitlink as a commit
+/// OID, not a blob; a missing entry identifies a deletion explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumDiscriminants)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[strum_discriminants(name(ViewedContentKind), derive(EnumIter, Hash))]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum ViewedContent {
+    Missing,
+    Blob { oid: BlobOid },
+    Submodule { commit: CommitOid },
+}
+
+impl From<Option<BlobOid>> for ViewedContent {
+    fn from(blob: Option<BlobOid>) -> Self {
+        blob.map_or(Self::Missing, |oid| Self::Blob { oid })
+    }
+}
+
+/// A human marked a file as viewed at a specific head identity. Agents cannot set
 /// these; the type says so by carrying a [`Human`], not an [`Author`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -536,8 +554,7 @@ pub struct ViewedMark {
     pub repo_id: RepoId,
     pub path: RepoPath,
     pub viewer: Human,
-    /// Head blob at the time of marking; `None` for a file deleted in head.
-    pub blob_oid: Option<BlobOid>,
+    pub content: ViewedContent,
 }
 
 /// Which hidden run: gap `i` is the run before visible group `i`, and
@@ -714,7 +731,49 @@ pub enum DiffScope {
     },
 }
 
-/// How a file differs between base and head. Carries exactly the blobs that
+/// A change involving a gitlink. Gitlink OIDs name commits in the submodule,
+/// which need not exist in the superproject object database.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, EnumDiscriminants)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[strum_discriminants(name(SubmoduleChangeKind), derive(EnumIter, Hash))]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum SubmoduleChange {
+    Added { new: CommitOid },
+    Deleted { old: CommitOid },
+    Updated { old: CommitOid, new: CommitOid },
+    Renamed { from: RepoPath, old: CommitOid, new: CommitOid },
+    BlobToSubmodule { old: BlobOid, new: CommitOid },
+    SubmoduleToBlob { old: CommitOid, new: BlobOid },
+}
+
+impl SubmoduleChange {
+    pub fn old_blob(&self) -> Option<BlobOid> {
+        match self {
+            Self::BlobToSubmodule { old, .. } => Some(*old),
+            Self::Added { .. } | Self::Deleted { .. } | Self::Updated { .. }
+            | Self::Renamed { .. } | Self::SubmoduleToBlob { .. } => None,
+        }
+    }
+
+    pub fn new_blob(&self) -> Option<BlobOid> {
+        match self {
+            Self::SubmoduleToBlob { new, .. } => Some(*new),
+            Self::Added { .. } | Self::Deleted { .. } | Self::Updated { .. }
+            | Self::Renamed { .. } | Self::BlobToSubmodule { .. } => None,
+        }
+    }
+
+    pub fn viewed_content(&self) -> ViewedContent {
+        match self {
+            Self::Deleted { .. } => ViewedContent::Missing,
+            Self::SubmoduleToBlob { new, .. } => ViewedContent::Blob { oid: *new },
+            Self::Added { new } | Self::Updated { new, .. } | Self::Renamed { new, .. }
+            | Self::BlobToSubmodule { new, .. } => ViewedContent::Submodule { commit: *new },
+        }
+    }
+}
+
+/// How a file differs between base and head. Carries exactly the entries that
 /// exist, so there is no `Option<old> + Option<new>` pair to keep consistent.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, EnumDiscriminants)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -723,6 +782,7 @@ pub enum DiffScope {
 #[strum_discriminants(name(ChangeKindKind), derive(EnumIter, Hash, Serialize, Deserialize))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ChangeKind {
+    Submodule { change: SubmoduleChange },
     Added {
         new: BlobOid,
     },
@@ -741,9 +801,19 @@ pub enum ChangeKind {
 }
 
 impl ChangeKind {
+    pub fn viewed_content(&self) -> ViewedContent {
+        match self {
+            Self::Submodule { change } => change.viewed_content(),
+            Self::Deleted { .. } => ViewedContent::Missing,
+            Self::Added { new } | Self::Modified { new, .. } | Self::Renamed { new, .. } =>
+                ViewedContent::Blob { oid: *new },
+        }
+    }
+
     #[must_use]
     pub fn old_blob(&self) -> Option<BlobOid> {
         match self {
+            ChangeKind::Submodule { change } => change.old_blob(),
             ChangeKind::Added { .. } => None,
             ChangeKind::Deleted { old }
             | ChangeKind::Modified { old, .. }
@@ -754,6 +824,7 @@ impl ChangeKind {
     #[must_use]
     pub fn new_blob(&self) -> Option<BlobOid> {
         match self {
+            ChangeKind::Submodule { change } => change.new_blob(),
             ChangeKind::Deleted { .. } => None,
             ChangeKind::Added { new }
             | ChangeKind::Modified { new, .. }

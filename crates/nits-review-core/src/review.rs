@@ -20,7 +20,7 @@ pub enum ViewedState {
     Viewed,
     /// Marked viewed at a different head blob than the current one.
     ChangedSinceViewed {
-        marked: Option<BlobOid>,
+        marked: nits_protocol::ViewedContent,
     },
 }
 
@@ -695,6 +695,13 @@ impl Core {
         kind: ChangeKind,
         opts: RenderOpts,
     ) -> Result<(FileRenderHeader, Rendered), CoreError> {
+        if matches!(kind, ChangeKind::Submodule { .. }) {
+            let rendered = Rendered { content: nits_protocol::RenderContent::Submodule, rows: vec![] };
+            return Ok((FileRenderHeader {
+                repo_id, path: path.clone(), target: RenderTarget::Diff { change: kind }, opts,
+                lang: None, content: rendered.content.clone(),
+            }, rendered));
+        }
         let repo = self.repo(repo_id)?;
         let old = kind.old_blob().map(|b| repo.blob(b)).transpose()?;
         let new = kind.new_blob().map(|b| repo.blob(b)).transpose()?;
@@ -781,24 +788,25 @@ impl Core {
 
     // ---- viewed -----------------------------------------------------------
 
-    /// Head-side blob for `path` in the review (None if absent in head).
-    pub(crate) fn head_blob(
+    /// Head-side content identity, preserving gitlinks as commits.
+    pub(crate) fn head_content(
         &self,
         id: ReviewId,
         repo_id: RepoId,
         path: &RepoPath,
-    ) -> Result<Option<BlobOid>, CoreError> {
+    ) -> Result<nits_protocol::ViewedContent, CoreError> {
+        use nits_protocol::ViewedContent;
         let (_, resolved) = self.resolved(id)?;
-        let t = Self::target(&resolved, repo_id)?;
-        let snap = self.repo(repo_id)?.tree_snapshot(repo_id, t.head.tree)?;
-        Ok(snap
-            .entries
-            .iter()
-            .find(|e| &e.path == path)
-            .and_then(|e| match e.kind {
-                TreeEntryKind::File { oid, .. } | TreeEntryKind::Symlink { oid } => Some(oid),
-                TreeEntryKind::Dir { .. } | TreeEntryKind::Submodule { .. } => None,
-            }))
+        let target = Self::target(&resolved, repo_id)?;
+        let snap = self.repo(repo_id)?.tree_snapshot(repo_id, target.head.tree)?;
+        Ok(snap.entries.iter().find(|entry| &entry.path == path).map_or(
+            ViewedContent::Missing,
+            |entry| match entry.kind {
+                TreeEntryKind::File { oid, .. } | TreeEntryKind::Symlink { oid } => ViewedContent::Blob { oid },
+                TreeEntryKind::Submodule { commit } => ViewedContent::Submodule { commit },
+                TreeEntryKind::Dir { .. } => ViewedContent::Missing,
+            },
+        ))
     }
 
     /// Human-only: agents get `Forbidden`.
@@ -813,13 +821,13 @@ impl Core {
             .author
             .as_human()
             .ok_or_else(|| CoreError::forbidden("agents cannot mark files as viewed"))?;
-        let blob_oid = self.head_blob(id, repo_id, &path)?;
+        let content = self.head_content(id, repo_id, &path)?;
         let mark = ViewedMark {
             review_id: id,
             repo_id,
             path: path.clone(),
             viewer: viewer.clone(),
-            blob_oid,
+            content,
         };
         self.append(
             ctx,
@@ -828,7 +836,7 @@ impl Core {
                 repo_id,
                 path,
                 viewer,
-                blob_oid,
+                content,
             },
         )?;
         Ok(mark)
@@ -876,12 +884,12 @@ impl Core {
         else {
             return Ok(ViewedState::Unviewed);
         };
-        let current = self.head_blob(id, repo_id, path)?;
-        Ok(if current == mark.blob_oid {
+        let current = self.head_content(id, repo_id, path)?;
+        Ok(if current == mark.content {
             ViewedState::Viewed
         } else {
             ViewedState::ChangedSinceViewed {
-                marked: mark.blob_oid,
+                marked: mark.content,
             }
         })
     }
