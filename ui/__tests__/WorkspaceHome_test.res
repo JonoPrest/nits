@@ -88,6 +88,51 @@ test("empty daemon and empty workspace offer correct attach and refresh guidance
   expect(Element.hasAttribute(Screen.getByText("New review"), "disabled"))->toBe(true)
 })
 
+test("switching workspace during review creation resets the draft and repository targets", () => {
+  let dispatch = fn()
+  let m = model()
+  let first = workspace()
+  let second: Domain.Workspace.t = {
+    id: "01ARZ3NDEKTSV4RRFFQ69G5FAE",
+    name: "Other product",
+    repos: [{id: "01ARZ3NDEKTSV4RRFFQ69G5FAF", displayName: "Cedar", path: "/srv/cedar"}],
+  }
+  let creating = workspaceId => {
+    ...m,
+    workspaces: [first, second],
+    home: {...m.home, selectedWorkspace: Some(workspaceId), creating: Some(workspaceId)},
+  }
+  let {rerender} = render(<WorkspaceHome model={creating(first.id)} dispatch />)
+  FireEvent.change(Screen.getByPlaceholderText("Title"), {"target": {"value": "First draft"}})
+  FireEvent.change(
+    Screen.getByPlaceholderText("base (main, tag:v1, commit:…)"),
+    {
+      "target": {"value": "first-base"},
+    },
+  )
+  FireEvent.click(Screen.getByText("+ target"))
+
+  // StartReview for another workspace replaces the open form without a cancel/unmount step.
+  rerender(<WorkspaceHome model={creating(second.id)} dispatch />)
+  expect(Element.value(Screen.getByPlaceholderText("Title")))->toBe("")
+  expect(Element.value(Screen.getByLabelText("repo")))->toBe((second.repos->Array.getUnsafe(0)).id)
+  FireEvent.change(Screen.getByPlaceholderText("Title"), {"target": {"value": "Second draft"}})
+  FireEvent.click(Screen.getByText("Create"))
+  expect(mock(dispatch).calls->Array.getUnsafe(0)->Array.getUnsafe(0))->toEqual(
+    Action.CreateReview({
+      workspaceId: second.id,
+      title: "Second draft",
+      targets: [
+        {
+          repoId: (second.repos->Array.getUnsafe(0)).id,
+          base: Domain.RefSpec.Branch({name: "main"}),
+          head: Domain.RefSpec.WorkingTree({}),
+        },
+      ],
+    }),
+  )
+})
+
 test(
   "single-repository review keeps workspace, daemon and active repo visible with sidebar hidden",
   () => {
