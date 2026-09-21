@@ -83,3 +83,10 @@ Changing the model while keeping the name preserves the routing key. Changing
 the name affects future authorship but does not rename previously addressed
 requests; poll the old name with its saved cursor to finish old work if needed.
 Names are labels, not unique session IDs or authentication credentials.
+
+Pending `subscribe_events` waits belong to the context and identity that started
+them. A successful `use_context`, `set_session_identity`, or new `initialize`
+cancels those waits with a tool error; failed changes preserve the old session.
+Waits do not block subsequent calls after their subscriptions are acknowledged.
+Clients can cancel a wait using `notifications/cancelled` with its `requestId`;
+that cancellation has no response. Match other responses by their request IDs.

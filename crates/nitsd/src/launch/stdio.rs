@@ -1,4 +1,4 @@
-//! Cancellable stdin for the SSH byte proxy. Tokio's stdin uses a blocking
+//! Cancellable stdin for the SSH byte proxy and MCP. Tokio's stdin uses a blocking
 //! read that runtime shutdown cannot cancel. A scoped worker polls stdin and
 //! a cancellation socket instead; closing either its bounded channel or that
 //! socket wakes every wait, and the owner always joins it before returning.
@@ -6,16 +6,18 @@
 use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream as CancelSocket;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::thread::JoinHandle;
 
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
-use tokio::io::{AsyncWrite, AsyncWriteExt as _};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, ReadBuf};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
 pub(super) async fn proxy(upstream: UnixStream) -> io::Result<()> {
-    let mut input = InputPump::new(io::stdin().as_fd().try_clone_to_owned()?)?;
+    let mut input = InputPump::stdin()?;
     let (mut read, mut write) = upstream.into_split();
     let mut stdout = tokio::io::stdout();
     let result = {
@@ -37,14 +39,21 @@ pub(super) async fn proxy(upstream: UnixStream) -> io::Result<()> {
     result.and(stopped).and(flushed)
 }
 
+/// Cancellable async stdin backed by a bounded, joined worker. This exclusively
+/// consumes stdin while alive and restores its descriptor flags on drop.
 #[derive(Debug)]
-struct InputPump {
+pub struct InputPump {
     chunks: mpsc::Receiver<Vec<u8>>,
+    buffered: io::Cursor<Vec<u8>>,
     cancel: Option<CancelSocket>,
     worker: Option<JoinHandle<io::Result<()>>>,
 }
 
 impl InputPump {
+    pub fn stdin() -> io::Result<Self> {
+        Self::new(io::stdin().as_fd().try_clone_to_owned()?)
+    }
+
     fn new(input: OwnedFd) -> io::Result<Self> {
         let (cancel, cancelled) = CancelSocket::pair()?;
         // At most one queued chunk plus one in each forwarding stage.
@@ -59,6 +68,7 @@ impl InputPump {
             })?;
         Ok(Self {
             chunks,
+            buffered: io::Cursor::new(Vec::new()),
             cancel: Some(cancel),
             worker: Some(worker),
         })
@@ -82,6 +92,31 @@ impl InputPump {
                 .join()
                 .map_err(|_| io::Error::other("stdio input worker panicked"))?,
             None => Ok(()),
+        }
+    }
+}
+
+impl AsyncRead for InputPump {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let input = self.get_mut();
+        if output.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        loop {
+            let count = io::Read::read(&mut input.buffered, output.initialize_unfilled())?;
+            if count > 0 {
+                output.advance(count);
+                return Poll::Ready(Ok(()));
+            }
+            match input.chunks.poll_recv(cx) {
+                Poll::Ready(Some(chunk)) => input.buffered = io::Cursor::new(chunk),
+                Poll::Ready(None) => return Poll::Ready(input.stop()),
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
 }
@@ -163,6 +198,62 @@ fn read_input(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn async_reads_preserve_chunk_boundaries_eof_and_descriptor_flags() {
+        use std::io::{Seek as _, Write as _};
+        use tokio::io::AsyncReadExt as _;
+
+        let mut source = tempfile::tempfile().unwrap();
+        let expected: Vec<u8> = (0..30_000)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        source.write_all(&expected).unwrap();
+        source.rewind().unwrap();
+        let flags = fcntl_getfl(&source).unwrap();
+        let mut input = InputPump::new(source.as_fd().try_clone_to_owned().unwrap()).unwrap();
+        let mut actual = Vec::new();
+        let mut small = [0; 13];
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let count = input.read(&mut small).await.unwrap();
+                if count == 0 {
+                    break;
+                }
+                actual.extend_from_slice(&small[..count]);
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(fcntl_getfl(&source).unwrap(), flags);
+    }
+
+    #[tokio::test]
+    async fn async_read_cancellation_joins_worker_and_propagates_input_errors() {
+        use tokio::io::AsyncReadExt as _;
+
+        let (read, write) = std::io::pipe().unwrap();
+        let flags = fcntl_getfl(&read).unwrap();
+        let mut input = InputPump::new(read.as_fd().try_clone_to_owned().unwrap()).unwrap();
+        let mut byte = [0];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), input.read(&mut byte))
+                .await
+                .is_err()
+        );
+        drop(input);
+        assert_eq!(fcntl_getfl(&read).unwrap(), flags);
+        drop(write);
+
+        let dir = tempfile::tempdir().unwrap();
+        let directory = std::fs::File::open(dir.path()).unwrap();
+        let mut input = InputPump::new(directory.as_fd().try_clone_to_owned().unwrap()).unwrap();
+        assert_eq!(
+            input.read(&mut byte).await.unwrap_err().kind(),
+            io::ErrorKind::IsADirectory
+        );
+    }
 
     #[tokio::test]
     async fn cancelling_a_forwarder_joins_its_reader_and_restores_flags() {

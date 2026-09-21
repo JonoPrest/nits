@@ -4,6 +4,25 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// MCP request IDs are strings or JSON numbers; cancellation matches both the
+/// value and its kind, so `7` and `"7"` identify different requests.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum RequestId {
+    String(String),
+    Number(serde_json::Number),
+}
+
+impl RequestId {
+    #[must_use]
+    pub fn value(&self) -> Value {
+        match self {
+            Self::String(value) => Value::String(value.clone()),
+            Self::Number(value) => Value::Number(value.clone()),
+        }
+    }
+}
+
 /// A request (`id` present) or notification (`id` absent).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Incoming {

@@ -2343,3 +2343,6 @@ async fn checkpoints_capture_h1_check_after_h2_and_inspect_delta_with_fresh_iden
     let diff = call(&mut restarted, "get_diff", json!({"review_id": review_id, "path": "round.txt", "scope": {"type": "SinceCheckpoint", "checkpoint_id": checked["id"]}})).await;
     assert!(diff["text"].as_str().unwrap().contains("H2"));
 }
+
+#[path = "scheduling/mod.rs"]
+mod scheduling;

@@ -174,3 +174,89 @@ async fn stopped_daemon_does_not_wedge_stdio_and_same_mcp_recovers_after_restart
     mcp.child.kill().await.unwrap();
     daemon.kill().await.unwrap();
 }
+
+async fn initialize(mcp: &mut Mcp) {
+    mcp.send(json!({"jsonrpc":"2.0", "id":1, "method":"initialize",
+        "params":{"protocolVersion":"2025-06-18","capabilities":{},
+        "clientInfo":{"name":"test-agent","version":"0"}}}))
+        .await;
+    assert!(mcp.receive().await.get("error").is_none());
+}
+
+fn poll(id: u64) -> Value {
+    json!({"jsonrpc":"2.0", "id":id, "method":"tools/call",
+        "params":{"name":"subscribe_events","arguments":{"awaiting_agent":"nobody","timeout_ms":60000}}})
+}
+
+#[tokio::test]
+async fn real_stdio_event_waits_allow_ping_cancel_and_eof_without_waiting_for_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("daemon.sock");
+    let mut daemon = spawn_daemon(dir.path(), &socket).await;
+    let mut mcp = Mcp::spawn(dir.path(), &socket);
+    initialize(&mut mcp).await;
+    mcp.send(poll(2)).await;
+    mcp.send(json!({"jsonrpc":"2.0","id":3,"method":"ping"}))
+        .await;
+    assert_eq!(mcp.receive().await["id"], 3);
+    mcp.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2}}))
+        .await;
+    mcp.send(list(4)).await;
+    assert_eq!(mcp.receive().await["id"], 4);
+    mcp.send(poll(5)).await;
+    mcp.send(json!({"jsonrpc":"2.0","id":6,"method":"ping"}))
+        .await;
+    assert_eq!(mcp.receive().await["id"], 6);
+    // The process must cancel the still-pending poll and exit on actual pipe EOF.
+    drop(mcp.input);
+    assert!(bounded(mcp.child.wait()).await.unwrap().success());
+    assert!(bounded(mcp.output.next_line()).await.unwrap().is_none());
+    daemon.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn real_stdio_pending_poll_reports_daemon_exit_and_reconnects_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("daemon.sock");
+    let mut daemon = spawn_daemon(dir.path(), &socket).await;
+    let mut mcp = Mcp::spawn(dir.path(), &socket);
+    initialize(&mut mcp).await;
+    mcp.send(poll(2)).await;
+    mcp.send(json!({"jsonrpc":"2.0","id":3,"method":"ping"}))
+        .await;
+    assert_eq!(mcp.receive().await["id"], 3);
+    let client = connect(&socket).await;
+    bounded(client.request(Request::Shutdown)).await.unwrap();
+    assert!(bounded(daemon.wait()).await.unwrap().success());
+    let disconnected = mcp.receive().await;
+    assert_eq!(disconnected["id"], 2);
+    assert_eq!(disconnected["result"]["isError"], true);
+    mcp.send(json!({"jsonrpc":"2.0","id":4,"method":"ping"}))
+        .await;
+    assert_eq!(mcp.receive().await["id"], 4);
+    daemon = spawn_daemon(dir.path(), &socket).await;
+    assert!(mcp.list(5).await.as_array().unwrap().is_empty());
+    drop(mcp.input);
+    assert!(bounded(mcp.child.wait()).await.unwrap().success());
+    daemon.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn closed_stdout_during_wait_exits_even_with_stdin_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("daemon.sock");
+    let mut daemon = spawn_daemon(dir.path(), &socket).await;
+    let mut mcp = Mcp::spawn(dir.path(), &socket);
+    initialize(&mut mcp).await;
+    mcp.send(poll(2)).await;
+    mcp.send(json!({"jsonrpc":"2.0","id":3,"method":"ping"}))
+        .await;
+    assert_eq!(mcp.receive().await["id"], 3);
+    drop(mcp.output);
+    // No new stdin bytes: the event completion, not input, triggers the write.
+    let client = connect(&socket).await;
+    bounded(client.request(Request::Shutdown)).await.unwrap();
+    assert!(bounded(daemon.wait()).await.unwrap().success());
+    assert!(!bounded(mcp.child.wait()).await.unwrap().success());
+    drop(mcp.input);
+}

@@ -42,7 +42,7 @@ pub enum ToolCall {
     ))]
     ListContexts(NoArgs),
     #[strum_discriminants(strum(
-        message = "Switch the active daemon for subsequent calls in this MCP session. Calls run in order; wait for this result before using IDs from that daemon. Connects and negotiates before replacement; failure retains the previous connection. Preserves agent identity, discards old subscriptions, and does not change the persisted default. After switching, pass since_context with any since_seq; cursors and review/workspace IDs belong to their source context."
+        message = "Switch the active daemon for subsequent calls in this MCP session. Calls run in order; wait for this result before using IDs from that daemon. Connects and negotiates before replacement; failure retains the previous connection. Preserves agent identity, cancels pending event waits and discards old subscriptions, and does not change the persisted default. After switching, pass since_context with any since_seq; cursors and review/workspace IDs belong to their source context."
     ))]
     UseContext(UseContext),
     #[strum_discriminants(strum(
@@ -114,7 +114,7 @@ pub enum ToolCall {
     ))]
     RecordCheckpoint(RecordCheckpoint),
     #[strum_discriminants(strum(
-        message = "Long-poll for events. Returns events matching the scope after `since_seq`, waiting up to `timeout_ms` for at least one. Pass the returned `last_seq` back as `since_seq` to continue. Mutation results also return a `seq`: use it as `since_seq` for later events, or use an earlier cursor to include the mutation's full event. `review_id`, `workspace_id`, and `awaiting_agent` are mutually exclusive: provide at most one non-null scope filter, or omit all for every event. Cursors are scoped to the returned context.name. After use_context, since_context is required with since_seq; mismatched contexts are rejected."
+        message = "Long-poll for events. Returns events matching the scope after `since_seq`, waiting up to `timeout_ms` for at least one (default 30000, maximum 60000 milliseconds). Acknowledged waits may overlap later calls, up to 32 per session. Cancel with notifications/cancelled and this request ID; successful context or identity changes cancel old waits. Pass the returned `last_seq` back as `since_seq` to continue. Mutation results also return a `seq`: use it as `since_seq` for later events, or use an earlier cursor to include the mutation's full event. `review_id`, `workspace_id`, and `awaiting_agent` are mutually exclusive: provide at most one non-null scope filter, or omit all for every event. Cursors are scoped to the returned context.name. After use_context, since_context is required with since_seq; mismatched contexts are rejected."
     ))]
     SubscribeEvents(SubscribeEvents),
     #[strum_discriminants(strum(
@@ -122,7 +122,7 @@ pub enum ToolCall {
     ))]
     GetSessionIdentity(GetSessionIdentity),
     #[strum_discriminants(strum(
-        message = "Set this MCP session's name and model for subsequent events. Both fields are required; use `get_session_identity` to retain a current value. Names and models must be nonempty, with no surrounding whitespace or control characters. The name is also the exact routing key for `request_review.agent` and `subscribe_events.awaiting_agent`; keep it stable while collaborating. Reconnects to the daemon before applying; on failure the old identity remains. Session ID, invoking human, Agent/Mcp provenance and historical authors are preserved. This changes only the calling session and appends no event."
+        message = "Set this MCP session's name and model for subsequent events. Both fields are required; use `get_session_identity` to retain a current value. Names and models must be nonempty, with no surrounding whitespace or control characters. The name is also the exact routing key for `request_review.agent` and `subscribe_events.awaiting_agent`; keep it stable while collaborating. Reconnects to the daemon before applying; on failure the old identity remains. Session ID, invoking human, Agent/Mcp provenance and historical authors are preserved. This changes only the calling session, cancels its pending event waits, and appends no event."
     ))]
     SetSessionIdentity(SetSessionIdentity),
 }
@@ -137,7 +137,6 @@ pub enum QueryCall {
     GetDiff(GetDiff),
     GetFile(GetFile),
     ListComments(ByReview),
-    SubscribeEvents(SubscribeEvents),
 }
 
 /// A call that appends to the log.
@@ -174,6 +173,9 @@ pub enum SessionCall {
 #[derive(Debug)]
 pub enum Call {
     Query(QueryCall),
+    /// Only the event wait may overlap later calls; its subscription is
+    /// acknowledged first. Ordinary reads and all state changes stay ordered.
+    EventWait(SubscribeEvents),
     Mutating(MutatingCall),
     Session(SessionCall),
     Context(ContextCall),
@@ -207,7 +209,7 @@ impl ToolCall {
             ToolCall::GetDiff(p) => Call::Query(QueryCall::GetDiff(p)),
             ToolCall::GetFile(p) => Call::Query(QueryCall::GetFile(p)),
             ToolCall::ListComments(p) => Call::Query(QueryCall::ListComments(p)),
-            ToolCall::SubscribeEvents(p) => Call::Query(QueryCall::SubscribeEvents(p)),
+            ToolCall::SubscribeEvents(p) => Call::EventWait(p),
             ToolCall::EnsureDirectoryReview(p) => {
                 Call::Mutating(MutatingCall::EnsureDirectoryReview(p))
             }
@@ -674,9 +676,33 @@ pub struct RequestReview {
 pub struct SubscribeEvents {
     pub scope: SubscribeScope,
     pub start: EventStart,
-    pub timeout_ms: u64,
+    pub timeout: EventTimeout,
     pub max: usize,
 }
+
+/// An event wait lasts at most sixty seconds. Zero requests an immediate poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventTimeout(std::time::Duration);
+
+impl EventTimeout {
+    pub const MAX_MILLIS: u64 = 60_000;
+
+    pub fn new(millis: u64) -> Result<Self, InvalidEventTimeout> {
+        if millis > Self::MAX_MILLIS {
+            return Err(InvalidEventTimeout);
+        }
+        Ok(Self(std::time::Duration::from_millis(millis)))
+    }
+
+    #[must_use]
+    pub fn duration(self) -> std::time::Duration {
+        self.0
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("timeout_ms must be between 0 and 60000 milliseconds")]
+pub struct InvalidEventTimeout;
 
 /// A subscription starts live or replays a position from one source.
 #[derive(Debug, PartialEq, Eq)]
@@ -711,8 +737,9 @@ struct SubscribeEventsWire {
     /// Context name that issued `since_seq`. Required after `use_context`;
     /// a name different from the active context is rejected.
     since_context: Option<ContextName>,
-    /// Default 30000.
+    /// Default 30000; maximum 60000 milliseconds. Zero polls without waiting.
     #[serde(default = "default_timeout")]
+    #[schemars(range(max = 60_000))]
     timeout_ms: u64,
     /// Default 100.
     #[serde(default = "default_max")]
@@ -721,6 +748,8 @@ struct SubscribeEventsWire {
 
 #[derive(Debug, thiserror::Error)]
 enum InvalidSubscribe {
+    #[error(transparent)]
+    Timeout(#[from] InvalidEventTimeout),
     #[error(
         "review_id, workspace_id, and awaiting_agent are mutually exclusive; provide at most one non-null scope filter, or omit all for every event"
     )]
@@ -753,7 +782,7 @@ impl TryFrom<SubscribeEventsWire> for SubscribeEvents {
         Ok(Self {
             scope,
             start,
-            timeout_ms: wire.timeout_ms,
+            timeout: EventTimeout::new(wire.timeout_ms)?,
             max: wire.max,
         })
     }
@@ -983,7 +1012,7 @@ mod tests {
             serde_json::json!({ "since_context": "remote", "since_seq": 7 }),
         )
         .unwrap();
-        let Call::Query(QueryCall::SubscribeEvents(parsed)) = call.classify() else {
+        let Call::EventWait(parsed) = call.classify() else {
             panic!("expected subscription");
         };
         assert_eq!(
@@ -992,6 +1021,37 @@ mod tests {
                 seq: Seq::new(7),
                 source: CursorSource::Named("remote".parse().unwrap())
             }
+        );
+    }
+
+    #[test]
+    fn event_wait_timeouts_are_bounded_at_the_boundary_and_in_the_schema() {
+        for millis in [0, 1, 30_000, 60_000] {
+            let call = ToolCall::parse(
+                ToolName::SubscribeEvents,
+                serde_json::json!({"timeout_ms": millis}),
+            )
+            .unwrap();
+            let Call::EventWait(params) = call.classify() else {
+                panic!("event wait classification");
+            };
+            assert_eq!(
+                params.timeout.duration(),
+                std::time::Duration::from_millis(millis)
+            );
+        }
+        for millis in [60_001, u64::MAX] {
+            assert!(
+                ToolCall::parse(
+                    ToolName::SubscribeEvents,
+                    serde_json::json!({"timeout_ms": millis})
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(
+            ToolName::SubscribeEvents.tool().input_schema["properties"]["timeout_ms"]["maximum"],
+            60_000
         );
     }
 
@@ -1309,7 +1369,10 @@ mod tests {
             };
             assert_eq!(parsed.scope, expected);
             assert_eq!(parsed.start, EventStart::Live);
-            assert_eq!(parsed.timeout_ms, 30_000);
+            assert_eq!(
+                parsed.timeout.duration(),
+                std::time::Duration::from_millis(30_000)
+            );
             assert_eq!(parsed.max, 100);
         }
 
@@ -1325,7 +1388,10 @@ mod tests {
                 source: CursorSource::InitialContext
             }
         );
-        assert_eq!(parsed.timeout_ms, 5);
+        assert_eq!(
+            parsed.timeout.duration(),
+            std::time::Duration::from_millis(5)
+        );
         assert_eq!(parsed.max, 3);
     }
 
