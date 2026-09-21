@@ -21,6 +21,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
+rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 nits-test-support = { workspace = true }

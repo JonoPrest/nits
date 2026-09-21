@@ -386,8 +386,8 @@ impl Core {
             }
         };
         let repo = self.review_repo(review, repo_id)?;
-        let file = repo.workdir().join(path.as_str());
-        let current = std::fs::read(&file)?;
+        let mut file = crate::suggestion_file::WorkingFile::open(repo.workdir(), &path)?;
+        let current = file.read()?;
         let expected = repo.blob(blob_oid)?;
         if current != expected {
             return Err(CoreError::invalid(format!(
@@ -396,8 +396,8 @@ impl Core {
         }
         let patched = crate::patch::apply(&current, patch)
             .map_err(|e| CoreError::invalid(format!("patch does not apply: {e}")))?;
-        std::fs::write(&file, &patched)?;
         let result_blob = repo.hash_blob(&patched)?;
+        file.replace(&repo.metadata_paths()?.worktree, &current, &patched)?;
         self.append(
             ctx,
             EventBody::SuggestionApplied {

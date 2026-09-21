@@ -17,6 +17,7 @@ mod replay;
 mod repository;
 pub mod review;
 pub mod store;
+mod suggestion_file;
 
 pub use core::{Core, CoreError, Ctx, DataDir};
 
