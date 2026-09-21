@@ -1,6 +1,6 @@
 //! Plan 4.3: the host against a real daemon in a temp dir. Connect,
 //! subscribe, open a review with a 100k-line file, scroll it end to end,
-//! comment; every patch the UI would receive stays under 64 KB and the
+//! comment; every framed message the UI receives stays under 64 KB and the
 //! prefs survive a host restart through the redb KV.
 
 // The harness reads top to bottom.
@@ -11,7 +11,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use nits_client_core::{Action, ConnectionView, FileRef, IdSeed, Layout, ViewPatch};
+use nits_client_core::{
+    Action, ConnectionView, FileRef, IdSeed, Layout, ViewDelivery, ViewFrame, ViewFrameBody,
+    ViewPatch,
+};
 use nits_client_host::{Handle, HostConfig, Identity, KvConfig, host_config, spawn};
 use nits_protocol::{
     Author, BuildInfo, ClientId, ClientSeq, Mutation, NonEmpty, RefSpec, RepoId, RepoPath, Request,
@@ -34,6 +37,7 @@ struct Harness {
     ws_url: String,
     shutdown: CancellationToken,
     _repo: TestRepo,
+    client: Client,
 }
 
 impl Drop for Harness {
@@ -198,13 +202,36 @@ async fn start() -> Harness {
         ws_url,
         shutdown,
         _repo: repo,
+        client,
     }
 }
 
-/// Collect patches until `done` says so or the timeout passes. Every patch
-/// is size-checked on the way.
+/// Decode the actual wire envelopes, checking the budget on complete messages.
+/// The logical batch can exceed the budget; no source content is discarded.
+fn delivered_patches(delivery: &ViewDelivery) -> Vec<ViewPatch> {
+    let mut json = String::new();
+    for frame in delivery.frames() {
+        let wire = serde_json::to_vec(frame).unwrap();
+        assert!(
+            wire.len() < IPC_LIMIT,
+            "view message is {} bytes",
+            wire.len()
+        );
+        let decoded: ViewFrame = serde_json::from_slice(&wire).unwrap();
+        match decoded.body {
+            ViewFrameBody::Complete { patches } => {
+                assert_eq!(delivery.frames().len(), 1);
+                return patches;
+            }
+            ViewFrameBody::Fragment { json: part, .. } => json.push_str(&part),
+        }
+    }
+    serde_json::from_str(&json).unwrap()
+}
+
+/// Collect whole patch batches until `done` or timeout, checking every envelope.
 async fn until(
-    rx: &mut mpsc::UnboundedReceiver<Vec<ViewPatch>>,
+    rx: &mut mpsc::UnboundedReceiver<ViewDelivery>,
     seen: &mut Vec<ViewPatch>,
     mut done: impl FnMut(&ViewPatch) -> bool,
 ) {
@@ -215,9 +242,7 @@ async fn until(
             .expect("timed out waiting for a patch")
             .expect("host ended");
         let mut hit = false;
-        for p in batch {
-            let size = serde_json::to_vec(&vec![p.clone()]).unwrap().len();
-            assert!(size < IPC_LIMIT, "{:?} patch is {size} bytes", p.section());
+        for p in delivered_patches(&batch) {
             hit |= done(&p);
             seen.push(p);
         }
@@ -250,7 +275,7 @@ fn config_for_endpoint(endpoint: DaemonEndpoint, kv: KvConfig) -> HostConfig {
 
 async fn connect_and_open(
     handle: &Handle,
-    rx: &mut mpsc::UnboundedReceiver<Vec<ViewPatch>>,
+    rx: &mut mpsc::UnboundedReceiver<ViewDelivery>,
     seen: &mut Vec<ViewPatch>,
 ) {
     connect_subscribed(handle, rx, seen).await;
@@ -275,7 +300,7 @@ async fn connect_and_open(
 
 async fn connect_subscribed(
     handle: &Handle,
-    rx: &mut mpsc::UnboundedReceiver<Vec<ViewPatch>>,
+    rx: &mut mpsc::UnboundedReceiver<ViewDelivery>,
     seen: &mut Vec<ViewPatch>,
 ) {
     assert!(handle.dispatch(Action::Connect));
@@ -337,6 +362,19 @@ async fn scripted_session_keeps_every_patch_small() {
     let (handle, mut rx) = spawn(config(&h, KvConfig::Memory), shutdown.clone()).unwrap();
     let mut seen = Vec::new();
     connect_and_open(&handle, &mut rx, &mut seen).await;
+
+    // Fence the failing arrival order: prefetch completes before any Viewport.
+    // The logical Diff is intentionally larger than the transport budget.
+    let prefetched = |patch: &ViewPatch| {
+        matches!(patch,
+        ViewPatch::Diff { diff: None, diffs, .. }
+            if diffs.iter().any(|d| d.file.path.as_str() == "src/big.rs" && d.rows.len() >= 500))
+    };
+    if !seen.iter().any(prefetched) {
+        until(&mut rx, &mut seen, prefetched).await;
+    }
+    let large = seen.iter().find(|p| prefetched(p)).unwrap();
+    assert!(serde_json::to_vec(&vec![large]).unwrap().len() > IPC_LIMIT);
 
     let big = FileRef {
         repo_id: rid(),
@@ -410,6 +448,33 @@ async fn scripted_session_keeps_every_patch_small() {
     }));
     until(&mut rx, &mut seen, |p| {
         matches!(p, ViewPatch::Conversation { conversation, .. } if conversation.iter().any(|t| !t.pending))
+    })
+    .await;
+
+    // Refresh to another real commit with a single oversized CRLF source row.
+    // Reconstruction must retain the entire row and its source line number.
+    h._repo.git(&["checkout", "feature"]).unwrap();
+    let long_line = format!("updated {}", "λ😀\"\\".repeat(20_000));
+    h._repo
+        .write_file(
+            "src/big.rs",
+            format!("{long_line}\r\n{}", big_source(99_999)).as_bytes(),
+        )
+        .unwrap();
+    h._repo.git(&["commit", "-qam", "long first line"]).unwrap();
+    h.client
+        .request(Request::ResolveTargets {
+            review_id: review_id(),
+        })
+        .await
+        .unwrap();
+    until(&mut rx, &mut seen, |patch| {
+        matches!(patch,
+        ViewPatch::Diff { diff: Some(d), .. }
+            if d.first_row == 0 && d.rows.iter().any(|row| matches!(&row.row,
+                nits_protocol::Row::Added { right } if right.text == long_line
+                    && right.ending == nits_protocol::LineEnding::CrLf
+                    && right.line_no.get() == 1)))
     })
     .await;
 

@@ -36,13 +36,19 @@ const actionFixture = (name: string) =>
 const IPC_LIMIT = 64 * 1024;
 const bytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).length;
 
+let revision = 0;
 const emit = (payload: unknown) => {
+  if (Array.isArray(payload)) {
+    revision += 1;
+    payload = {revision, kind: revision === 1 ? "Snapshot" : "Delta", body: {type: "Complete", patches: payload}};
+  }
   for (const h of handlers["view"] ?? []) h({ payload });
 };
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
+  revision = 0;
   invoke.mockClear();
   listen.mockClear();
   for (const k of Object.keys(handlers)) delete handlers[k];
@@ -117,9 +123,10 @@ describe("CoreTauri", () => {
   it("keeps every IPC message under 64 KB in a scripted session", async () => {
     const core = CoreTauri.make();
     await tick();
-    // Every patch the host can send, one message each.
-    for (const p of patchFixtures()) {
-      expect(bytes([p])).toBeLessThan(IPC_LIMIT);
+    // Measure the actual envelope, including the native event wrapper.
+    for (const patch of patchFixtures()) {
+      const frame = {revision: 1, kind: "Snapshot", body: {type: "Complete", patches: [patch]}};
+      expect(bytes({event: "view", id: 1, payload: frame})).toBeLessThan(IPC_LIMIT);
     }
     // Typing a long comment: the body travels once, in the submit.
     const long = "x".repeat(10_000);
@@ -152,4 +159,37 @@ describe("CoreWasm", () => {
     core.dispatch(Core.actionOfJson({ type: "Connect" })._0);
     expect(errors.length).toBe(1);
   });
+});
+
+it("Tauri reconstructs bounded fragments atomically and reattaches once on a gap", async () => {
+  const errors: string[] = [];
+  const core = CoreTauri.make((error: string) => errors.push(error));
+  await tick(); core.attach(); await tick();
+  let model: any, notifications = 0;
+  core.subscribe((next: unknown) => { model = next; notifications += 1; });
+  const original = patchFixtures();
+  const connection = original.find(patch => patch.type === "Connection");
+  const long = 'λ😀"\\'.repeat(20000);
+  connection.last_error = {type: "Internal", message: long};
+  const text = JSON.stringify(original), points = Array.from(text), pieces: string[] = [];
+  for (let i = 0; i < points.length; i += 3000) pieces.push(points.slice(i, i + 3000).join(""));
+  const frames = pieces.map((json, index) => ({revision: 1, kind: "Snapshot", body: {type: "Fragment", json,
+    position: index === 0 ? {type: "Start", bytes: new TextEncoder().encode(text).length}
+      : {type: index === pieces.length - 1 ? "End" : "More", index}}}));
+  for (const frame of frames.slice(0, -1)) {
+    expect(bytes({event: "view", id: 1, payload: frame})).toBeLessThan(IPC_LIMIT);
+    emit(frame);
+  }
+  expect(notifications).toBe(1);
+  emit(frames.at(-1)); expect(notifications).toBe(2);
+  expect(model.last_error.message).toBe(long);
+  emit({revision: 3, kind: "Delta", body: {type: "Complete", patches: []}});
+  emit({revision: 4, kind: "Delta", body: {type: "Complete", patches: []}});
+  await tick();
+  expect(errors).toHaveLength(1);
+  expect(invoke.mock.calls.filter(([command]) => command === "attach")).toHaveLength(2);
+  expect(notifications).toBe(2);
+  emit({revision: 5, kind: "Snapshot", body: {type: "Complete", patches: []}});
+  expect(notifications).toBe(3);
+  expect(model.last_error).toBeUndefined();
 });

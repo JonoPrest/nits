@@ -10,6 +10,7 @@ class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
   url: string;
   sent: string[] = [];
+  revision = 0;
   onopen: (() => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
@@ -25,7 +26,12 @@ class FakeWebSocket {
     this.onopen?.();
   }
   message(data: unknown) {
-    this.onmessage?.({ data: JSON.stringify(data) });
+    if (Array.isArray(data)) {
+      const revision = ++this.revision;
+      data = {revision, kind: revision === 1 ? "Snapshot" : "Delta", body: {type: "Complete", patches: data}};
+    }
+    const frame = data;
+    this.onmessage?.({ data: JSON.stringify(frame) });
   }
   close() {
     this.onclose?.();
@@ -248,4 +254,54 @@ it("comment submit commands do not freeze a retained hidden review-creation draf
   const actions = second.sent.map(text => JSON.parse(text)).filter(message => message.cmd === "dispatch");
   expect(actions).toHaveLength(1);
   expect(actions[0].action).toMatchObject({ type: "RestoreReviewCreation", resume: "Editing", creation: { review_id: creation.review_id } });
+});
+
+// This fixture transport emits the common wire envelopes; product assembly is
+// shared with Tauri and independently tested in ViewDelivery_test.res.
+const fragmentFrames = (patches: unknown[], revision: number, kind: "Snapshot" | "Delta") => {
+  const text = JSON.stringify(patches), points = Array.from(text), pieces: string[] = [];
+  for (let i = 0; i < points.length; i += 128) pieces.push(points.slice(i, i + 128).join(""));
+  return pieces.map((json, index) => ({revision, kind, body: {type: "Fragment", json,
+    position: index === 0 ? {type: "Start", bytes: new TextEncoder().encode(text).length}
+      : {type: index === pieces.length - 1 ? "End" : "More", index}}}));
+};
+
+it("does not expose partial lifecycle batches to lost-ACK recovery across socket replacement", () => {
+  vi.useFakeTimers();
+  const errors: string[] = [];
+  const core = CoreWs.make("ws://test", (error: string) => errors.push(error));
+  const first = FakeWebSocket.instances[0]; first.open();
+  const creation = creationFixture();
+  first.message([creationPatch(creation), patchFixture("Connection")]);
+  dispatchJson(core, {type: "RunCommand", command: "Submit"});
+  let observed = 0; core.subscribe(() => { observed += 1; });
+  const unfinished = fragmentFrames([creationPatch({...creation, revision: 1, status: {type: "Succeeded"}})], 2, "Delta");
+  for (const frame of unfinished.slice(0, -1)) first.message(frame);
+  expect(observed).toBe(1);
+  first.close(); vi.advanceTimersByTime(1000);
+  const second = FakeWebSocket.instances[1]; second.open();
+  const snapshot = fragmentFrames([creationPatch(null), patchFixture("Connection")], 1, "Snapshot");
+  for (const frame of snapshot.slice(0, -1)) second.message(frame);
+  expect(second.sent).toHaveLength(1); // attach only, before the snapshot completes
+  first.message(unfinished.at(-1)); // late old-generation fragment cannot complete either batch
+  expect(second.sent).toHaveLength(1);
+  second.message(snapshot.at(-1));
+  const restores = second.sent.map(text => JSON.parse(text)).filter(message => message.action?.type === "RestoreReviewCreation");
+  expect(restores).toHaveLength(1);
+  expect(restores[0].action).toMatchObject({resume: "Submitted", creation: {review_id: creation.review_id}});
+  expect(second.sent.some(text => text.includes('"command":"Submit"'))).toBe(false);
+});
+
+it("requests one fresh snapshot after a delivery gap and ignores later deltas", () => {
+  const core = CoreWs.make("ws://test", () => {});
+  const ws = FakeWebSocket.instances[0]; ws.open();
+  let notifications = 0; core.subscribe(() => { notifications += 1; });
+  ws.message([patchFixture("Connection")]);
+  const frames = fragmentFrames([patchFixture("Diff")], 2, "Delta");
+  ws.message(frames[0]); ws.message(frames[2]);
+  ws.message({revision: 3, kind: "Delta", body: {type: "Complete", patches: [patchFixture("Progress")]}});
+  expect(notifications).toBe(2);
+  expect(ws.sent.filter(text => JSON.parse(text).cmd === "attach")).toHaveLength(2);
+  ws.message({revision: 9, kind: "Snapshot", body: {type: "Complete", patches: [patchFixture("Progress")]}});
+  expect(notifications).toBe(3);
 });

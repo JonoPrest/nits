@@ -126,6 +126,7 @@ try {
       let frames = 0;
       let read = false;
       let dispatched = false;
+      let pending = null;
       const socket = new WebSocket(url);
       const timer = setTimeout(() => { socket.close(); reject(new Error('bridge timed out')); }, 10000);
       const finish = value => { clearTimeout(timer); socket.close(); resolve(value); };
@@ -135,7 +136,30 @@ try {
       };
       socket.onmessage = event => {
         frames++;
-        const patches = JSON.parse(event.data);
+        if (new TextEncoder().encode(event.data).length >= 65536) {
+          reject(new Error('view frame exceeded budget')); socket.close(); return;
+        }
+        const frame = JSON.parse(event.data);
+        let patches;
+        if (frame.body.type === 'Complete') {
+          if (pending) throw new Error('incomplete delivery');
+          patches = frame.body.patches;
+        } else {
+          const {position, json} = frame.body;
+          if (position.type === 'Start') {
+            if (pending) throw new Error('duplicate delivery start');
+            pending = {revision: frame.revision, kind: frame.kind, bytes: position.bytes, parts: [json]};
+            return;
+          }
+          if (!pending || frame.revision !== pending.revision || frame.kind !== pending.kind
+              || position.index !== pending.parts.length) throw new Error('out-of-order delivery');
+          pending.parts.push(json);
+          if (position.type !== 'End') return;
+          const text = pending.parts.join('');
+          if (new TextEncoder().encode(text).length !== pending.bytes) throw new Error('incomplete delivery');
+          patches = JSON.parse(text);
+          pending = null;
+        }
         for (const patch of patches) {
           if (patch.type === 'ReviewList' && patch.workspaces.some(w => w.repos.length)) read = true;
           if (!dispatched && patch.type === 'Connection' && patch.connection.type === 'Subscribed') {

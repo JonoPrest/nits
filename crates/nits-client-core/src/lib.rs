@@ -27,6 +27,7 @@ mod cache;
 mod connection;
 mod content;
 mod creation;
+mod delivery;
 mod diff;
 mod events;
 mod explorer;
@@ -62,6 +63,11 @@ pub use creation::{
     CreationDefaultStateKind, CreationDraft, CreationEdit, CreationEditKind, CreationReconcile,
     CreationResume, CreationRevision, CreationStatus, CreationStatusKind, CreationSubmission,
     CreationTarget, CreationTargetId, ReviewCreation,
+};
+pub use delivery::{
+    VIEW_MESSAGE_LIMIT, ViewBatchBytes, ViewBatchKind, ViewDelivery, ViewDeliveryError,
+    ViewEncoder, ViewFragmentIndex, ViewFragmentPosition, ViewFragmentPositionKind, ViewFrame,
+    ViewFrameBody, ViewFrameBodyKind, ViewRevision,
 };
 pub use diff::{
     CommentView, CommitStepper, DiffRow, DiffView, PendingIds, RowPlace, RowThread, StepperCommit,

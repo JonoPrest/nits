@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use nits_client_core::{
     Action, Bytes, CacheConfig, ClientCore, Config, DiskTier, Effect, IdSeed, Input, KeyChord,
-    Keymap, TransportEvent, ViewPatch,
+    Keymap, TransportEvent, ViewBatchKind, ViewDelivery, ViewEncoder, ViewPatch,
 };
 use nits_protocol::{Author, BuildInfo, ClientId, ClientMsg, Envelope, ServerMsg};
 use nitsd::contexts::DaemonEndpoint;
@@ -175,7 +175,7 @@ impl HostFactory {
         &self,
         session: HostSession,
         shutdown: CancellationToken,
-    ) -> (Handle, mpsc::UnboundedReceiver<Vec<ViewPatch>>) {
+    ) -> (Handle, mpsc::UnboundedReceiver<ViewDelivery>) {
         let (actions_tx, actions_rx) = mpsc::unbounded_channel();
         let (patches_tx, patches_rx) = mpsc::unbounded_channel();
         let mut core = ClientCore::new(Config {
@@ -198,6 +198,8 @@ impl HostFactory {
             writer: None,
             connection: None,
             patches: patches_tx,
+            encoder: ViewEncoder::default(),
+            shutdown: shutdown.clone(),
         };
         tokio::spawn(host.run(actions_rx, shutdown));
         (
@@ -332,7 +334,7 @@ enum Incoming {
 pub fn spawn(
     config: HostConfig,
     shutdown: CancellationToken,
-) -> Result<(Handle, mpsc::UnboundedReceiver<Vec<ViewPatch>>), HostError> {
+) -> Result<(Handle, mpsc::UnboundedReceiver<ViewDelivery>), HostError> {
     let HostConfig {
         endpoint,
         kv,
@@ -363,10 +365,26 @@ struct Host {
     /// The dial plus framed connection. Aborted when this host ends so a
     /// connection attempt (especially SSH) cannot outlive its browser tab.
     connection: Option<tokio::task::JoinHandle<()>>,
-    patches: mpsc::UnboundedSender<Vec<ViewPatch>>,
+    patches: mpsc::UnboundedSender<ViewDelivery>,
+    encoder: ViewEncoder,
+    shutdown: CancellationToken,
 }
 
 impl Host {
+    fn publish(&mut self, kind: ViewBatchKind, patches: Vec<ViewPatch>) -> bool {
+        let result = match self.encoder.encode(kind, patches) {
+            Ok(delivery) => self.patches.send(delivery).is_ok(),
+            Err(error) => {
+                tracing::error!(%error, "view delivery failed; ending host session");
+                false
+            }
+        };
+        if !result {
+            self.shutdown.cancel();
+        }
+        result
+    }
+
     /// Unix time in ms: the core stamps ids and pending events with it.
     fn now_ms() -> u64 {
         std::time::SystemTime::now()
@@ -390,7 +408,7 @@ impl Host {
                     Some(Command::InvalidAction { reason }) => self.feed(Input::InvalidAction { reason }, &incoming_tx),
                     Some(Command::Key(chord)) => self.feed(Input::Key(chord), &incoming_tx),
                     Some(Command::Attach) => {
-                        if self.patches.send(self.core.view().full_patches()).is_err() {
+                        if !self.publish(ViewBatchKind::Snapshot, self.core.view().full_patches()) {
                             break;
                         }
                     }
@@ -487,9 +505,7 @@ impl Host {
             }
             Effect::Render(delta) => {
                 let patches = self.core.view().patches(&delta);
-                // A closed receiver means the UI is gone; the loop notices
-                // on the next command.
-                let _ = self.patches.send(patches);
+                self.publish(ViewBatchKind::Delta, patches);
             }
         }
     }

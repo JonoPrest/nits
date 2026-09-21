@@ -130,6 +130,13 @@ macro_rules! registry {
 }
 
 registry!(
+    ViewRevision,
+    ViewFragmentIndex,
+    ViewBatchBytes,
+    ViewBatchKind,
+    ViewFragmentPosition,
+    ViewFrameBody,
+    ViewFrame,
     CreationTargetId,
     CreationRevision,
     CreationEdit,
@@ -1435,4 +1442,66 @@ enum_fixture!(
             text: "worktree".into()
         }
     ]
+);
+
+struct_fixture!(ViewRevision, "ViewRevision", ViewRevision(1));
+struct_fixture!(
+    ViewFragmentIndex,
+    "ViewFragmentIndex",
+    ViewFragmentIndex(std::num::NonZeroU32::MIN)
+);
+struct_fixture!(
+    ViewBatchBytes,
+    "ViewBatchBytes",
+    ViewBatchBytes(std::num::NonZeroU32::MIN)
+);
+unit_enum_fixture!(ViewBatchKind, "ViewBatchKind");
+enum_fixture!(
+    ViewFragmentPosition,
+    ViewFragmentPositionKind,
+    "ViewFragmentPosition",
+    [
+        ViewFragmentPosition::Start {
+            bytes: ViewBatchBytes(
+                std::num::NonZeroU32::new(2)
+                    .ok_or_else(|| FixtureError::Invalid("nonzero batch bytes".into()))?
+            )
+        },
+        ViewFragmentPosition::More {
+            index: ViewFragmentIndex(std::num::NonZeroU32::MIN)
+        },
+        ViewFragmentPosition::End {
+            index: ViewFragmentIndex(std::num::NonZeroU32::MIN)
+        },
+    ]
+);
+enum_fixture!(
+    ViewFrameBody,
+    ViewFrameBodyKind,
+    "ViewFrameBody",
+    [
+        ViewFrameBody::Complete {
+            patches: Vec::new()
+        },
+        ViewFrameBody::Fragment {
+            position: ViewFragmentPosition::Start {
+                bytes: ViewBatchBytes(
+                    std::num::NonZeroU32::new(2)
+                        .ok_or_else(|| FixtureError::Invalid("nonzero batch bytes".into()))?
+                )
+            },
+            json: "[".into(),
+        },
+    ]
+);
+struct_fixture!(
+    ViewFrame,
+    "ViewFrame",
+    ViewFrame {
+        revision: ViewRevision(1),
+        kind: ViewBatchKind::Snapshot,
+        body: ViewFrameBody::Complete {
+            patches: Vec::new()
+        },
+    }
 );

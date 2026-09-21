@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nits_client_core::{Action, IdSeed, KeyChord, ViewPatch};
+use nits_client_core::{Action, IdSeed, KeyChord, ViewFrame};
 use nits_client_host::{Handle, HostConfig, Identity, KvConfig};
 use nits_config::{Config, Context};
 use nits_protocol::{Author, BuildInfo, ClientId};
@@ -15,7 +15,7 @@ use nitsd::contexts::{ContextError, DaemonEndpoint, StartPolicy};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 
-/// The event the UI listens on; payload is `Vec<ViewPatch>`.
+/// The event the UI listens on; payload is one bounded `ViewFrame`.
 pub const VIEW_EVENT: &str = "view";
 
 #[derive(Debug, thiserror::Error)]
@@ -176,8 +176,10 @@ pub fn start_host(app: &AppHandle, config: HostConfig) -> Result<Host, SetupErro
     tauri::async_runtime::spawn(async move {
         while let Some(batch) = patches.recv().await {
             tracing::debug!(patches = ?batch, "view");
-            if let Err(e) = app.emit(VIEW_EVENT, &batch) {
-                tracing::warn!(error = %e, "emit view patches");
+            for frame in batch.frames() {
+                if let Err(e) = app.emit(VIEW_EVENT, frame) {
+                    tracing::warn!(error = %e, "emit view frame");
+                }
             }
         }
         shutdown.cancel();
@@ -210,9 +212,8 @@ pub fn run(options: EndpointOptions) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Patches are the same type the host emits; kept public so a test can
-/// assert the event payload shape.
-pub type Patches = Vec<ViewPatch>;
+/// The same bounded envelope is used by the browser and native webview.
+pub type ViewPayload = ViewFrame;
 
 #[cfg(test)]
 mod tests {
@@ -268,10 +269,15 @@ mod tests {
         ));
     }
 
-    /// The `view` payload is exactly the array `CoreTauri.res` parses.
+    /// Native events use the common bounded delivery envelope.
     #[test]
-    fn view_payload_is_a_patch_array() {
-        let patches: Patches = Vec::new();
-        assert_eq!(serde_json::to_string(&patches).unwrap(), "[]");
+    fn view_payload_is_a_bounded_frame() {
+        let mut encoder = nits_client_core::ViewEncoder::default();
+        let delivery = encoder
+            .encode(nits_client_core::ViewBatchKind::Snapshot, Vec::new())
+            .unwrap();
+        let frame: &ViewPayload = &delivery.frames()[0];
+        assert!(serde_json::to_vec(frame).unwrap().len() < nits_client_core::VIEW_MESSAGE_LIMIT);
+        assert_eq!(serde_json::to_value(frame).unwrap()["kind"], "Snapshot");
     }
 }

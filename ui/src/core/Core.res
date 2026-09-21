@@ -28,6 +28,12 @@ module Store = {
     store.listeners->Array.forEach(l => l(store.model))
   }
 
+  /// A complete snapshot replaces all sections in one observer notification.
+  let replace = (store: t, patches: array<View.ViewPatch.t>) => {
+    store.model = patches->Array.reduce(View.ViewModel.empty, View.ViewPatch.apply)
+    store.listeners->Array.forEach(l => l(store.model))
+  }
+
   /// A browser WebSocket reconnects to a fresh host/core. Clear the old
   /// session before its replacement attaches so key sequence numbers and
   /// navigational state cannot cross that boundary.
@@ -70,3 +76,10 @@ let patchesOfJson = (json: JSON.t): result<array<View.ViewPatch.t>, string> =>
 
 let modelToJson = (model: View.ViewModel.t): JSON.t =>
   S.reverseConvertToJsonOrThrow(model, View.ViewModel.schema)
+
+let frameOfJson = (json: JSON.t): result<Delivery.ViewFrame.t, string> =>
+  try {
+    Ok(S.parseJsonOrThrow(json, Delivery.ViewFrame.schema))
+  } catch {
+  | exn => Error(message(exn))
+  }

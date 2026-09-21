@@ -10,7 +10,9 @@ use std::time::Duration;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt as _, StreamExt as _};
 use nits_client_core::{
-    Action, ConnectionView, FileRef, IdSeed, KeyChord, Landing, Layout, ViewModel, ViewPatch,
+    Action, ConnectionView, FileRef, IdSeed, KeyChord, Landing, Layout, VIEW_MESSAGE_LIMIT,
+    ViewBatchKind, ViewFragmentPosition, ViewFrame, ViewFrameBody, ViewModel, ViewPatch,
+    ViewRevision,
 };
 use nits_client_host::KvConfig;
 use nits_protocol::{
@@ -181,10 +183,18 @@ async fn harness() -> Harness {
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+struct PendingView {
+    revision: ViewRevision,
+    kind: ViewBatchKind,
+    bytes: usize,
+    parts: Vec<String>,
+}
+
 struct Browser {
     tx: SplitSink<Socket, Message>,
     rx: SplitStream<Socket>,
     model: ViewModel,
+    pending: Option<PendingView>,
 }
 
 impl Browser {
@@ -199,6 +209,7 @@ impl Browser {
             tx,
             rx,
             model: ViewModel::default(),
+            pending: None,
         };
         browser.send_raw(r#"{"cmd":"attach"}"#).await;
         browser
@@ -226,16 +237,73 @@ impl Browser {
         self.send_raw(&command.to_string()).await;
     }
 
-    async fn batch(&mut self) -> Vec<ViewPatch> {
-        let message = tokio::time::timeout(Duration::from_secs(10), self.rx.next())
-            .await
-            .expect("timed out waiting for patches")
-            .expect("bridge closed the socket")
-            .unwrap();
-        let Message::Text(text) = message else {
-            panic!("expected text frame, got {message:?}")
+    fn frame(&mut self, text: &str) -> Option<Vec<ViewPatch>> {
+        assert!(
+            text.len() < VIEW_MESSAGE_LIMIT,
+            "{} byte WebSocket frame",
+            text.len()
+        );
+        let frame: ViewFrame = serde_json::from_str(text).unwrap();
+        let patches = match frame.body {
+            ViewFrameBody::Complete { patches } => {
+                assert!(self.pending.is_none());
+                patches
+            }
+            ViewFrameBody::Fragment {
+                position: ViewFragmentPosition::Start { bytes },
+                json,
+            } => {
+                assert!(self.pending.is_none());
+                self.pending = Some(PendingView {
+                    revision: frame.revision,
+                    kind: frame.kind,
+                    bytes: bytes.0.get() as usize,
+                    parts: vec![json],
+                });
+                return None;
+            }
+            ViewFrameBody::Fragment { position, json } => {
+                let (index, last) = match position {
+                    ViewFragmentPosition::More { index } => (index, false),
+                    ViewFragmentPosition::End { index } => (index, true),
+                    ViewFragmentPosition::Start { .. } => panic!("start handled above"),
+                };
+                let pending = self.pending.as_mut().unwrap();
+                assert_eq!(
+                    (pending.revision, pending.kind),
+                    (frame.revision, frame.kind)
+                );
+                assert_eq!(index.0.get() as usize, pending.parts.len());
+                pending.parts.push(json);
+                if !last {
+                    return None;
+                }
+                let pending = self.pending.take().unwrap();
+                let json = pending.parts.concat();
+                assert_eq!(json.len(), pending.bytes);
+                serde_json::from_str(&json).unwrap()
+            }
         };
-        serde_json::from_str(&text).unwrap()
+        if frame.kind == ViewBatchKind::Snapshot {
+            self.model = ViewModel::default();
+        }
+        Some(patches)
+    }
+
+    async fn batch(&mut self) -> Vec<ViewPatch> {
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(10), self.rx.next())
+                .await
+                .expect("timed out waiting for patches")
+                .expect("bridge closed the socket")
+                .unwrap();
+            let Message::Text(text) = message else {
+                panic!("expected text frame, got {message:?}")
+            };
+            if let Some(patches) = self.frame(&text) {
+                return patches;
+            }
+        }
     }
 
     async fn until(&mut self, mut done: impl FnMut(&ViewModel, &[ViewPatch]) -> bool) {
