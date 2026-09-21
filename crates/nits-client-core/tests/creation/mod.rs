@@ -95,6 +95,13 @@ fn ready() -> (ClientCore, ReviewId) {
     edit(&mut core, |draft| draft.title = "retained title".into());
     (core, id)
 }
+fn ready_two() -> (ClientCore, ReviewId) {
+    let (mut core, id) = ready();
+    let mut attached = workspace(1);
+    attached.repos.push(workspace(2).repos[0].clone());
+    home_workspaces(&mut core, vec![attached, workspace(2)]);
+    (core, id)
+}
 fn submit(core: &mut ClientCore, id: ReviewId) -> (RequestId, Review) {
     let effects = core
         .handle(Input::User(Action::SubmitReviewCreation { review_id: id }))
@@ -421,7 +428,7 @@ fn lookup_failure_never_resends_and_context_change_never_restores_another_daemon
 
 #[test]
 fn form_commands_use_the_keymap_and_disconnected_submit_is_visible() {
-    let (mut core, id) = ready();
+    let (mut core, id) = ready_two();
     home_key(&mut core, "alt+a");
     assert_eq!(creation(&core).draft.targets.len(), 2);
     home_key(&mut core, "alt+d");
@@ -556,7 +563,7 @@ fn retained_or_completed_creation_does_not_capture_review_composer_actions() {
 #[test]
 fn target_structure_and_field_edits_stay_ordered_without_waiting_for_view_patches() {
     use nits_client_core::{Command, CreationEdit, CreationRevision};
-    let (mut core, id) = ready();
+    let (mut core, id) = ready_two();
     let first = creation(&core).draft.targets[0].id;
     let before = creation(&core).revision;
     core.handle(Input::User(Action::RunCommand {
@@ -745,4 +752,191 @@ fn rejected_submission_and_disconnected_retry_acknowledge_the_current_intent() {
     assert_eq!(creation(&core).draft, interrupted.draft);
     assert!(matches!(&creation(&core).status,
         CreationStatus::Interrupted {message, ..} if message.contains("Reconnect")));
+}
+
+#[test]
+fn creation_add_exhaustion_is_acknowledged_and_removed_repositories_become_available() {
+    use nits_client_core::{CreationEdit, CreationRevision};
+    let (mut core, id) = ready_two();
+    let first = creation(&core).draft.targets[0].clone();
+    core.handle(Input::User(Action::AddCreationTarget { review_id: id }))
+        .unwrap();
+    let second = creation(&core).draft.targets[1].clone();
+    assert_ne!(first.repo_id, second.repo_id);
+    let before = creation(&core).clone();
+    for _ in 0..4 {
+        core.handle(Input::User(Action::AddCreationTarget { review_id: id }))
+            .unwrap();
+    }
+    assert_eq!(creation(&core).draft, before.draft);
+    assert!(creation(&core).revision > before.revision);
+    core.handle(Input::User(Action::RemoveCreationTarget { review_id: id }))
+        .unwrap();
+    core.handle(Input::User(Action::AddCreationTarget { review_id: id }))
+        .unwrap();
+    let added = creation(&core).draft.targets[1].clone();
+    assert_eq!(added.repo_id, second.repo_id);
+    assert_ne!(added.id, second.id);
+    core.handle(Input::User(Action::EditCreationDraft {
+        review_id: id,
+        edit: CreationEdit::Repository {
+            target_id: second.id,
+            repo_id: first.repo_id,
+        },
+    }))
+    .unwrap();
+    assert_eq!(
+        creation(&core).draft.targets[1],
+        added,
+        "removed row edit cannot alter its replacement"
+    );
+    assert!(creation(&core).revision > CreationRevision::new(0));
+}
+
+#[test]
+fn duplicate_repository_edits_remain_visible_and_cannot_submit_until_corrected() {
+    use nits_client_core::CreationEdit;
+    let (mut core, id) = ready_two();
+    core.handle(Input::User(Action::AddCreationTarget { review_id: id }))
+        .unwrap();
+    let first = creation(&core).draft.targets[0].clone();
+    let second = creation(&core).draft.targets[1].clone();
+    core.handle(Input::User(Action::EditCreationDraft {
+        review_id: id,
+        edit: CreationEdit::Repository {
+            target_id: second.id,
+            repo_id: first.repo_id,
+        },
+    }))
+    .unwrap();
+    assert!(
+        matches!(&creation(&core).status, CreationStatus::Failed { message } if message.contains("one base/head pair"))
+    );
+    edit(&mut core, |draft| {
+        draft.title = "keep all invalid inputs".into();
+        draft.targets[1].head = "branch:other".into();
+    });
+    let draft = creation(&core).draft.clone();
+    let effects = core
+        .handle(Input::User(Action::SubmitReviewCreation { review_id: id }))
+        .unwrap();
+    assert!(sent_request(&effects).is_none());
+    assert_eq!(creation(&core).draft, draft);
+    assert_eq!(creation(&core).review_id, id);
+    assert!(
+        matches!(&creation(&core).status, CreationStatus::Failed { message } if message.contains(&first.repo_id.to_string()))
+    );
+    for edit in [
+        CreationEdit::Repository {
+            target_id: second.id,
+            repo_id: second.repo_id,
+        },
+        CreationEdit::Base {
+            target_id: second.id,
+            text: "main".into(),
+        },
+    ] {
+        core.handle(Input::User(Action::EditCreationDraft {
+            review_id: id,
+            edit,
+        }))
+        .unwrap();
+    }
+    let (_, review) = submit(&mut core, id);
+    assert_eq!(review.title, draft.title);
+    assert_eq!(review.targets.len(), 2);
+    assert_ne!(
+        review.targets.first().repo_id,
+        review.targets.as_slice()[1].repo_id
+    );
+}
+
+#[test]
+fn restored_legacy_duplicate_attempt_is_inspected_but_never_replayed_as_a_write() {
+    use nits_client_core::{CreationSubmission, CreationTargetId};
+    let (core, id) = ready();
+    let mut retained = creation(&core).clone();
+    let mut duplicate = retained.draft.targets[0].clone();
+    duplicate.id = CreationTargetId::new(99);
+    duplicate.head = "head".into();
+    retained.draft.targets.push(duplicate);
+    let targets = NonEmpty::new(vec![
+        ReviewTarget {
+            repo_id: workspace(1).repos[0].id,
+            base: RefSpec::Head,
+            head: RefSpec::WorkingTree,
+        },
+        ReviewTarget {
+            repo_id: workspace(1).repos[0].id,
+            base: RefSpec::Head,
+            head: RefSpec::Head,
+        },
+    ])
+    .unwrap();
+    retained.status = CreationStatus::Pending {
+        submission: CreationSubmission {
+            title: retained.draft.title.clone(),
+            targets: targets.clone(),
+        },
+    };
+    for committed in [true, false] {
+        let mut restored = subscribed(0);
+        let effects = restored
+            .handle(Input::User(Action::RestoreReviewCreation {
+                creation: retained.clone(),
+                resume: CreationResume::Submitted,
+            }))
+            .unwrap();
+        let (lookup, request) = sent_request(&effects).unwrap();
+        assert_eq!(request, Request::GetReview { review_id: id });
+        if committed {
+            let review = Review {
+                id,
+                workspace_id: retained.workspace_id,
+                title: retained.draft.title.clone(),
+                targets: targets.clone(),
+                created: Timestamp::from_millis(0),
+                status: ReviewStatus::Open,
+            };
+            answer(&mut restored, lookup, Response::Review { review });
+            assert_eq!(creation(&restored).status, CreationStatus::Succeeded);
+        } else {
+            error(&mut restored, lookup, missing(id));
+            let effects = restored
+                .handle(Input::User(Action::RetryReviewCreation { review_id: id }))
+                .unwrap();
+            let (lookup, request) = sent_request(&effects).unwrap();
+            assert_eq!(request, Request::GetReview { review_id: id });
+            let effects = error(&mut restored, lookup, missing(id));
+            assert!(sent_request(&effects).is_none());
+            assert!(
+                matches!(&creation(&restored).status, CreationStatus::Failed { message } if message.contains("one base/head pair"))
+            );
+        }
+        assert_eq!(creation(&restored).review_id, id);
+        assert_eq!(creation(&restored).draft, retained.draft);
+    }
+    let mut restored = subscribed(0);
+    retained.status = CreationStatus::Editing;
+    restored
+        .handle(Input::User(Action::RestoreReviewCreation {
+            creation: retained.clone(),
+            resume: CreationResume::Editing,
+        }))
+        .unwrap();
+    assert_eq!(creation(&restored).draft, retained.draft);
+    assert!(
+        matches!(&creation(&restored).status, CreationStatus::Failed { message } if message.contains("one base/head pair"))
+    );
+    let effects = restored
+        .handle(Input::User(Action::CreateReview {
+            workspace_id: retained.workspace_id,
+            title: retained.draft.title,
+            targets,
+        }))
+        .unwrap();
+    assert!(sent_request(&effects).is_none());
+    assert!(
+        matches!(&restored.view().last_error, Some(RpcError::Invalid { reason }) if reason.contains("one base/head pair"))
+    );
 }

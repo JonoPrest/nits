@@ -1,7 +1,9 @@
 //! Review creation keeps editable input separate from an immutable submission.
 //! A dropped response is reconciled by review identity before another write.
 
-use nits_protocol::{CommitOid, NonEmpty, RefSpec, RepoId, ReviewId, ReviewTarget, WorkspaceId};
+use nits_protocol::{
+    CommitOid, CreateReviewTargets, NonEmpty, RefSpec, RepoId, ReviewId, ReviewTarget, WorkspaceId,
+};
 use serde::{Deserialize, Serialize};
 use strum::EnumDiscriminants;
 
@@ -96,12 +98,42 @@ pub struct CreationDefault {
     pub state: CreationDefaultState,
 }
 
-/// Parsed once before sending, then retained unchanged through uncertain replies.
+/// Frozen wire snapshot retained unchanged through uncertain replies. Older
+/// snapshots may contain duplicate targets; inspect their identity before retry,
+/// then parse them into `ParsedCreationSubmission` at the write boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreationSubmission {
     pub title: String,
     pub targets: NonEmpty<ReviewTarget>,
+}
+
+struct ParsedCreationSubmission {
+    title: String,
+    targets: CreateReviewTargets,
+}
+
+impl TryFrom<CreationSubmission> for ParsedCreationSubmission {
+    type Error = String;
+
+    fn try_from(submission: CreationSubmission) -> Result<Self, Self::Error> {
+        Ok(Self {
+            title: submission.title,
+            targets: submission
+                .targets
+                .try_into()
+                .map_err(|error: nits_protocol::CreateReviewTargetsError| error.to_string())?,
+        })
+    }
+}
+
+impl From<ParsedCreationSubmission> for CreationSubmission {
+    fn from(submission: ParsedCreationSubmission) -> Self {
+        Self {
+            title: submission.title,
+            targets: submission.targets.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::EnumIter)]
@@ -175,7 +207,12 @@ impl ReviewCreation {
         }
     }
 
-    pub(crate) fn submission(&self) -> Result<CreationSubmission, String> {
+    fn submission(&self) -> Result<ParsedCreationSubmission, String> {
+        self.check_repositories()?;
+        self.snapshot_submission()?.try_into()
+    }
+
+    fn snapshot_submission(&self) -> Result<CreationSubmission, String> {
         let title = self.draft.title.trim().to_owned();
         if title.is_empty() {
             return Err("Enter a review title.".into());
@@ -210,9 +247,21 @@ impl ReviewCreation {
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
-        let targets =
-            NonEmpty::new(targets).map_err(|_| "Choose at least one repository.".to_owned())?;
+        let targets = NonEmpty::new(targets)
+            .map_err(|_| nits_protocol::CreateReviewTargetsError::Empty.to_string())?;
         Ok(CreationSubmission { title, targets })
+    }
+
+    fn check_repositories(&self) -> Result<(), String> {
+        CreateReviewTargets::check_repositories(self.draft.targets.iter().map(|t| t.repo_id))
+            .map_err(|error| error.to_string())
+    }
+
+    fn edited(&mut self) {
+        self.status = match self.check_repositories() {
+            Ok(()) => CreationStatus::Editing,
+            Err(message) => CreationStatus::Failed { message },
+        };
     }
 }
 
@@ -394,7 +443,7 @@ impl ClientCore {
                 }
             }
         }
-        creation.status = CreationStatus::Editing;
+        creation.edited();
         let mut effects = self.creation_defaults();
         effects.push(changed());
         effects
@@ -444,7 +493,6 @@ impl ClientCore {
             .repos
             .iter()
             .find(|repo| !creation.draft.targets.iter().any(|t| t.repo_id == repo.id))
-            .or_else(|| workspace.repos.first())
         else {
             return vec![changed()];
         };
@@ -456,7 +504,7 @@ impl ClientCore {
             base: CreationBase::Automatic,
             head: "worktree".into(),
         });
-        creation.status = CreationStatus::Editing;
+        creation.edited();
         self.view.focus = crate::Focus::Composer;
         let mut effects = self.creation_defaults();
         effects.push(changed());
@@ -486,7 +534,7 @@ impl ClientCore {
         } else {
             Some(creation.draft.targets[index.min(creation.draft.targets.len() - 1)].id)
         };
-        creation.status = CreationStatus::Editing;
+        creation.edited();
         vec![changed()]
     }
 
@@ -556,7 +604,7 @@ impl ClientCore {
     fn send_creation(
         &mut self,
         review_id: ReviewId,
-        submission: CreationSubmission,
+        submission: ParsedCreationSubmission,
     ) -> Vec<Effect> {
         let Some(creation) = &mut self.view.home.creating else {
             return Vec::new();
@@ -565,6 +613,7 @@ impl ClientCore {
             return Vec::new();
         }
         let workspace_id = creation.workspace_id;
+        let submission = CreationSubmission::from(submission);
         creation.status = CreationStatus::Pending {
             submission: submission.clone(),
         };
@@ -795,7 +844,16 @@ impl ClientCore {
             }
         );
         if missing && *next == CreationReconcile::Retry {
-            return self.send_creation(review_id, submission);
+            return match submission.try_into() {
+                Ok(parsed) => self.send_creation(review_id, parsed),
+                Err(message) => {
+                    // The authoritative lookup established that this frozen
+                    // legacy payload never committed. Preserve its draft and
+                    // identity, but let the user correct it before another write.
+                    creation.status = CreationStatus::Failed { message };
+                    vec![changed()]
+                }
+            };
         }
         creation.status = CreationStatus::Interrupted {
             submission,
@@ -825,10 +883,15 @@ impl ClientCore {
             return Vec::new();
         }
         if resume == CreationResume::Submitted && creation.editable() {
-            creation.status = match creation.submission() {
+            creation.status = match creation.snapshot_submission() {
                 Ok(submission) => CreationStatus::Interrupted { submission, message: "Browser connection lost after submit. Checking whether the review was created.".into() },
                 Err(message) => CreationStatus::Failed { message },
             };
+        }
+        if creation.editable() {
+            if let Err(message) = creation.check_repositories() {
+                creation.status = CreationStatus::Failed { message };
+            }
         }
         self.view.home.creating = Some(creation);
         self.view.focus = crate::Focus::Composer;

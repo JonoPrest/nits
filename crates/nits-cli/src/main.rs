@@ -10,7 +10,7 @@ use clap::{Args, FromArgMatches, Parser, Subcommand, ValueEnum};
 use nits_config::{Context, ContextName, Selection, SelectionOrigin};
 use nits_protocol::{
     AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, DirectoryReviewOutcome, Event,
-    EventBody, LineNo, LineRange, Mutation, NonEmpty, RefSpec, RenderOpts, ReplayCursor,
+    EventBody, LineNo, LineRange, Mutation, RefSpec, RenderOpts, ReplayCursor,
     ReplayPosition, ReplayProgress, RepoId, RepoPath, Review, ReviewId, ReviewTarget, Seq, Side,
     Since, SubscribeScope, ThreadId, Workspace, WorkspaceId,
 };
@@ -1520,7 +1520,11 @@ async fn review(
             };
             let title = title.unwrap_or_else(|| format!("{base}..{head}"));
             let (id, event) = ops
-                .create_review(workspace, title, NonEmpty::singleton(target))
+                .create_review(
+                    workspace,
+                    title,
+                    nits_protocol::CreateReviewTargets::singleton(target),
+                )
                 .await?;
             emit(json, &event, || id.to_string())
         }

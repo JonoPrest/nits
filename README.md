@@ -51,6 +51,7 @@ Milestone 1.1–1.2 done: Cargo workspace, CI, `nits-protocol` (all wire types +
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the design and all resolved decisions.
 - [`docs/PLAN.md`](docs/PLAN.md) — four milestones with per-task test strategy. Start at **Milestone 1.1**.
+- [`docs/REVIEW-TARGETS.md`](docs/REVIEW-TARGETS.md) — repository target rules and preserving older duplicate reviews during repair.
 - [`AGENTS.md`](AGENTS.md) — principles and conventions for anyone (human or agent) contributing.
 
 ## Naming

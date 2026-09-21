@@ -2520,6 +2520,69 @@ async fn add_comment_rejects_invalid_anchor_shapes_without_appending_events() {
 }
 
 #[tokio::test]
+async fn create_review_rejects_duplicate_repositories_and_empty_targets_before_events() {
+    let h = start();
+    let client = human(&h).await;
+    let (workspace, repo) = seed(&h, &client).await;
+    let mut server = server(&h);
+    init(&mut server).await;
+    let tools = server
+        .handle(req(2, "tools/list", json!({})))
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    let schema = &tools["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "create_review")
+        .unwrap()["inputSchema"];
+    assert_eq!(schema["properties"]["targets"]["minItems"], 1);
+    let before = h.daemon.core().last_seq().unwrap();
+    let target = main_feature(&repo)[0].clone();
+    let mut conflicting = target.clone();
+    conflicting["head"] = json!({"type":"Branch", "name":"missing-ref"});
+    for targets in [
+        json!([target, target]),
+        json!([target, conflicting]),
+        json!([]),
+    ] {
+        let error = call_err(
+            &mut server,
+            "create_review",
+            json!({"workspace_id":workspace,"title":"must not commit","targets":targets}),
+        )
+        .await;
+        assert!(
+            error.contains("one base/head pair") || error.contains("at least one repository"),
+            "{error}"
+        );
+        assert_eq!(h.daemon.core().last_seq().unwrap(), before);
+    }
+    assert!(
+        h.daemon
+            .core()
+            .reviews(serde_json::from_value(json!(workspace)).unwrap())
+            .unwrap()
+            .is_empty()
+    );
+    let created = call(
+        &mut server,
+        "create_review",
+        json!({"workspace_id":workspace,"title":"valid singleton","targets":main_feature(&repo)}),
+    )
+    .await;
+    let review = call(
+        &mut server,
+        "get_review",
+        json!({"review_id":created["review_id"]}),
+    )
+    .await;
+    assert_eq!(review["review"]["targets"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn add_comment_preserves_review_file_and_line_anchor_scopes() {
     use nits_protocol::{Anchor, BlobOid, LineNo, LineRange, Side};
     let h = start();

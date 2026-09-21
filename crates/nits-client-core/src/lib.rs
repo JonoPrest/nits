@@ -2109,6 +2109,15 @@ impl ClientCore {
                 targets,
             } => {
                 self.require_subscribed()?;
+                let targets = match nits_protocol::CreateReviewTargets::try_from(targets) {
+                    Ok(targets) => targets,
+                    Err(error) => {
+                        self.view.last_error = Some(RpcError::Invalid {
+                            reason: error.to_string(),
+                        });
+                        return Ok(vec![render(&[ViewSection::Connection])]);
+                    }
+                };
                 let review_id = self.ids.review_id(self.now);
                 let client_seq = self.next_client_seq;
                 self.next_client_seq = client_seq.next();
@@ -2119,7 +2128,7 @@ impl ClientCore {
                             review_id,
                             workspace_id,
                             title,
-                            targets,
+                            targets: targets.into(),
                         },
                     },
                     InFlight::Mutate { client_seq },
