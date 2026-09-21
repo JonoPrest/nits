@@ -2060,7 +2060,7 @@ mod tests {
                         args.extend(["--workspace", workspace.as_str()]);
                     }
                     args.push("events");
-                    for flag in flags.chunks_exact(2) {
+                    for flag in flags.as_chunks::<2>().0 {
                         if !workspace_before || flag[0] != "--workspace" {
                             args.extend(flag);
                         }
