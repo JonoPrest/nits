@@ -36,7 +36,7 @@ struct Harness {
     socket: PathBuf,
     ws_url: String,
     shutdown: CancellationToken,
-    _repo: TestRepo,
+    repo: TestRepo,
     client: Client,
 }
 
@@ -201,7 +201,7 @@ async fn start() -> Harness {
         socket,
         ws_url,
         shutdown,
-        _repo: repo,
+        repo,
         client,
     }
 }
@@ -453,15 +453,15 @@ async fn scripted_session_keeps_every_patch_small() {
 
     // Refresh to another real commit with a single oversized CRLF source row.
     // Reconstruction must retain the entire row and its source line number.
-    h._repo.git(&["checkout", "feature"]).unwrap();
+    h.repo.git(&["checkout", "feature"]).unwrap();
     let long_line = format!("updated {}", "λ😀\"\\".repeat(20_000));
-    h._repo
+    h.repo
         .write_file(
             "src/big.rs",
             format!("{long_line}\r\n{}", big_source(99_999)).as_bytes(),
         )
         .unwrap();
-    h._repo.git(&["commit", "-qam", "long first line"]).unwrap();
+    h.repo.git(&["commit", "-qam", "long first line"]).unwrap();
     h.client
         .request(Request::ResolveTargets {
             review_id: review_id(),
