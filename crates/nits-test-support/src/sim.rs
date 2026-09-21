@@ -470,6 +470,7 @@ impl Sim {
                     | Request::DefaultBase { .. }
                     | Request::EnsureDirectoryReview { .. }
                     | Request::GetReview { .. }
+                    | Request::PreviewSuggestion { .. }
                     | Request::ListFiles { .. }
                     | Request::ResolveTargets { .. }
                     | Request::ListCommits { .. }
@@ -675,6 +676,7 @@ impl Sim {
             | Request::DefaultBase { .. }
             | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
+            | Request::PreviewSuggestion { .. }
             | Request::ResolveTargets { .. }
             | Request::ListCommits { .. }
             | Request::Search { .. }

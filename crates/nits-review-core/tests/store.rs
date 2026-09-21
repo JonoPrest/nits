@@ -693,10 +693,15 @@ fn schema_one_history_and_informational_threads_survive_migration_rebuild_and_re
         .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
         .unwrap();
     for entry in log.iter().unwrap() {
-        let (_, bytes) = entry.unwrap();
+        let (seq, bytes) = entry.unwrap();
         let event: serde_json::Value = serde_json::from_slice(bytes.value()).unwrap();
-        // 3→4 rewrites every old envelope after earlier migrations finish.
-        assert_eq!(event["schema"], serde_json::json!(SchemaVersion::CURRENT));
+        // 8→9 rewrites old envelopes; 9→10 only rebuilds derived views.
+        let expected = if seq.value() <= events.len() as u64 {
+            serde_json::json!(9)
+        } else {
+            serde_json::json!(SchemaVersion::CURRENT)
+        };
+        assert_eq!(event["schema"], expected);
     }
 }
 
@@ -1189,9 +1194,15 @@ fn schema_four_history_migrates_then_deferrals_survive_rebuild_and_restart() {
         .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
         .unwrap();
     for entry in log.iter().unwrap() {
-        let (_, bytes) = entry.unwrap();
+        let (seq, bytes) = entry.unwrap();
         let json: serde_json::Value = serde_json::from_slice(bytes.value()).unwrap();
-        assert_eq!(json["schema"], serde_json::json!(SchemaVersion::CURRENT));
+        // Historical envelopes stop at schema 9; subsequent appends use 10.
+        let expected = if seq.value() <= historical.0.len() as u64 {
+            serde_json::json!(9)
+        } else {
+            serde_json::json!(SchemaVersion::CURRENT)
+        };
+        assert_eq!(json["schema"], expected);
     }
 }
 
@@ -1707,5 +1718,99 @@ fn schema_eight_preserves_historical_modes_as_unknown_and_keeps_gitlink_commits(
             }
         },
         "historical marks cannot assert that today's mode was reviewed"
+    );
+}
+
+#[test]
+fn schema_nine_rebuilds_original_suggestion_identity_and_historical_receipts() {
+    use nits_protocol::{SuggestionOutcome, SuggestionRecord};
+    let (dir, store) = open_temp();
+    store
+        .append(new_event(EventBody::WorkspaceCreated {
+            workspace: workspace(),
+        }))
+        .unwrap();
+    store
+        .append(new_event(EventBody::ReviewCreated { review: review(1) }))
+        .unwrap();
+    let root = comment(1, 1, 1, 7);
+    store
+        .append(new_event(EventBody::CommentCreated {
+            comment: root.clone(),
+        }))
+        .unwrap();
+    let mut reply = comment(1, 2, 1, 8);
+    reply.kind = CommentKind::Suggestion {
+        patch: "@@ -1 +1 @@\n-old\n+new\n".into(),
+    };
+    reply.state = CommentState::Outdated {
+        last_good_anchor: root.anchor.clone(),
+    };
+    let original = SuggestionRecord::from_created(&reply).unwrap();
+    store
+        .append(new_event(EventBody::CommentCreated { comment: reply }))
+        .unwrap();
+    let later_anchor = Anchor::File {
+        repo_id: repo_id(),
+        path: RepoPath::new("renamed.txt").unwrap(),
+        blob_oid: blob(9),
+    };
+    store
+        .append(new_event(EventBody::CommentReanchored {
+            review_id: review_id(1),
+            comment_id: comment_id(2),
+            anchor: later_anchor,
+            state: CommentState::Live,
+        }))
+        .unwrap();
+    let applied = store
+        .append(new_event(EventBody::SuggestionApplied {
+            review_id: review_id(1),
+            comment_id: comment_id(2),
+            repo_id: repo_id(),
+            path: RepoPath::new("renamed.txt").unwrap(),
+            result_blob: blob(10),
+        }))
+        .unwrap();
+    let history = store.events_after(None).unwrap();
+    let path = dir.path().join("state.redb");
+    drop(store);
+    // Recreate the real pre-migration layout: no materialized suggestion table.
+    let db = redb::Database::open(&path).unwrap();
+    let txn = db.begin_write().unwrap();
+    txn.delete_table(redb::TableDefinition::<(&str, &str), &[u8]>::new(
+        "suggestions",
+    ))
+    .unwrap();
+    txn.open_table(redb::TableDefinition::<&str, u64>::new("meta"))
+        .unwrap()
+        .insert("schema_version", 9_u64)
+        .unwrap();
+    txn.commit().unwrap();
+    drop(db);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.events_after(None).unwrap(), history);
+    let snapshot = store.review_snapshot(review_id(1)).unwrap().unwrap();
+    assert_eq!(snapshot.suggestions.len(), 1);
+    let record = &snapshot.suggestions[0];
+    assert_eq!(record.anchor, original.anchor);
+    assert_eq!(record.patch, original.patch);
+    assert_eq!(record.comment_id, comment_id(2));
+    let SuggestionOutcome::Applied { receipt } = &record.outcome else {
+        panic!("missing historical receipt")
+    };
+    assert_eq!(receipt.path.as_str(), "renamed.txt");
+    assert_eq!(receipt.result_blob, blob(10));
+    assert_eq!(receipt.seq, applied.seq);
+    assert_eq!(receipt.author, applied.author);
+    assert_eq!(receipt.at, applied.ts);
+    let before = store.dump_views().unwrap();
+    store.rebuild_views().unwrap();
+    assert_eq!(store.dump_views().unwrap(), before);
+    drop(store);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(
+        reopened.review_snapshot(review_id(1)).unwrap().unwrap(),
+        snapshot
     );
 }

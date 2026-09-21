@@ -350,20 +350,32 @@ describe("Threads", () => {
   test("offers to apply a suggestion thread and dispatches ApplySuggestion", () => {
     let dispatch = fn()
     let thread = Fixtures.parse(View.ThreadView.schema, "client", "ThreadView", "default")
+    let suggestion = Fixtures.parse(
+      View.SuggestionView.schema,
+      "client",
+      "SuggestionView",
+      "default",
+    )
+    let c = thread.comments->Array.getUnsafe(0)
+    let thread = {
+      ...thread,
+      root: suggestion.record.commentId,
+      comments: [{...c, id: suggestion.record.commentId, suggestion: Some(suggestion)}],
+    }
     let _ = render(
       <Threads
         title="Threads" threads=[thread] focus={Thread({index: 0})} indexOffset=0 dispatch
       />,
     )
-    FireEvent.click(Screen.getByText("Apply suggestion (a)"))
+    FireEvent.click(Screen.getByText("Apply suggestion"))
     // The click also bubbles to the row (SetFocus), so not the last call.
     expect(dispatch)->toHaveBeenCalledWith(Action.ApplySuggestion({commentId: thread.root}))
-    let plain = {...thread, suggestion: false}
+    let plain = {...thread, comments: thread.comments->Array.map(c => {...c, suggestion: None})}
     cleanup()
     let _ = render(
       <Threads title="Threads" threads=[plain] focus={Thread({index: 0})} indexOffset=0 dispatch />,
     )
-    expect(Array.length(Screen.queryAllByText("Apply suggestion (a)")))->toBe(0)
+    expect(Array.length(Screen.queryAllByText("Apply suggestion")))->toBe(0)
   })
 
   test("a focused thread shows every comment body and a click opens its file", () => {
@@ -496,7 +508,6 @@ describe("Jump to original diff", () => {
     let outdated = {
       ...thread,
       outdated: true,
-      suggestion: false,
       context: Some(
         Diff({
           change: Fixtures.parse(Domain.ChangeKind.schema, "protocol", "ChangeKind", "Modified"),
@@ -2254,7 +2265,6 @@ describe("Informational conversation", () => {
       id: "summary",
       status: Informational({}),
       place: Review({}),
-      suggestion: false,
       comments: [
         ...base.comments,
         {

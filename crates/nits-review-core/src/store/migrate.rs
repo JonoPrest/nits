@@ -38,7 +38,20 @@ const MIGRATIONS: &[Migration] = &[
     migrate_6_to_7,
     migrate_7_to_8,
     migrate_8_to_9,
+    migrate_9_to_10,
 ];
+
+/// Schema 10 materializes immutable suggestion anchors and applied receipts.
+/// Existing creation/application events are sufficient; never rewrite history.
+fn migrate_9_to_10(txn: &WriteTransaction) -> Result<(), String> {
+    fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
+        let mut tables = tables::Write::open(txn)?;
+        tables.clear_views()?;
+        tables.clear_view_seq()?;
+        Ok(())
+    }
+    migrate(txn).map_err(|error| error.to_string())
+}
 
 /// Schema 7 captures working-tree HEAD provenance. Missing historical HEADs
 /// deserialize as None: migrating never invents provenance from today's repo.

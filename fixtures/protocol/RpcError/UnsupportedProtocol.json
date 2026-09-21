@@ -1,7 +1,7 @@
 {
   "requested": "2.0.0",
   "supported": [
-    "0.16.0"
+    "0.17.0"
   ],
   "type": "UnsupportedProtocol"
 }

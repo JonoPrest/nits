@@ -67,6 +67,7 @@ fn snapshot() -> ReviewSnapshot {
         source,
     };
     ReviewSnapshot {
+        suggestions: Vec::new(),
         review: review(),
         resolved: Some(NonEmpty::singleton(ResolvedTarget {
             repo_id: repo_id(),

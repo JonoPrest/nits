@@ -292,6 +292,11 @@ pub enum Request {
     ReviewSnapshot {
         review_id: ReviewId,
     },
+    /// Inspect the immutable patch against its original blob without writing.
+    PreviewSuggestion {
+        review_id: ReviewId,
+        comment_id: CommentId,
+    },
     /// Changed files across the review's targets, with rename detection.
     /// `scope` narrows which diff (UI-DESIGN §Diff scope); absent = `All`.
     ListFiles {
@@ -401,6 +406,7 @@ impl Request {
             | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
             | Request::ReviewSnapshot { .. }
+            | Request::PreviewSuggestion { .. }
             | Request::ListFiles { .. }
             | Request::Search { .. }
             | Request::ResolveTargets { .. }
@@ -425,6 +431,7 @@ pub struct ReviewSnapshot {
     pub resolved: Option<NonEmpty<ResolvedTarget>>,
     pub threads: Vec<Thread>,
     pub comments: Vec<Comment>,
+    pub suggestions: Vec<crate::SuggestionRecord>,
     pub viewed: Vec<ViewedMark>,
     /// Durable requests, in creation event order, independent of finding threads.
     pub requests: Vec<crate::ReviewRequest>,
@@ -459,6 +466,9 @@ pub enum Response {
     },
     ReviewSnapshot {
         snapshot: ReviewSnapshot,
+    },
+    SuggestionPreview {
+        preview: crate::SuggestionPreview,
     },
     Files {
         files: Vec<FileChange>,

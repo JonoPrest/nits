@@ -449,6 +449,34 @@ module ReviewRequest = {
   }
 }
 
+module SuggestionReceipt = {
+  @schema
+  type t = {
+    seq: seq,
+    at: timestamp,
+    author: Author.t,
+    @as("repo_id") repoId: repoId,
+    path: string,
+    @as("result_blob") resultBlob: blobOid,
+  }
+}
+module SuggestionOutcome = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t = Unapplied({}) | Applied({receipt: SuggestionReceipt.t})
+  @@warning("+27")
+}
+module SuggestionRecord = {
+  @schema
+  type t = {
+    @as("review_id") reviewId: reviewId,
+    @as("comment_id") commentId: commentId,
+    anchor: Anchor.t,
+    patch: string,
+    outcome: SuggestionOutcome.t,
+  }
+}
+
 module ReviewSnapshot = {
   @schema
   type t = {
@@ -456,6 +484,7 @@ module ReviewSnapshot = {
     resolved: @s.null option<array<ResolvedTarget.t>>,
     threads: array<Thread.t>,
     comments: array<Comment.t>,
+    suggestions: array<SuggestionRecord.t>,
     viewed: array<ViewedMark.t>,
     requests: array<ReviewRequest.t>,
     checkpoints: array<ReviewCheckpoint.t>,

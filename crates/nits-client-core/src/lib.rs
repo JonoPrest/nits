@@ -38,6 +38,7 @@ mod keymap;
 mod patch;
 mod ref_selector;
 mod reference;
+mod suggestion;
 mod view;
 
 use std::collections::BTreeMap;
@@ -96,6 +97,7 @@ pub use ref_selector::{
     RefOption, RefSelectorPurpose, RefSelectorPurposeKind, RefSelectorSide, RefSelectorStatus,
     RefSelectorStatusKind, RefSelectorView,
 };
+pub use suggestion::{SuggestionStatus, SuggestionStatusKind, SuggestionView};
 pub use view::{
     ConnectionView, ConnectionViewKind, ContentSearchView, Draft, DraftPurpose, DraftPurposeKind,
     Landing, LastKey, Layout, OpenFile, OpenReview, PendingEvent, ScrollAlign, ScrollIntent, Tab,
@@ -287,6 +289,9 @@ pub enum Action {
     /// Write a suggestion comment's patch to the working tree. Not
     /// optimistic: the daemon reports the result as `SuggestionApplied`.
     ApplySuggestion {
+        comment_id: CommentId,
+    },
+    PreviewSuggestion {
         comment_id: CommentId,
     },
     /// The host shows rows `first_row..=last_row` of `file`. Opens the file
@@ -575,6 +580,8 @@ pub enum CoreError {
     NoSelectedRef,
     #[error("no thread {0}")]
     UnknownThread(ThreadId),
+    #[error("suggestion {0} must have a current, ready preview before applying")]
+    SuggestionNotReady(CommentId),
     #[error("thread {0} has no recorded original diff")]
     NoOriginalDiff(ThreadId),
     #[error("{0:?} indexes past the end of its list")]
@@ -663,6 +670,14 @@ pub(crate) enum InFlight {
     Mutate {
         client_seq: ClientSeq,
     },
+    PreviewSuggestion {
+        review_id: ReviewId,
+        comment_id: CommentId,
+    },
+    ApplySuggestion {
+        review_id: ReviewId,
+        comment_id: CommentId,
+    },
 }
 
 impl InFlight {
@@ -686,6 +701,8 @@ impl InFlight {
             | InFlight::ListCommits { .. }
             | InFlight::ListRefs { .. }
             | InFlight::Search
+            | InFlight::PreviewSuggestion { .. }
+            | InFlight::ApplySuggestion { .. }
             | InFlight::Mutate { .. } => false,
         }
     }
@@ -712,6 +729,8 @@ impl InFlight {
             | InFlight::ListRefs { .. }
             | InFlight::Search
             | InFlight::BrowseTree { .. }
+            | InFlight::PreviewSuggestion { .. }
+            | InFlight::ApplySuggestion { .. }
             | InFlight::Mutate { .. } => None,
         }
     }
@@ -755,6 +774,7 @@ pub struct ClientCore {
     latest_commits: Option<RequestId>,
     /// Mutations sent and not yet echoed by the daemon, in send order.
     pending: Vec<Pending>,
+    suggestions: BTreeMap<CommentId, suggestion::SuggestionState>,
     reference_context: Option<nits_protocol::ReferenceContext>,
     pending_reference: Option<reference::PendingReference>,
     latest_open: Option<RequestId>,
@@ -833,6 +853,7 @@ impl ClientCore {
             latest_files: None,
             latest_commits: None,
             pending: Vec::new(),
+            suggestions: BTreeMap::new(),
             reference_context: None,
             pending_reference: None,
             latest_open: None,
@@ -1168,6 +1189,13 @@ impl ClientCore {
             }
             None => (None, Vec::new()),
         };
+        for thread in &mut threads {
+            for comment in &mut thread.comments {
+                if let Some(suggestion) = &mut comment.suggestion {
+                    *suggestion = self.suggestion_view(&suggestion.record);
+                }
+            }
+        }
         let diff = match (&self.view.review, diff) {
             (Some(open), Some(mut d))
                 if open.original.is_some()
@@ -3183,33 +3211,8 @@ impl ClientCore {
                 self.view.tab = Tab::FilesChanged;
                 Ok(self.apply_scope(DiffScope::SinceCheckpoint { checkpoint_id }))
             }
-            Action::ApplySuggestion { comment_id } => {
-                let review_id = self.open_review_id()?;
-                self.require_subscribed()?;
-                let Some(open) = &self.view.review else {
-                    return Err(CoreError::NoOpenReview);
-                };
-                let is_suggestion = open.snapshot.comments.iter().any(|c| {
-                    c.id == comment_id && matches!(c.kind, CommentKind::Suggestion { .. })
-                });
-                if !is_suggestion {
-                    return Err(CoreError::Mutation(MutationError::UnknownComment(
-                        comment_id,
-                    )));
-                }
-                let client_seq = self.next_client_seq;
-                self.next_client_seq = client_seq.next();
-                Ok(vec![self.request(
-                    Request::Mutate {
-                        client_seq,
-                        mutation: Mutation::ApplySuggestion {
-                            review_id,
-                            comment_id,
-                        },
-                    },
-                    InFlight::Mutate { client_seq },
-                )])
-            }
+            Action::ApplySuggestion { comment_id } => self.apply_suggestion(comment_id),
+            Action::PreviewSuggestion { comment_id } => self.preview_suggestion(comment_id),
             Action::DraftDiscarded => {
                 if self.view.draft.is_none() {
                     return Err(CoreError::NoDraft);
@@ -3454,6 +3457,7 @@ impl ClientCore {
         self.deferred.clear();
         self.committed = None;
         self.pending.clear();
+        self.suggestions.clear();
         self.stepper = None;
         self.focus_return = None;
         self.help_context = None;
@@ -3500,7 +3504,28 @@ impl ClientCore {
         } else {
             Vec::new()
         };
+        let suggestions = if same {
+            std::mem::take(&mut self.suggestions)
+        } else {
+            BTreeMap::new()
+        };
+        // A preview may discover a committed receipt before its event or a
+        // concurrently requested older snapshot arrives.
+        if same && let Some(committed) = &self.committed {
+            for existing in &committed.suggestions {
+                if let nits_protocol::SuggestionOutcome::Applied { receipt } = &existing.outcome
+                    && receipt.seq > snapshot.seq
+                    && let Some(record) = snapshot
+                        .suggestions
+                        .iter_mut()
+                        .find(|record| record.comment_id == existing.comment_id)
+                {
+                    record.outcome = existing.outcome.clone();
+                }
+            }
+        }
         self.close_review(effects);
+        self.suggestions = suggestions;
         self.committed = Some(snapshot.clone());
         self.view.open_review = Some(snapshot.review.id);
         self.view.review = Some(OpenReview::new(snapshot));
@@ -3619,6 +3644,7 @@ impl ClientCore {
                 let last_seq = self.connection.last_seq();
                 let was_down = matches!(self.connection, Connection::Disconnected { .. });
                 self.connection = Connection::Disconnected { last_seq };
+                let suggestions_changed = self.suggestions_disconnected();
                 self.clear_in_flight();
                 self.browse_disconnected();
                 if was_down {
@@ -3626,6 +3652,9 @@ impl ClientCore {
                 }
                 self.view.connection = ConnectionView::Disconnected;
                 let mut sections = vec![ViewSection::Connection];
+                if suggestions_changed {
+                    sections.extend([ViewSection::Threads, ViewSection::Conversation]);
+                }
                 if self.creation_disconnected() {
                     sections.push(ViewSection::ReviewList);
                 }
@@ -3727,6 +3756,8 @@ impl ClientCore {
                     | InFlight::TreeSnapshot { .. }
                     | InFlight::BrowseTree { .. }
                     | InFlight::RenderChunk { .. }
+                    | InFlight::PreviewSuggestion { .. }
+                    | InFlight::ApplySuggestion { .. }
                     | InFlight::Mutate { .. } => {
                         self.in_flight.insert(id, waiting);
                         return Err(CoreError::UnexpectedResponse {
@@ -3753,6 +3784,16 @@ impl ClientCore {
                     self.pending_reference = None;
                 }
                 match &waiting {
+                    InFlight::PreviewSuggestion {
+                        review_id,
+                        comment_id,
+                    }
+                    | InFlight::ApplySuggestion {
+                        review_id,
+                        comment_id,
+                    } => {
+                        return Ok(self.suggestion_failed(id, *review_id, *comment_id, &error));
+                    }
                     InFlight::CreationDefault { review_id, repo_id } => {
                         return Ok(self.creation_default_answer(
                             *review_id,
@@ -4057,6 +4098,8 @@ impl ClientCore {
                 | InFlight::TreeSnapshot { .. }
                 | InFlight::BrowseTree { .. }
                 | InFlight::RenderChunk { .. }
+                | InFlight::PreviewSuggestion { .. }
+                | InFlight::ApplySuggestion { .. }
                 | InFlight::Mutate { .. },
                 StreamItem::ReviewSnapshot { .. }
                 | StreamItem::TreeSnapshot { .. }
@@ -4116,6 +4159,7 @@ impl ClientCore {
                 // start with the workspaces.
                 effects.push(self.request(Request::ListWorkspaces, InFlight::ListWorkspaces));
                 effects.extend(self.creation_reconnected());
+                effects.extend(self.suggestions_reconnected());
                 effects.push(render(&[ViewSection::Connection]));
                 effects
             }
@@ -4341,6 +4385,20 @@ impl ClientCore {
                 self.content_done(&mut effects);
                 effects
             }
+            (
+                InFlight::PreviewSuggestion {
+                    review_id,
+                    comment_id,
+                },
+                Response::SuggestionPreview { preview },
+            ) => self.suggestion_previewed(id, review_id, comment_id, preview)?,
+            (
+                InFlight::ApplySuggestion {
+                    review_id,
+                    comment_id,
+                },
+                Response::Committed { event },
+            ) => self.suggestion_applied(id, review_id, comment_id, event)?,
             (InFlight::Mutate { client_seq }, Response::Committed { event }) => {
                 // The same event is also broadcast; whichever arrives first
                 // applies it, the other only retires the pending entry.
@@ -4366,6 +4424,8 @@ impl ClientCore {
             }
             (waiting, _) => {
                 let expected = match waiting {
+                    InFlight::PreviewSuggestion { .. } => "SuggestionPreview",
+                    InFlight::ApplySuggestion { .. } => "Committed",
                     InFlight::Subscribe => "Subscribed",
                     InFlight::CreationDefault { .. } => "DefaultBase",
                     InFlight::CreateReview { .. } | InFlight::Mutate { .. } => "Committed",
@@ -4400,6 +4460,7 @@ impl ClientCore {
             &event.body,
             EventBody::ReviewRequested { .. }
                 | EventBody::ReviewChecked { .. }
+                | EventBody::SuggestionApplied { .. }
                 | EventBody::ReviewTargetsResolved { .. }
         ) {
             for (review_id, events) in self.snapshot_events.values_mut() {
@@ -4681,6 +4742,7 @@ fn response_name(r: &Response) -> &'static str {
         Response::DirectoryReview { .. } => "DirectoryReview",
         Response::Review { .. } => "Review",
         Response::ReviewSnapshot { .. } => "ReviewSnapshot",
+        Response::SuggestionPreview { .. } => "SuggestionPreview",
         Response::Files { .. } => "Files",
         Response::Resolved { .. } => "Resolved",
         Response::Search { .. } => "Search",

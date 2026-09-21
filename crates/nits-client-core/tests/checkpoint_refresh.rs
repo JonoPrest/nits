@@ -86,6 +86,7 @@ fn subscribed() -> ClientCore {
 }
 fn snapshot() -> ReviewSnapshot {
     ReviewSnapshot {
+        suggestions: Vec::new(),
         review: Review {
             id: review(),
             workspace_id: WorkspaceId::from_parts(3, 3),

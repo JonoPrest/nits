@@ -283,6 +283,34 @@ pub fn apply_event(
     snapshot: &mut ReviewSnapshot,
     event: &nits_protocol::Event,
 ) -> Vec<ViewSection> {
+    if let EventBody::SuggestionApplied {
+        review_id,
+        comment_id,
+        repo_id,
+        path,
+        result_blob,
+    } = &event.body
+        && *review_id == snapshot.review.id
+        && let Some(record) = snapshot
+            .suggestions
+            .iter_mut()
+            .find(|record| record.comment_id == *comment_id)
+        && match &record.outcome {
+            nits_protocol::SuggestionOutcome::Unapplied => true,
+            nits_protocol::SuggestionOutcome::Applied { receipt } => receipt.seq < event.seq,
+        }
+    {
+        record.outcome = nits_protocol::SuggestionOutcome::Applied {
+            receipt: nits_protocol::SuggestionReceipt {
+                seq: event.seq,
+                at: event.ts,
+                author: event.author.clone(),
+                repo_id: *repo_id,
+                path: path.clone(),
+                result_blob: *result_blob,
+            },
+        };
+    }
     if let Some(request) = nits_protocol::ReviewRequest::from_event(event)
         && request.review_id == snapshot.review.id
         && !snapshot.requests.iter().any(|r| r.id == request.id)
@@ -350,6 +378,9 @@ pub fn apply_body(
                 return Vec::new();
             }
             snapshot.comments.push(comment.clone());
+            if let Some(record) = nits_protocol::SuggestionRecord::from_created(comment) {
+                snapshot.suggestions.push(record);
+            }
             match snapshot
                 .threads
                 .iter_mut()

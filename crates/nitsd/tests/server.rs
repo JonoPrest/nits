@@ -324,6 +324,98 @@ fn file_comment(n: u128, body: &str) -> Mutation {
     }
 }
 
+async fn concurrent_noop_suggestion_applies_once_with_a_durable_receipt(t: Transport) {
+    let h = start_on(small_repo(), t);
+    let ada = connect(&h, 41, "ada").await;
+    let bea = connect(&h, 42, "bea").await;
+    seed(&h, &ada).await;
+    let path = h.repo.path().join("a.rs");
+    let original = std::fs::read(&path).unwrap();
+    mutate(
+        &ada,
+        4,
+        Mutation::AddComment {
+            review_id: review_id(),
+            comment_id: comment_id(1),
+            kind: CommentKind::Suggestion {
+                patch: "@@ -1 +1 @@\n-fn a() { 1; }\n+fn a() { 1; }\n".into(),
+            },
+            anchor: Anchor::File {
+                repo_id: rid(),
+                path: RepoPath::new("a.rs").unwrap(),
+                blob_oid: h
+                    .repo
+                    .git(&["rev-parse", "feature:a.rs"])
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+            },
+            body: "An exact no-op still applies at most once".into(),
+            context: None,
+        },
+    )
+    .await
+    .unwrap();
+    let before = h.daemon.core().last_seq().unwrap();
+    for client in [&ada, &bea] {
+        assert!(matches!(
+            client
+                .request(Request::PreviewSuggestion {
+                    review_id: review_id(),
+                    comment_id: comment_id(1),
+                })
+                .await
+                .unwrap(),
+            Response::SuggestionPreview {
+                preview: nits_protocol::SuggestionPreview {
+                    inspection: nits_protocol::SuggestionInspection::Checked {
+                        worktree: nits_protocol::SuggestionWorktree::Original,
+                        ..
+                    },
+                    ..
+                }
+            }
+        ));
+    }
+    assert_eq!(h.daemon.core().last_seq().unwrap(), before);
+    let mutation = Mutation::ApplySuggestion {
+        review_id: review_id(),
+        comment_id: comment_id(1),
+    };
+    let (a, b) = tokio::join!(mutate(&ada, 5, mutation.clone()), mutate(&bea, 1, mutation));
+    let (committed, rejected) = match (a, b) {
+        (Ok(event), Err(error)) | (Err(error), Ok(event)) => (event, error),
+        result => panic!("expected exactly one application, got {result:?}"),
+    };
+    assert!(
+        matches!(rejected, RpcError::Invalid { ref reason } if reason.contains("already applied"))
+    );
+    assert_eq!(std::fs::read(path).unwrap(), original);
+    assert_eq!(
+        h.daemon.core().events_after(before).unwrap(),
+        vec![committed.clone()]
+    );
+    for client in [&ada, &bea] {
+        let Response::SuggestionPreview { preview } = client
+            .request(Request::PreviewSuggestion {
+                review_id: review_id(),
+                comment_id: comment_id(1),
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("expected preview")
+        };
+        let nits_protocol::SuggestionOutcome::Applied { receipt } = preview.suggestion.outcome
+        else {
+            panic!("both clients must see the committed receipt")
+        };
+        assert_eq!(receipt.seq, committed.seq);
+        assert_eq!(receipt.author, committed.author);
+        assert_eq!(receipt.at, committed.ts);
+    }
+}
+
 async fn malformed_unicode_suggestion_preserves_file_events_and_writer(t: Transport) {
     let h = start_on(small_repo(), t);
     let client = connect(&h, 1, "ada").await;
@@ -1239,6 +1331,7 @@ macro_rules! on_both_transports {
 }
 
 on_both_transports! {
+    concurrent_noop_suggestion_applies_once_with_a_durable_receipt,
     malformed_unicode_suggestion_preserves_file_events_and_writer,
     two_clients_one_writes_other_receives_in_order,
     reconnect_with_since_receives_exactly_the_gap,

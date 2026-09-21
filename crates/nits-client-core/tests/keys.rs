@@ -106,6 +106,7 @@ fn snapshot() -> ReviewSnapshot {
         },
     );
     let mut s = ReviewSnapshot {
+        suggestions: Vec::new(),
         review: review(),
         resolved: Some(NonEmpty::singleton(nits_protocol::ResolvedTarget {
             repo_id: repo_id(),
@@ -788,7 +789,12 @@ fn every_action_is_reachable_from_a_binding() {
             focus: Focus::Thread { index },
         }))
         .unwrap();
-    assert!(with_suggestion.view().threads[index].suggestion);
+    assert!(
+        with_suggestion.view().threads[index]
+            .comments
+            .iter()
+            .any(|comment| comment.suggestion.is_some())
+    );
     states.push(with_suggestion);
     let mut viewed = ready();
     viewed

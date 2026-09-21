@@ -137,7 +137,6 @@ module Item = {
     ~repositories: RepositoryIdentity.context=Unavailable,
     ~focused: bool,
     ~onSelect: unit => unit,
-    ~onApply: unit => unit,
     ~onOriginal: unit => unit,
     ~chrome: array<Hint.t>,
     ~onReply: unit => unit,
@@ -201,6 +200,10 @@ module Item = {
                   <div className="thread-body">
                     <UI.Markdown source=c.body />
                   </div>
+                  {switch c.suggestion {
+                  | Some(suggestion) => <SuggestionCard suggestion repositories chrome dispatch />
+                  | None => React.null
+                  }}
                 </li>
               )
               ->React.array}
@@ -214,9 +217,6 @@ module Item = {
             : <UI.Button label="Reply" title=?{Chrome.tip(chrome, Reply)} onClick=onReply />}
           <FindingActions thread chrome dispatch />
         </div>
-        {thread.suggestion
-          ? <UI.Button label="Apply suggestion (a)" kind=Primary onClick=onApply />
-          : React.null}
         {switch (thread.outdated, thread.context) {
         | (true, Some(_)) =>
           <UI.Button label="Open original diff (enter)" kind=Ghost onClick=onOriginal />
@@ -282,7 +282,6 @@ let make = (
               | Some(_) | None => React.null
               }}
               onReply={() => dispatch(ReplyOpened({threadId: t.id}))}
-              onApply={() => dispatch(ApplySuggestion({commentId: t.root}))}
               onOriginal={() => dispatch(OpenOriginalDiff({threadId: t.id}))}
             />
           )

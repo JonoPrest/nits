@@ -87,6 +87,7 @@ fn resolved(base: u8, head: u8) -> NonEmpty<ResolvedTarget> {
 
 fn snapshot(base: u8, head: u8) -> ReviewSnapshot {
     ReviewSnapshot {
+        suggestions: Vec::new(),
         review: Review {
             id: review_id(),
             workspace_id: WorkspaceId::from_parts(3, 3),
@@ -502,6 +503,7 @@ fn daemon_answers(core: &mut ClientCore, effects: &[Effect]) -> Vec<Effect> {
             | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
             | Request::ReviewSnapshot { .. }
+            | Request::PreviewSuggestion { .. }
             | Request::ListFiles { .. }
             | Request::OpenReview { .. }
             | Request::ResolveTargets { .. }
@@ -687,6 +689,7 @@ fn viewport_requests_only_the_window_and_bounds_in_flight() {
             | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
             | Request::ReviewSnapshot { .. }
+            | Request::PreviewSuggestion { .. }
             | Request::ListFiles { .. }
             | Request::OpenReview { .. }
             | Request::ResolveTargets { .. }
@@ -1356,6 +1359,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
                 | Request::EnsureDirectoryReview { .. }
                 | Request::GetReview { .. }
                 | Request::ReviewSnapshot { .. }
+                | Request::PreviewSuggestion { .. }
                 | Request::OpenReview { .. }
                 | Request::ResolveTargets { .. }
                 | Request::BlobRender { .. }
@@ -1476,6 +1480,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
             | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
             | Request::ReviewSnapshot { .. }
+            | Request::PreviewSuggestion { .. }
             | Request::ListFiles { .. }
             | Request::OpenReview { .. }
             | Request::ResolveTargets { .. }
@@ -2033,6 +2038,7 @@ fn comments_are_placed_on_rows_by_anchor_and_listed_as_threads() {
             | Request::EnsureDirectoryReview { .. }
             | Request::GetReview { .. }
             | Request::ReviewSnapshot { .. }
+            | Request::PreviewSuggestion { .. }
             | Request::ListFiles { .. }
             | Request::OpenReview { .. }
             | Request::ResolveTargets { .. }

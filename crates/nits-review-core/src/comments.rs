@@ -354,20 +354,25 @@ impl Core {
     }
 
     /// Apply a suggestion's patch to the working tree. The file must still
-    /// be at the blob the suggestion was made against.
+    /// be at the original blob. The immutable review/comment identity binds
+    /// both this check and PreviewSuggestion to the same anchor and patch.
     pub fn apply_suggestion(
         &self,
         ctx: &Ctx,
         review: ReviewId,
         id: CommentId,
     ) -> Result<BlobOid, CoreError> {
-        let c = self.comment(review, id)?;
-        let CommentKind::Suggestion { patch } = &c.kind else {
-            return Err(CoreError::invalid(format!(
-                "comment {id} is not a suggestion"
-            )));
-        };
-        let (repo_id, path, blob_oid) = match effective_anchor(&c.anchor, &c.state) {
+        let suggestion = self.suggestion(review, id)?;
+        match &suggestion.outcome {
+            nits_protocol::SuggestionOutcome::Applied { receipt } => {
+                return Err(CoreError::invalid(format!(
+                    "suggestion {id} was already applied at event {}",
+                    receipt.seq
+                )));
+            }
+            nits_protocol::SuggestionOutcome::Unapplied => {}
+        }
+        let (repo_id, path, blob_oid) = match &suggestion.anchor {
             Anchor::Lines {
                 repo_id,
                 path,
@@ -394,7 +399,7 @@ impl Core {
                 "{path} has changed since the suggestion was made"
             )));
         }
-        let patched = crate::patch::apply(&current, patch)
+        let patched = crate::patch::apply(&current, &suggestion.patch)
             .map_err(|e| CoreError::invalid(format!("patch does not apply: {e}")))?;
         let result_blob = repo.hash_blob(&patched)?;
         file.replace(&repo.metadata_paths()?.worktree, &current, &patched)?;
@@ -409,6 +414,76 @@ impl Core {
             },
         )?;
         Ok(result_blob)
+    }
+
+    fn suggestion(
+        &self,
+        review: ReviewId,
+        id: CommentId,
+    ) -> Result<nits_protocol::SuggestionRecord, CoreError> {
+        self.review(review)?;
+        self.comment(review, id)?;
+        self.store
+            .suggestion(review, id)?
+            .ok_or_else(|| CoreError::invalid(format!("comment {id} is not a suggestion")))
+    }
+
+    /// Inspect the original anchored bytes and current checkout without any
+    /// filesystem, object-store or event-log writes. Rejections retain the raw
+    /// patch; a proposed-byte match never manufactures an application receipt.
+    pub fn preview_suggestion(
+        &self,
+        review: ReviewId,
+        id: CommentId,
+    ) -> Result<nits_protocol::SuggestionPreview, CoreError> {
+        use nits_protocol::{SuggestionInspection, SuggestionPreview, SuggestionWorktree};
+
+        let suggestion = self.suggestion(review, id)?;
+        let inspect = || -> Result<SuggestionInspection, CoreError> {
+            let (repo_id, path, blob_oid) = match &suggestion.anchor {
+                Anchor::File {
+                    repo_id,
+                    path,
+                    blob_oid,
+                }
+                | Anchor::Lines {
+                    repo_id,
+                    path,
+                    blob_oid,
+                    ..
+                } => (*repo_id, path, *blob_oid),
+                Anchor::Review => {
+                    return Err(CoreError::invalid(
+                        "review-level suggestions cannot be applied",
+                    ));
+                }
+            };
+            let repo = self.review_repo(review, repo_id)?;
+            let original = repo.blob(blob_oid)?;
+            let preview = crate::patch::preview(&original, &suggestion.patch)
+                .map_err(|error| CoreError::invalid(format!("patch does not apply: {error}")))?;
+            let current = crate::suggestion_file::WorkingFile::open(repo.workdir(), path)
+                .and_then(|mut file| file.read());
+            let worktree = match current {
+                Ok(bytes) if bytes == original => SuggestionWorktree::Original,
+                Ok(bytes) if bytes == preview.result => SuggestionWorktree::Proposed,
+                Ok(_) => SuggestionWorktree::Changed,
+                Err(error) => SuggestionWorktree::Unavailable {
+                    reason: error.to_string(),
+                },
+            };
+            Ok(SuggestionInspection::Checked {
+                hunks: preview.hunks,
+                worktree,
+            })
+        };
+        let inspection = inspect().unwrap_or_else(|error| SuggestionInspection::Rejected {
+            reason: error.to_string(),
+        });
+        Ok(SuggestionPreview {
+            suggestion,
+            inspection,
+        })
     }
 
     // ---- re-anchoring -------------------------------------------------------

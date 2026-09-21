@@ -54,6 +54,7 @@ fn review(id: ReviewId) -> Review {
 
 fn snapshot(id: ReviewId, seq: Seq) -> ReviewSnapshot {
     ReviewSnapshot {
+        suggestions: Vec::new(),
         review: review(id),
         resolved: None,
         threads: Vec::new(),
@@ -2662,3 +2663,6 @@ fn blob_mode_identity_controls_viewed_progress_for_diffs_and_browse() {
 }
 #[path = "creation/mod.rs"]
 mod creation;
+
+#[path = "suggestion/mod.rs"]
+mod suggestion_flow;

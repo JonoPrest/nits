@@ -11,6 +11,8 @@ pub(super) const WORKSPACES: TableDefinition<'_, &str, &[u8]> = TableDefinition:
 pub(super) const REVIEWS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("reviews");
 pub(super) const COMMENTS: TableDefinition<'_, (&str, &str), &[u8]> =
     TableDefinition::new("comments");
+pub(super) const SUGGESTIONS: TableDefinition<'_, (&str, &str), &[u8]> =
+    TableDefinition::new("suggestions");
 pub(super) const THREADS: TableDefinition<'_, (&str, &str), &[u8]> =
     TableDefinition::new("threads");
 pub(super) const REVIEW_REQUESTS: TableDefinition<'_, (&str, u64), &[u8]> =
@@ -34,6 +36,7 @@ pub(super) fn ensure(txn: &WriteTransaction) -> Result<SchemaVersion, StoreError
     txn.open_table(WORKSPACES)?;
     txn.open_table(REVIEWS)?;
     txn.open_table(COMMENTS)?;
+    txn.open_table(SUGGESTIONS)?;
     txn.open_table(THREADS)?;
     txn.open_table(VIEWED)?;
     txn.open_table(REVIEW_REQUESTS)?;
@@ -64,6 +67,7 @@ pub(super) struct Write<'txn> {
     pub workspaces: Table<'txn, &'static str, &'static [u8]>,
     pub reviews: Table<'txn, &'static str, &'static [u8]>,
     pub comments: Table<'txn, (&'static str, &'static str), &'static [u8]>,
+    pub suggestions: Table<'txn, (&'static str, &'static str), &'static [u8]>,
     pub threads: Table<'txn, (&'static str, &'static str), &'static [u8]>,
     pub requests: Table<'txn, (&'static str, u64), &'static [u8]>,
     pub checkpoints: Table<'txn, (&'static str, u64), &'static [u8]>,
@@ -85,6 +89,7 @@ impl<'txn> Write<'txn> {
             workspaces: txn.open_table(WORKSPACES)?,
             reviews: txn.open_table(REVIEWS)?,
             comments: txn.open_table(COMMENTS)?,
+            suggestions: txn.open_table(SUGGESTIONS)?,
             threads: txn.open_table(THREADS)?,
             viewed: txn.open_table(VIEWED)?,
             requests: txn.open_table(REVIEW_REQUESTS)?,
@@ -132,6 +137,7 @@ impl<'txn> Write<'txn> {
         self.workspaces.retain(|_, _| false)?;
         self.reviews.retain(|_, _| false)?;
         self.comments.retain(|_, _| false)?;
+        self.suggestions.retain(|_, _| false)?;
         self.threads.retain(|_, _| false)?;
         self.viewed.retain(|_, _| false)?;
         self.requests.retain(|_, _| false)?;

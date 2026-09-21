@@ -195,10 +195,83 @@ impl<'a> TryFrom<&'a str> for Patch<'a> {
 
 pub fn apply(original: &[u8], patch: &str) -> Result<Vec<u8>, PatchError> {
     let patch = Patch::try_from(patch)?;
+    apply_parsed(original, &patch)
+}
+
+/// The proposed bytes and their exact, validated source-line presentation.
+#[derive(Debug)]
+pub struct PatchPreview {
+    pub hunks: Vec<nits_protocol::SuggestionHunk>,
+    pub result: Vec<u8>,
+}
+
+/// Uses the application parser and original-byte checks. It neither writes
+/// objects nor reads today's checkout, so stale suggestions remain inspectable.
+pub fn preview(original: &[u8], source: &str) -> Result<PatchPreview, PatchError> {
+    use nits_protocol::{LineEnding, LineNo, SuggestionHunk, SuggestionLine, SuggestionLineKind};
+
+    let patch = Patch::try_from(source)?;
+    let result = apply_parsed(original, &patch)?;
+    let mut hunks = Vec::with_capacity(patch.hunks.len());
+    for hunk in patch.hunks {
+        let line_no = |offset: usize| {
+            offset
+                .checked_add(1)
+                .and_then(|line| u32::try_from(line).ok())
+                .and_then(LineNo::new)
+                .ok_or_else(|| PatchError::Header(hunk.header.to_owned()))
+        };
+        let mut old = hunk.old.offset;
+        let mut new = hunk.new.offset;
+        let mut lines = Vec::with_capacity(hunk.lines.len());
+        for line in hunk.lines {
+            let kind = match line.kind {
+                LineKind::Context => {
+                    let kind = SuggestionLineKind::Context {
+                        old: line_no(old)?,
+                        new: line_no(new)?,
+                    };
+                    old += 1;
+                    new += 1;
+                    kind
+                }
+                LineKind::Remove => {
+                    let kind = SuggestionLineKind::Remove { old: line_no(old)? };
+                    old += 1;
+                    kind
+                }
+                LineKind::Add => {
+                    let kind = SuggestionLineKind::Add { new: line_no(new)? };
+                    new += 1;
+                    kind
+                }
+            };
+            let (text, ending) = if let Some(text) = line.bytes.strip_suffix(b"\r\n") {
+                (text, LineEnding::CrLf)
+            } else if let Some(text) = line.bytes.strip_suffix(b"\n") {
+                (text, LineEnding::Lf)
+            } else {
+                (line.bytes, LineEnding::Missing)
+            };
+            // Body lines are slices of the validated UTF-8 patch string.
+            let text = std::str::from_utf8(text)
+                .map_err(|error| PatchError::Line(error.to_string()))?
+                .to_owned();
+            lines.push(SuggestionLine { kind, text, ending });
+        }
+        hunks.push(SuggestionHunk {
+            header: hunk.header.to_owned(),
+            lines,
+        });
+    }
+    Ok(PatchPreview { hunks, result })
+}
+
+fn apply_parsed(original: &[u8], patch: &Patch<'_>) -> Result<Vec<u8>, PatchError> {
     let old_lines: Vec<&[u8]> = original.split_inclusive(|&b| b == b'\n').collect();
     let mut out = Vec::new();
     let mut cursor = 0;
-    for hunk in patch.hunks {
+    for hunk in &patch.hunks {
         let untouched = old_lines
             .get(cursor..hunk.old.offset)
             .ok_or_else(|| PatchError::Header(hunk.header.to_owned()))?;
@@ -208,7 +281,7 @@ pub fn apply(original: &[u8], patch: &str) -> Result<Vec<u8>, PatchError> {
             return Err(PatchError::Header(hunk.header.to_owned()));
         }
         cursor = hunk.old.offset;
-        for line in hunk.lines {
+        for line in &hunk.lines {
             match line.kind {
                 LineKind::Context | LineKind::Remove => {
                     let found = old_lines.get(cursor).copied();
