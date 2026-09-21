@@ -5,6 +5,16 @@ open View
 
 let resetPanel: Dom.element => unit = %raw(`el => { el.scrollTop = 0 }`)
 
+@val @scope("document") external activeElement: Nullable.t<Dom.element> = "activeElement"
+let restoreFocus: Dom.element => unit = %raw(`element => {
+  // React removes the dialog before passive cleanup. Restore its invoker only
+  // if no subsequent action or deliberate user choice already took focus.
+  if (document.activeElement === document.body && element.isConnected &&
+      !element.matches(':disabled') && !element.closest('[inert]')) {
+    element.focus({preventScroll: true});
+  }
+}`)
+
 let compact = (text: string) => text->String.toLowerCase->String.replaceRegExp(/\s+/g, "")
 
 // Fuzzy subsequence match. Exact and prefix matches sort before sparse
@@ -86,6 +96,12 @@ let conflictMatches = (conflict: Conflict.t, query: string) =>
 
 @react.component
 let make = (~help: HelpView.t, ~bindings: array<View.Hint.t>=[], ~dispatch: Action.t => unit) => {
+  // Capture before the dialog's input autoFocus runs during commit, not from
+  // an effect after it has already replaced the invoker's native focus.
+  let returnFocus = React.useRef(activeElement)
+  React.useEffect0(() => Some(
+    () => returnFocus.current->Nullable.toOption->Option.forEach(restoreFocus),
+  ))
   let (query, setQuery) = React.useState(() => "")
   let groups = filteredGroups(help.groups, query)
   let conflicts = help.conflicts->Array.filter(conflict => conflictMatches(conflict, query))
