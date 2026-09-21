@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nits · GitHub pull request concepts</title>
+  <style>
+    :root { color-scheme: dark; --bg: oklch(18% 0 0); --panel: oklch(22% 0 0); --raised: oklch(25% 0 0); --fg: oklch(92% 0 0); --muted: oklch(70% 0 0); --border: oklch(34% 0 0); --blue: oklch(75% .16 260); --green: oklch(85% .12 150); --amber: oklch(85% .12 80); }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.55 system-ui, sans-serif; }
+    .artboard { display: none; min-height: 1040px; flex-direction: column; }
+    .artboard:target { display: flex; }
+    body:not(:has(.artboard:target)) #inline { display: flex; }
+    h1,h2,h3,p { margin: 0; }
+    h1 { font-size: 23px; font-weight: 600; letter-spacing: -.4px; }
+    h2 { font-size: 17px; font-weight: 600; }
+    h3 { font-size: 14px; font-weight: 600; }
+    .mono,code,kbd { font-family: ui-monospace, 'DejaVu Sans Mono', monospace; }
+    .muted { color: var(--muted); }
+    .blue { color: var(--blue); }
+    .green { color: var(--green); }
+    .amber { color: var(--amber); }
+    .small { font-size: 12px; }
+    .row { display: flex; gap: 12px; align-items: center; }
+    .spread { justify-content: space-between; }
+    .grow { flex: 1; }
+    .label { font-size: 11px; letter-spacing: 1.3px; text-transform: uppercase; color: var(--muted); }
+    .brand { font-weight: 650; font-size: 19px; letter-spacing: -.5px; }
+    .top { height: 66px; padding: 0 28px; background: var(--panel); border-bottom: 1px solid var(--border); }
+    .divider { height: 23px; width: 1px; background: var(--border); margin: 0 6px; }
+    button,.button { font: inherit; font-size: 13px; background: var(--panel); border: 1px solid var(--border); border-radius: 5px; padding: 6px 11px; color: var(--fg); white-space: nowrap; }
+    .primary { background: var(--blue); border-color: var(--blue); color: var(--bg); font-weight: 600; }
+    .text-button { border: 0; color: var(--blue); background: none; padding: 0; }
+    kbd { font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; margin-left: 6px; color: var(--muted); }
+    .primary kbd { border-color: oklch(45% .08 260); color: var(--bg); }
+    .badge { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 4px; padding: 1px 7px; font-size: 11px; white-space: nowrap; }
+    .badge.github { color: var(--blue); border-color: oklch(45% .08 260); background: oklch(26% .03 260); }
+    .badge.selected { color: var(--green); border-color: oklch(43% .06 150); background: oklch(26% .04 150); }
+    .tabs { height: 48px; padding: 0 28px; gap: 28px; border-bottom: 1px solid var(--border); }
+    .tab { height: 48px; display: flex; align-items: center; gap: 9px; color: var(--muted); }
+    .tab.active { color: var(--fg); border-bottom: 2px solid var(--blue); }
+    .count { padding: 0 6px; border-radius: 10px; font-size: 11px; background: var(--raised); }
+    .scope { padding: 10px 28px; background: var(--panel); border-bottom: 1px solid var(--border); }
+    .workspace { display: grid; grid-template-columns: 238px minmax(0, 1fr); flex: 1; }
+    aside { background: var(--panel); border-right: 1px solid var(--border); padding-top: 22px; }
+    .aside-title { padding: 0 22px 12px; }
+    .file { padding: 9px 18px 9px 25px; font-size: 12px; display: flex; align-items: center; justify-content: space-between; }
+    .file.active { border-left: 2px solid var(--blue); padding-left: 23px; background: oklch(29% .02 260); }
+    .aside-divider { margin: 24px 20px; border-top: 1px solid var(--border); }
+    .aside-note { padding: 0 22px; font-size: 12px; color: var(--muted); }
+    .diff { padding: 24px 28px; }
+    .filebox { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .filehead { padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); font-size: 12px; }
+    .hunk { background: oklch(26% .03 260); color: oklch(75% .08 260); padding: 5px 20px; font: 12px/1.7 ui-monospace, monospace; }
+    .line { display: grid; grid-template-columns: 45px 45px 24px 1fr; padding: 2px 12px; font: 13px/1.7 ui-monospace, 'DejaVu Sans Mono', monospace; }
+    .line > :nth-child(-n+3) { color: var(--muted); text-align: center; }
+    .add { background: oklch(28% .06 150); }
+    .remove { background: oklch(28% .05 25); }
+    .marked { box-shadow: inset 3px 0 var(--blue); }
+    .thread { margin: 14px 22px 16px 70px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+    .thread.focused { border-color: var(--blue); }
+    .comment { padding: 14px 18px; }
+    .comment + .comment { border-top: 1px solid var(--border); }
+    .avatar { display: flex; align-items: center; justify-content: center; width: 27px; height: 27px; background: oklch(34% .025 260); color: oklch(86% .045 260); border-radius: 50%; font-size: 11px; flex-shrink: 0; }
+    .avatar.agent { border-radius: 5px; background: oklch(34% .035 150); color: var(--green); }
+    .comment p { margin-top: 9px; padding-left: 39px; }
+    .actions { padding: 10px 18px; border-top: 1px solid var(--border); gap: 18px; }
+    .context-line { padding: 8px 18px; font-size: 11px; color: var(--muted); background: oklch(20% 0 0); border-bottom: 1px solid var(--border); }
+    .footer { min-height: 41px; padding: 8px 22px; border-top: 1px solid var(--border); background: var(--panel); font-size: 11px; gap: 19px; margin-top: auto; }
+    .footer kbd { margin: 0 5px 0 0; }
+    .concept { text-transform: uppercase; letter-spacing: 1.2px; font-size: 10px; color: var(--muted); }
+    .page { width: min(1120px, calc(100% - 72px)); margin: 30px auto; }
+    .heading { margin-bottom: 23px; }
+    .heading p { margin-top: 5px; color: var(--muted); }
+    .plan { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 24px; align-items: start; }
+    .panel { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; background: var(--panel); }
+    .panel-head { padding: 13px 18px; border-bottom: 1px solid var(--border); }
+    .selection { padding: 17px 18px; border-bottom: 1px solid var(--border); }
+    .selection:last-child { border-bottom: 0; }
+    .selection p { margin: 9px 0 0 30px; }
+    .check { display: inline-flex; align-items: center; justify-content: center; background: var(--blue); color: var(--bg); border-radius: 3px; width: 17px; height: 17px; font-size: 11px; flex-shrink: 0; }
+    .check.off { background: transparent; border: 1px solid var(--border); }
+    .blocked { border-left: 3px solid var(--amber); padding-left: 15px; }
+    .description { padding: 20px; }
+    .description p { margin-top: 12px; }
+    .key-value { display: grid; grid-template-columns: 80px 1fr; gap: 7px 14px; font-size: 12px; margin: 15px 0; }
+    .rule { height: 1px; background: var(--border); margin: 18px 0; }
+    .summary { margin-top: 19px; }
+    .summary-text { padding: 13px 16px; margin-top: 8px; border: 1px solid var(--border); background: var(--bg); border-radius: 5px; }
+    .publish-footer { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
+    .notice { margin-top: 16px; padding: 12px 15px; font-size: 12px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); }
+    .auth-page { width: min(1020px, calc(100% - 72px)); margin: 36px auto; }
+    .auth-layout { display: grid; grid-template-columns: 235px 1fr; gap: 30px; }
+    .step { padding: 12px 16px; border-radius: 5px; margin-bottom: 10px; font-size: 13px; }
+    .step.current { background: oklch(28% .03 260); color: var(--blue); }
+    .step span { margin-right: 9px; }
+    .auth-content { padding: 26px 30px; }
+    .auth-content h2 { font-size: 20px; }
+    .auth-content > p { margin: 9px 0 22px; color: var(--muted); }
+    .auth-method { padding: 12px 14px; border: 1px solid var(--border); border-radius: 5px; margin-bottom: 17px; }
+    .device { padding: 25px 20px; text-align: center; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+    .device-code { font-size: 31px; letter-spacing: 5px; margin: 16px 0; font-weight: 500; }
+    .auth-state { padding: 15px 0; border-bottom: 1px solid var(--border); }
+    .auth-state:last-child { border-bottom: 0; }
+    .dot { width: 6px; height: 6px; background: var(--green); border-radius: 50%; display: inline-block; margin-right: 6px; }
+    @media (max-width: 950px) { .workspace { grid-template-columns: 180px 1fr; } .top { flex-wrap: wrap; height: auto; padding: 16px; } .plan,.auth-layout { grid-template-columns: 1fr; } .steps { display: flex; flex-wrap: wrap; } .scope { flex-wrap: wrap; } .thread { margin-left: 15px; } .footer { flex-wrap: wrap; } }
+  </style>
+</head>
+<body>
+<section class="artboard" id="inline" aria-label="Concept: GitHub and Nits inline threads">
+  <header class="top row">
+    <span class="brand">nits</span><span class="divider"></span><strong>atlas</strong><span class="muted small">/ Retry failed requests</span>
+    <span class="grow"></span><span class="small muted"><span class="dot"></span>buildbox · SSH</span>
+    <button>GitHub #128 <span class="muted">⌄</span></button><button class="primary">Publish · 2 <kbd>␣ p p</kbd></button>
+  </header>
+  <nav class="tabs row" aria-label="Review views">
+    <span class="tab active">Files changed <span class="count">3</span></span>
+    <span class="tab">Conversation <span class="count">2 Nits open</span><span class="count">2 GitHub unresolved</span></span><span class="tab">Browse</span>
+    <span class="grow"></span><span class="muted small">GitHub updated 12 seconds ago</span>
+  </nav>
+  <div class="scope row"><span class="badge">PR changes</span><span class="mono small">main <span class="muted">→</span> retry-policy</span><span class="muted small">@ 7ac42de</span><span class="grow"></span><span class="small muted">3 files · <span class="green">+42</span> −8</span><button>Diff settings</button></div>
+  <div class="workspace">
+    <aside>
+      <div class="aside-title label">Files changed</div>
+      <div class="file active"><span class="mono">src/retry.rs</span><span class="count">2</span></div>
+      <div class="file"><span class="mono">src/client.rs</span><span class="count">1</span></div>
+      <div class="file"><span class="mono">tests/retry.rs</span><span class="count">1</span></div>
+      <div class="aside-divider"></div><div class="aside-title label">Pull request</div>
+      <div class="aside-note"><p class="blue">example-org/atlas #128</p><p style="margin-top:8px">Retry failed requests</p><p style="margin-top:12px"><span class="badge selected">Open</span></p></div>
+      <div class="aside-divider"></div><div class="aside-title label">Review progress</div><div class="aside-note">1 of 3 files viewed<br>2 comments selected for PR</div>
+    </aside>
+    <main class="diff">
+      <div class="filebox">
+        <div class="filehead row"><span>⌄</span><strong class="mono">src/retry.rs</strong><span class="green">+24</span><span class="muted">−4</span><span class="grow"></span><span class="muted">□ Viewed <kbd>v</kbd></span></div>
+        <div class="hunk">@@ −37,6 +37,10 @@ impl RetryPolicy</div>
+        <div class="line"><span>37</span><span>37</span><span></span><span>pub fn delay(&amp;self, attempt: u32) -&gt; Duration {</span></div>
+        <div class="line remove"><span>38</span><span></span><span>−</span><span>    Duration::from_millis(self.base_ms)</span></div>
+        <div class="line add"><span></span><span>38</span><span>+</span><span>    let exponent = attempt.min(self.max_exponent);</span></div>
+        <div class="line add marked"><span></span><span>39</span><span>+</span><span>    let delay = self.base_ms.saturating_mul(1 &lt;&lt; exponent);</span></div>
+        <div class="thread focused">
+          <div class="context-line row"><span>src/retry.rs:39 · PR #128</span><span class="grow"></span><span>Unresolved on GitHub</span></div>
+          <div class="comment"><div class="row"><span class="avatar">EL</span><strong>eli</strong><span class="badge github">GitHub</span><span class="small muted">18 minutes ago</span><span class="grow"></span><span class="blue small">Open on GitHub ↗</span></div><p>Can we cap the final delay too? A large base could still exceed the request timeout.</p></div>
+          <div class="comment"><div class="row"><span class="avatar">AD</span><strong>ada</strong><span class="badge github">GitHub</span><span class="small muted">6 minutes ago</span></div><p>Agreed — I’ll clamp it against the remaining timeout.</p></div>
+          <div class="actions row"><button>Reply on GitHub <kbd>r</kbd></button><span class="blue small">Resolve on GitHub</span><span class="grow"></span><span class="muted small">Keep a local note</span></div>
+        </div>
+        <div class="line add"><span></span><span>40</span><span>+</span><span>    Duration::from_millis(delay)</span></div>
+        <div class="line"><span>39</span><span>41</span><span></span><span>}</span></div>
+        <div class="thread">
+          <div class="comment"><div class="row"><span class="avatar agent">SC</span><strong>Scout</strong><span class="badge">Nits · agent</span><span class="small muted">just now</span><span class="grow"></span><span class="badge selected">Selected for PR</span></div><p>Please add a test at the maximum exponent so the overflow behavior stays covered.</p></div>
+          <div class="actions row"><span class="small muted">Local finding · open</span><span class="grow"></span><span class="blue small">Remove from PR review <kbd>␣ p a</kbd></span></div>
+        </div>
+      </div>
+      <div class="filebox" style="margin-top:16px"><div class="filehead row" style="border:0"><span>›</span><strong class="mono">src/client.rs</strong><span class="green">+8</span><span class="grow"></span><span class="badge">1 Nits-only finding</span><span class="muted">✓ Viewed</span></div></div>
+    </main>
+  </div>
+  <footer class="footer row"><span class="badge">NORMAL · THREAD</span><span><kbd>j/k</kbd>move</span><span><kbd>r</kbd>reply draft</span><span><kbd>␣ p a</kbd>select for PR</span><span><kbd>␣ p p</kbd>preview</span><span class="grow"></span><span class="concept">01 · Design concept</span></footer>
+</section>
+
+<section class="artboard" id="publish" aria-label="Concept: explicit publication preview">
+  <header class="top row"><span class="brand">nits</span><span class="divider"></span><strong>atlas</strong><span class="muted small">/ Retry failed requests</span><span class="grow"></span><span class="small muted"><span class="dot"></span>buildbox · SSH</span><button>GitHub #128</button></header>
+  <main class="page">
+    <div class="heading row spread"><div><div class="label" style="margin-bottom:7px">Outgoing review</div><h1>Publish to pull request</h1><p>Choose what leaves Nits. Review the exact text and destination before sending.</p></div><button>Back to review <kbd>esc</kbd></button></div>
+    <div class="plan">
+      <div>
+        <div class="panel">
+          <div class="panel-head row spread"><h2>Selected comments</h2><span class="small muted">2 ready · 1 needs placement</span></div>
+          <div class="selection"><div class="row"><span class="check">✓</span><strong class="mono small">src/retry.rs:41</strong><span class="grow"></span><span class="badge selected">Inline · RIGHT</span></div><p>Please add a test at the maximum exponent so the overflow behavior stays covered.</p><p class="small muted">Forwarded from Nits · original author: Scout (agent)</p></div>
+          <div class="selection"><div class="row"><span class="check">✓</span><strong class="mono small">src/retry.rs:39</strong><span class="grow"></span><span class="badge selected">Reply to eli</span></div><p>I’ll clamp the delay against the remaining timeout and add a boundary test.</p><p class="small muted">Reply in the existing GitHub thread · posted as @ada</p></div>
+          <div class="selection blocked"><div class="row"><span class="check off"></span><strong class="mono small">src/client.rs:84</strong><span class="grow"></span><span class="badge amber">Needs placement</span></div><p>This should share the cancellation token with the caller.</p><p class="small amber">This line only exists in your working tree. It is not in the PR diff.</p><div class="row" style="margin:14px 0 0 30px;gap:18px"><span class="badge">Keep local</span><span class="blue small">Choose PR location</span><span class="blue small">Preview as timeline comment</span></div></div>
+        </div>
+        <div class="summary"><div class="row spread"><h3>Review summary</h3><span class="small muted">Comment review</span></div><div class="summary-text">Two follow-ups on retry limits and boundary coverage.</div><p class="small muted" style="margin-top:8px">The inline finding and this summary form one review. The reply is sent separately.</p></div>
+        <div class="notice">If a send fails, successful comments keep their GitHub links. Unsent comments remain here.</div>
+      </div>
+      <div class="panel description">
+        <div class="label">Destination</div><h2 style="margin-top:8px">example-org/atlas #128</h2><p class="muted small">Retry failed requests</p>
+        <div class="key-value"><span class="muted">Host</span><span>github.com</span><span class="muted">Head</span><span class="mono">7ac42de</span><span class="muted">Branch</span><span class="mono">retry-policy</span></div>
+        <div class="rule"></div><div class="label">Publishing account</div><div class="row" style="margin-top:14px"><span class="avatar">AD</span><strong>@ada</strong><span class="badge selected">Can comment</span></div><p class="small muted">GitHub CLI account on buildbox</p>
+        <div class="rule"></div><h3>What will be published</h3><p class="small">1 inline finding + review summary<br>1 reply to an existing thread</p><p class="small muted">1 local finding stays in Nits.</p>
+        <div class="rule"></div><span class="small green">✓ Checked against current PR head</span><p class="small muted">A new push requires a refreshed preview.</p>
+      </div>
+    </div>
+    <div class="publish-footer row"><span class="muted small">Local findings retain their author and disposition.</span><span class="grow"></span><button>Save draft</button><button class="primary">Publish 2 comments <kbd>ctrl+enter</kbd></button></div>
+  </main>
+  <footer class="footer row"><span class="badge">NORMAL · PUBLISH</span><span><kbd>j/k</kbd>move</span><span><kbd>enter</kbd>select</span><span><kbd>tab</kbd>next control</span><span><kbd>ctrl+enter</kbd>publish</span><span><kbd>esc</kbd>back</span><span class="grow"></span><span class="concept">02 · Design concept</span></footer>
+</section>
+
+<section class="artboard" id="connect" aria-label="Concept: device sign-in for an SSH daemon">
+  <header class="top row"><span class="brand">nits</span><span class="divider"></span><strong>atlas</strong><span class="muted small">/ GitHub connection</span><span class="grow"></span><span class="small muted"><span class="dot"></span>buildbox · SSH</span><span class="badge">GitHub disconnected</span></header>
+  <main class="auth-page">
+    <div class="heading"><div class="label" style="margin-bottom:8px">Connection settings · App sign-in phase</div><h1>Connect GitHub to buildbox</h1><p>Your review runs on this SSH daemon. Its GitHub account is connected here too.</p></div>
+    <div class="auth-layout">
+      <div class="steps"><div class="step current"><span>01</span> Sign in</div><div class="step"><span>02</span> Repository access</div><div class="step"><span>03</span> Link pull request</div><div class="aside-divider"></div><p class="small muted" style="padding:0 16px">Already use gh?<br><span class="blue">Use GitHub CLI on buildbox</span></p><p class="small muted" style="padding:18px 16px">Signing in does not publish any local comments.</p></div>
+      <div class="panel auth-content">
+        <h2>Authorize Nits in your browser</h2><p>You can use the browser on this computer. The credential stays on buildbox.</p>
+        <div class="auth-method row"><span class="badge github">GitHub App</span><span>github.com</span><span class="grow"></span><span class="muted small">Device sign-in</span></div>
+        <div class="device"><div class="small muted">Enter this code at github.com/login/device</div><div class="device-code mono">ABCD-EFGH</div><div class="row" style="justify-content:center"><button>Copy code <kbd>y</kbd></button><button class="primary">Open GitHub <kbd>o</kbd></button></div><p class="small muted" style="margin-top:17px">Waiting for authorization · code expires in 12 minutes</p></div>
+        <div style="margin-top:18px"><div class="auth-state row spread"><span class="small">GitHub account</span><span class="small amber">Awaiting sign-in</span></div><div class="auth-state row spread"><span class="small">Repository access</span><span class="small muted">Select repositories after sign-in</span></div><div class="auth-state row spread"><span class="small">Credential storage</span><span class="small">buildbox · OS secret store</span></div></div>
+        <div class="notice">For an organization repository, installation may need an owner's approval. Cached reviews remain available while you wait.</div>
+        <div class="row" style="margin-top:21px"><span class="small muted">Access: pull request comments and reviews</span><span class="grow"></span><button>Cancel <kbd>esc</kbd></button></div>
+      </div>
+    </div>
+  </main>
+  <footer class="footer row"><span class="badge">NORMAL · CONNECTION</span><span><kbd>o</kbd>open GitHub</span><span><kbd>y</kbd>copy code</span><span><kbd>tab</kbd>next control</span><span><kbd>esc</kbd>cancel</span><span class="grow"></span><span class="concept">03 · Design concept · Later App phase</span></footer>
+</section>
+</body>
+</html>
