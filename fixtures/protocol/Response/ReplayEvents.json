@@ -1,0 +1,10 @@
+{
+  "page": {
+    "events": [],
+    "progress": {
+      "type": "Complete"
+    },
+    "through": 42
+  },
+  "type": "ReplayEvents"
+}

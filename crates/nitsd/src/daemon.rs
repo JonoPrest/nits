@@ -222,6 +222,38 @@ impl Daemon {
         self.events.subscribe()
     }
 
+    /// A cancellable log-head wait followed by one bounded Core page. Register
+    /// before checking the head: a write in between is either in the page or
+    /// wakes this receiver. Broadcast lag only requires another head check;
+    /// history itself is always read from the store, never from this queue.
+    pub async fn replay_events(
+        &self,
+        scope: SubscribeScope,
+        position: nits_protocol::ReplayPosition,
+    ) -> Result<nits_protocol::ReplayPage, DaemonError> {
+        if let nits_protocol::ReplayPosition::Follow { after } = position {
+            let mut wake = self.subscribe();
+            loop {
+                let head = self
+                    .read(Core::last_seq)
+                    .await?
+                    .unwrap_or(nits_protocol::Seq::new(0));
+                if head > after {
+                    break;
+                }
+                tokio::select! {
+                    () = self.shutdown.cancelled() => return Err(DaemonError::Shutdown),
+                    event = wake.recv() => match event {
+                        Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {},
+                        Err(broadcast::error::RecvError::Closed) => return Err(DaemonError::Shutdown),
+                    }
+                }
+            }
+        }
+        self.read(move |core| core.replay_events(&scope, position))
+            .await
+    }
+
     /// Subscribe to working-tree deltas.
     #[must_use]
     pub fn subscribe_deltas(&self) -> broadcast::Receiver<Arc<TreeDelta>> {
@@ -289,18 +321,7 @@ impl Daemon {
     /// Does `event` fall inside `scope`?
     #[must_use]
     pub fn matches(&self, scope: &SubscribeScope, event: &Event) -> bool {
-        match scope {
-            SubscribeScope::All => true,
-            SubscribeScope::Workspace { workspace_id } => {
-                event_workspace(&event.body)
-                    .or_else(|| event_review(&event.body).and_then(|r| self.workspace_of(r)))
-                    == Some(*workspace_id)
-            }
-            SubscribeScope::Review { review_id } => event_review(&event.body) == Some(*review_id),
-            SubscribeScope::AwaitingAgent { agent } => {
-                matches!(&event.body, EventBody::ReviewRequested { agent: a, .. } if a == agent)
-            }
-        }
+        scope.matches(event, |review| self.workspace_of(review))
     }
 }
 
@@ -311,60 +332,6 @@ pub fn now() -> nits_protocol::Timestamp {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
     nits_protocol::Timestamp::from_millis(ms)
-}
-
-/// The workspace an event names directly, if any.
-fn event_workspace(body: &EventBody) -> Option<WorkspaceId> {
-    match body {
-        EventBody::WorkspaceCreated { workspace } => Some(workspace.id),
-        EventBody::WorkspaceUpdated { workspace_id, .. }
-        | EventBody::RepoAttached { workspace_id, .. }
-        | EventBody::RepoDetached { workspace_id, .. } => Some(*workspace_id),
-        EventBody::ReviewCreated { review } => Some(review.workspace_id),
-        EventBody::ReviewUpdated { .. }
-        | EventBody::ReviewTargetUpdated { .. }
-        | EventBody::ReviewDeleted { .. }
-        | EventBody::ReviewTargetsResolved { .. }
-        | EventBody::CommentCreated { .. }
-        | EventBody::CommentEdited { .. }
-        | EventBody::CommentDeleted { .. }
-        | EventBody::CommentReanchored { .. }
-        | EventBody::ThreadDeferred { .. }
-        | EventBody::ThreadResolved { .. }
-        | EventBody::ThreadUnresolved { .. }
-        | EventBody::FileViewed { .. }
-        | EventBody::FileUnviewed { .. }
-        | EventBody::ReviewRequested { .. }
-        | EventBody::ReviewChecked { .. }
-        | EventBody::SuggestionApplied { .. } => None,
-    }
-}
-
-/// The review an event belongs to, if any.
-fn event_review(body: &EventBody) -> Option<ReviewId> {
-    match body {
-        EventBody::ReviewCreated { review } => Some(review.id),
-        EventBody::CommentCreated { comment } => Some(comment.review_id),
-        EventBody::ReviewUpdated { review_id, .. }
-        | EventBody::ReviewTargetUpdated { review_id, .. }
-        | EventBody::ReviewDeleted { review_id }
-        | EventBody::ReviewTargetsResolved { review_id, .. }
-        | EventBody::CommentEdited { review_id, .. }
-        | EventBody::CommentDeleted { review_id, .. }
-        | EventBody::CommentReanchored { review_id, .. }
-        | EventBody::ThreadDeferred { review_id, .. }
-        | EventBody::ThreadResolved { review_id, .. }
-        | EventBody::ThreadUnresolved { review_id, .. }
-        | EventBody::FileViewed { review_id, .. }
-        | EventBody::FileUnviewed { review_id, .. }
-        | EventBody::ReviewRequested { review_id, .. }
-        | EventBody::ReviewChecked { review_id, .. }
-        | EventBody::SuggestionApplied { review_id, .. } => Some(*review_id),
-        EventBody::WorkspaceCreated { .. }
-        | EventBody::WorkspaceUpdated { .. }
-        | EventBody::RepoAttached { .. }
-        | EventBody::RepoDetached { .. } => None,
-    }
 }
 
 #[cfg(test)]

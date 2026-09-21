@@ -22,6 +22,7 @@
 //! human-readable in a hex dump and sort by ULID time.
 
 mod migrate;
+pub mod replay;
 mod tables;
 mod views;
 
@@ -72,6 +73,8 @@ pub enum StoreError {
     Corrupt { seq: Seq, reason: String },
     #[error("event at seq {seq} does not apply to current views: {reason}")]
     Inconsistent { seq: Seq, reason: String },
+    #[error("invalid replay: {reason}")]
+    Replay { reason: String },
     #[error("encoding: {0}")]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
@@ -171,9 +174,11 @@ impl Store {
     pub fn events_after(&self, after: Option<Seq>) -> Result<Vec<Event>, StoreError> {
         let txn = self.db.begin_read()?;
         let events = txn.open_table(tables::EVENTS)?;
-        let start = after.map_or(0, |s| s.get() + 1);
+        let start = after.map_or(std::ops::Bound::Unbounded, |s| {
+            std::ops::Bound::Excluded(s.get())
+        });
         let mut out = Vec::new();
-        for entry in events.range(start..)? {
+        for entry in events.range((start, std::ops::Bound::Unbounded))? {
             let (k, v) = entry?;
             let stored: StoredEvent =
                 serde_json::from_slice(v.value()).map_err(|e| StoreError::Corrupt {

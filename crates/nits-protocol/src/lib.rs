@@ -18,6 +18,7 @@ pub mod ids;
 pub mod invariants;
 pub mod reference;
 pub mod render;
+pub mod replay;
 pub mod rpc;
 #[cfg(feature = "schema")]
 mod schema;
@@ -30,5 +31,6 @@ pub use ids::*;
 pub use invariants::*;
 pub use reference::*;
 pub use render::*;
+pub use replay::*;
 pub use rpc::*;
 pub use version::*;
