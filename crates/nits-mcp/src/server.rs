@@ -6,17 +6,20 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use nits_protocol::{
-    AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, Human, LineNo, LineRange, Mutation,
+    Anchor, Author, BuildInfo, ClientId, CommentKind, Human, LineNo, LineRange, Mutation,
     RenderContent, RenderOpts, RepoPath, ReviewTarget, Since,
 };
 use nitsd::client::{Client, ClientError, Identity};
 use nitsd::ops::{EventPoll, Ops, OpsError};
 use nitsd::render_text as text;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use strum::EnumString;
 use tokio_util::sync::CancellationToken;
 
+use crate::checkpoint::{
+    CheckpointError, CheckpointState, CursorPolicy, InitializedIdentity, SessionCheckpoint,
+};
 use crate::jsonrpc::{self, Incoming, Outgoing};
 use crate::tools::{
     self, Call, ContextCall, MutatingCall, QueryCall, SessionCall, ToolCall, ToolName,
@@ -25,7 +28,7 @@ use crate::tools::{
 /// JSON-RPC methods this server answers. Anything else is
 /// `METHOD_NOT_FOUND`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
-enum Method {
+pub(crate) enum Method {
     #[strum(serialize = "initialize")]
     Initialize,
     #[strum(serialize = "ping")]
@@ -39,9 +42,9 @@ enum Method {
 }
 
 #[derive(Debug, Deserialize)]
-struct Cancellation {
+pub(crate) struct Cancellation {
     #[serde(rename = "requestId")]
-    request_id: jsonrpc::RequestId,
+    pub(crate) request_id: jsonrpc::RequestId,
 }
 
 /// The transport schedules only event waits. Every other call has completed
@@ -131,7 +134,8 @@ pub struct Endpoint {
 
 /// Identity of the agent on the other end of stdio, from the environment
 /// and the MCP `initialize` call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentIdentity {
     /// Model name, e.g. from `NITS_AGENT_MODEL`.
     pub model: String,
@@ -211,22 +215,66 @@ impl From<nits_protocol::InvariantError> for ToolError {
 /// because each new Ops starts its mutation sequence at zero.
 #[derive(Debug)]
 struct Session {
-    author: Author,
-    ops: Ops,
+    identity: InitializedIdentity,
+    connection: SessionConnection,
     end: CancellationToken,
+}
+
+#[derive(Debug)]
+enum SessionConnection {
+    Disconnected,
+    Connected { ops: Ops },
+}
+
+impl Session {
+    fn disconnected(identity: InitializedIdentity) -> Self {
+        Self {
+            identity,
+            connection: SessionConnection::Disconnected,
+            end: CancellationToken::new(),
+        }
+    }
+
+    fn connected(identity: InitializedIdentity, client: Client) -> Self {
+        Self {
+            identity,
+            connection: SessionConnection::Connected {
+                ops: Ops::new(client),
+            },
+            end: CancellationToken::new(),
+        }
+    }
+
+    fn client(&self) -> Option<&Client> {
+        match &self.connection {
+            SessionConnection::Disconnected => None,
+            SessionConnection::Connected { ops } => Some(ops.client()),
+        }
+    }
+
+    fn ops(&self) -> Result<&Ops, ToolError> {
+        match &self.connection {
+            SessionConnection::Disconnected => Err(ToolError::Connecting(
+                "session has no daemon connection".into(),
+            )),
+            SessionConnection::Connected { ops } => Ok(ops),
+        }
+    }
+
+    fn ops_mut(&mut self) -> Result<&mut Ops, ToolError> {
+        match &mut self.connection {
+            SessionConnection::Disconnected => Err(ToolError::Connecting(
+                "session has no daemon connection".into(),
+            )),
+            SessionConnection::Connected { ops } => Ok(ops),
+        }
+    }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
         self.end.cancel();
     }
-}
-
-/// Legacy bare cursors are unambiguous only before a context switch.
-#[derive(Debug, Clone, Copy)]
-enum CursorPolicy {
-    InitialContext,
-    RequireContext,
 }
 
 #[derive(Debug)]
@@ -253,7 +301,42 @@ impl Server {
     /// The daemon connection, once `initialize` has run.
     #[must_use]
     pub fn client(&self) -> Option<&Client> {
-        self.session.as_ref().map(|s| s.ops.client())
+        self.session.as_ref().and_then(Session::client)
+    }
+
+    /// Capture only durable session configuration and attribution. The host
+    /// owns request bookkeeping; connections and pending work are never saved.
+    #[must_use]
+    pub fn checkpoint(&self) -> SessionCheckpoint {
+        let state = match &self.session {
+            None => CheckpointState::Uninitialized,
+            Some(session) => CheckpointState::Initialized {
+                identity: session.identity.clone(),
+                cursor_policy: self.cursor_policy,
+            },
+        };
+        SessionCheckpoint::capture(self.endpoint.clone(), self.agent.clone(), state)
+    }
+
+    /// Restore without I/O. The next ordinary tool call negotiates a fresh
+    /// daemon client ID and mutation sequence; no previous call is replayed.
+    pub fn from_checkpoint(
+        checkpoint: SessionCheckpoint,
+        build: BuildInfo,
+    ) -> Result<Self, CheckpointError> {
+        let (endpoint, agent, state) = checkpoint.into_current_parts()?;
+        let mut server = Self::new(endpoint, agent, build);
+        match state {
+            CheckpointState::Uninitialized => {}
+            CheckpointState::Initialized {
+                identity,
+                cursor_policy,
+            } => {
+                server.session = Some(Session::disconnected(identity));
+                server.cursor_policy = cursor_policy;
+            }
+        }
+        Ok(server)
     }
 
     /// Handle one line, awaiting any event wait. The stdio transport uses
@@ -281,7 +364,7 @@ impl Server {
         self.dispatch(msg).await
     }
 
-    async fn dispatch(&mut self, msg: Incoming) -> Dispatch {
+    pub(crate) async fn dispatch(&mut self, msg: Incoming) -> Dispatch {
         if msg.jsonrpc != "2.0" {
             return Dispatch::Reply(Outgoing::error(
                 msg.id.unwrap_or(Value::Null),
@@ -368,26 +451,35 @@ impl Server {
             .and_then(Value::as_str)
             .unwrap_or("mcp-client")
             .to_string();
-        let author = Author::Agent {
+        let identity = InitializedIdentity {
             name,
             model: self.agent.model.clone(),
-            session_id: self.agent.session_id.clone(),
-            invoked_by: self.agent.invoked_by.clone(),
-            via: AgentVia::Mcp,
         };
-        let client = self.connect(author.clone()).await?;
-        let daemon = client.welcome.daemon.clone();
-        self.session = Some(Session {
-            author,
-            ops: Ops::new(client),
-            end: CancellationToken::new(),
-        });
+        let connection = match self.connect(identity.author(&self.agent)).await {
+            Ok(client) => {
+                let message = format!(
+                    "Connected to {} {} in context {}.",
+                    client.welcome.daemon.name,
+                    client.welcome.daemon.version,
+                    self.endpoint.selection.name
+                );
+                self.session = Some(Session::connected(identity, client));
+                message
+            }
+            Err(error) => {
+                self.session = Some(Session::disconnected(identity));
+                format!(
+                    "Daemon unavailable in context {}: {error}. MCP session identity and context are retained; use list_contexts or use_context to inspect or change the selection. Ordinary tools reconnect on their next call.",
+                    self.endpoint.selection.name
+                )
+            }
+        };
         Ok(json!({
             "protocolVersion": MCP_VERSION,
-            "capabilities": { "tools": {} },
+            "capabilities": { "tools": {"listChanged": true} },
             "serverInfo": { "name": self.build.name, "version": self.build.version },
             "instructions": format!(
-                "Nits code review. Connected to {} {} in context {}. \
+                "Nits code review. {connection} \
                  Use list_contexts and use_context to select a daemon for this session; ordinary calls run in order. Acknowledged event waits may overlap later calls; context or identity changes cancel them. \
                  New sessions follow the CLI persisted default unless launch flags override it. \
                  Reads report their source context. IDs and cursors belong to that context; after switching, \
@@ -396,8 +488,7 @@ impl Server {
                  Use get_session_identity to see your author; set_session_identity with name and \
                  model before posting to identify this agent. Share the returned author.name as \
                  the exact request_review.agent / subscribe_events.awaiting_agent routing key \
-                 and keep it stable while collaborating. Identity changes affect only future events.",
-                daemon.name, daemon.version, self.endpoint.selection.name
+                 and keep it stable while collaborating. Identity changes affect only future events."
             ),
         }))
     }
@@ -430,15 +521,15 @@ impl Server {
     fn ops(&self) -> Result<&Ops, ToolError> {
         self.session
             .as_ref()
-            .map(|s| &s.ops)
-            .ok_or(ToolError::NotInitialized)
+            .ok_or(ToolError::NotInitialized)?
+            .ops()
     }
 
     fn ops_mut(&mut self) -> Result<&mut Ops, ToolError> {
         self.session
             .as_mut()
-            .map(|s| &mut s.ops)
-            .ok_or(ToolError::NotInitialized)
+            .ok_or(ToolError::NotInitialized)?
+            .ops_mut()
     }
 
     /// Reconnect before a new tool call, preserving the initialized agent's
@@ -446,14 +537,10 @@ impl Server {
     /// mutations may already have committed, even if no response arrived.
     async fn ensure_connected(&mut self) -> Result<(), ToolError> {
         let session = self.session.as_ref().ok_or(ToolError::NotInitialized)?;
-        if session.ops.client().is_closed() {
-            let author = session.author.clone();
-            let client = self.connect(author.clone()).await?;
-            self.session = Some(Session {
-                author,
-                ops: Ops::new(client),
-                end: CancellationToken::new(),
-            });
+        if session.client().is_none_or(Client::is_closed) {
+            let identity = session.identity.clone();
+            let client = self.connect(identity.author(&self.agent)).await?;
+            self.session = Some(Session::connected(identity, client));
         }
         Ok(())
     }
@@ -465,6 +552,7 @@ impl Server {
 
     async fn prepare_call(&mut self, call: Call) -> PreparedCall {
         PreparedCall::Ready(match call {
+            Call::Management(_) => Err(ToolError::Invalid("management tools require the standard nits mcp supervisor; this embedded worker cannot replace its own implementation".into())),
             Call::Query(q) => match self.ensure_connected().await {
                 Ok(()) => self.call_query(q).await,
                 Err(e) => Err(e),
@@ -491,7 +579,7 @@ impl Server {
             let session = self.session.as_ref().ok_or(ToolError::NotInitialized)?;
             // An owned event queue prevents cancellation or one poll's drain
             // from affecting another poll or leaving a shared subscription.
-            let client = self.connect(session.author.clone()).await?;
+            let client = self.connect(session.identity.author(&self.agent)).await?;
             let poll =
                 EventPoll::subscribe(client, p.scope, since, p.timeout.duration(), p.max).await?;
             Ok(EventWait {
@@ -542,12 +630,12 @@ impl Server {
             ContextCall::Use(p) => {
                 let selection =
                     config.selection(Some((&p.name, nits_config::SelectionOrigin::Mcp)))?;
-                let author = session.author.clone();
+                let identity = session.identity.clone();
                 // Do not touch active state until the new daemon has welcomed us.
                 // Dropping the entire old Ops closes subscriptions and queues;
                 // a fresh client ID accompanies the new mutation sequence.
                 let client = self
-                    .connect_context(&selection.context, author.clone())
+                    .connect_context(&selection.context, identity.author(&self.agent))
                     .await?;
                 let cursor_policy = if selection.name == self.endpoint.selection.name
                     && selection.context == self.endpoint.selection.context
@@ -556,11 +644,7 @@ impl Server {
                 } else {
                     CursorPolicy::RequireContext
                 };
-                self.session = Some(Session {
-                    author,
-                    ops: Ops::new(client),
-                    end: CancellationToken::new(),
-                });
+                self.session = Some(Session::connected(identity, client));
                 self.endpoint.selection = selection;
                 self.cursor_policy = cursor_policy;
                 ok(tools::ContextSelected {
@@ -573,24 +657,18 @@ impl Server {
     async fn call_session(&mut self, call: SessionCall) -> Result<Value, ToolError> {
         let session = self.session.as_ref().ok_or(ToolError::NotInitialized)?;
         let author = match call {
-            SessionCall::GetIdentity => session.author.clone(),
+            SessionCall::GetIdentity => session.identity.author(&self.agent),
             SessionCall::SetIdentity(p) => {
-                let author = Author::Agent {
+                let identity = InitializedIdentity {
                     name: p.name,
                     model: p.model,
-                    session_id: self.agent.session_id.clone(),
-                    invoked_by: self.agent.invoked_by.clone(),
-                    via: AgentVia::Mcp,
                 };
+                let author = identity.author(&self.agent);
                 // The daemon binds authorship at Hello. Complete negotiation
                 // before replacing either author or Ops, so failure is atomic.
                 // A fresh client ID also keeps reset client_seq values distinct.
                 let client = self.connect(author.clone()).await?;
-                self.session = Some(Session {
-                    author: author.clone(),
-                    ops: Ops::new(client),
-                    end: CancellationToken::new(),
-                });
+                self.session = Some(Session::connected(identity, client));
                 author
             }
         };
@@ -1011,7 +1089,7 @@ async fn finish_dispatch(dispatch: Dispatch) -> Option<Outgoing> {
     }
 }
 
-fn tool_reply(id: Value, result: Result<Value, ToolError>) -> Outgoing {
+pub(crate) fn tool_reply(id: Value, result: Result<Value, ToolError>) -> Outgoing {
     Outgoing::result(
         id,
         match result {

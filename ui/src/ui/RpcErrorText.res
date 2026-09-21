@@ -13,5 +13,10 @@ let message = (error: Rpc.RpcError.t) =>
     negotiated ++
     ", received " ++
     received ++ ". Reconnect to continue."
+  | Restarting({operationId}) =>
+    "Restart " ++ operationId ++ " is in progress; this request was not admitted."
+  | RestartInterrupted({operationId}) =>
+    "Restart " ++
+    operationId ++ " interrupted this request; a lost mutation receipt does not mean it failed."
   | Internal({message}) => message
   }

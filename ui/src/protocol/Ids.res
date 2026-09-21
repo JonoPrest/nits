@@ -10,6 +10,7 @@
 @schema type commentId = string
 @schema type threadId = string
 @schema type clientId = string
+@schema type upgradeId = string
 
 @schema type blobOid = string
 @schema type commitOid = string

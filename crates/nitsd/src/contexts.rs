@@ -215,14 +215,28 @@ pub fn local_spec(
     Ok(spec)
 }
 
+/// OpenSSH joins the remote argv into a shell command. Preserve one configured
+/// argument as one shell word, including empty strings, spaces and metacharacters.
+fn remote_word(word: &str) -> String {
+    if !word.is_empty()
+        && word
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&byte))
+    {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\"'\"'"))
+    }
+}
+
 /// `ssh <host> <bin> daemon stdio <args...>`: the remote `nits` proxies to
 /// (and starts) the daemon on its own machine.
 fn ssh_command(target: &SshTarget) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(target.ssh.as_deref().unwrap_or("ssh"));
     cmd.arg(&target.host)
-        .arg(&target.nits)
+        .arg(remote_word(&target.nits))
         .args(["daemon", "stdio"])
-        .args(&target.args);
+        .args(target.args.iter().map(|arg| remote_word(arg)));
     cmd
 }
 
@@ -399,6 +413,9 @@ pub async fn dial(endpoint: &DaemonEndpoint) -> Result<FramedConnection, Context
         DaemonEndpoint::Local { spec, start } => {
             match start {
                 StartPolicy::StartIfNeeded => {
+                    crate::upgrade::repair_incompatible(spec)
+                        .await
+                        .map_err(io("activating compatible installed daemon"))?;
                     launch::ensure_daemon(spec)
                         .await
                         .map_err(io("starting the daemon"))?;
@@ -512,6 +529,185 @@ pub async fn status(ctx: &Context) -> Status {
             },
         },
     }
+}
+
+/// Inspect the installed candidate on the selected daemon's machine. This does
+/// not negotiate the application protocol or start anything.
+pub async fn upgrade_status(
+    ctx: &Context,
+) -> Result<nits_protocol::ManagedDaemonStatus, ContextError> {
+    endpoint_upgrade_status(&DaemonEndpoint::resolve(ctx, StartPolicy::RequireRunning)?).await
+}
+
+/// Inspect precisely the endpoint already selected by a native host.
+pub async fn endpoint_upgrade_status(
+    endpoint: &DaemonEndpoint,
+) -> Result<nits_protocol::ManagedDaemonStatus, ContextError> {
+    match endpoint {
+        DaemonEndpoint::Local { spec, .. } => crate::upgrade::status(spec)
+            .await
+            .map_err(io("reading daemon upgrade status")),
+        DaemonEndpoint::Ssh { target, .. } => {
+            remote_management(target, ManagementCommand::Status).await
+        }
+        DaemonEndpoint::WebSocket { .. } => Ok(nits_protocol::ManagedDaemonStatus {
+            running: nits_protocol::ManagedDaemonState::NotManaged {},
+            installed: nits_protocol::InstalledCandidate::Unavailable {
+                reason:
+                    "configure a managed Local or Ssh context to activate its installed Nits build"
+                        .into(),
+            },
+            operation: None,
+        }),
+    }
+}
+
+/// Shared lifecycle entry point for CLI, MCP and native UI hosts. It never
+/// changes the persisted context and never accepts arbitrary executable input.
+pub async fn upgrade(
+    ctx: &Context,
+    intent: nits_protocol::UpgradeIntent,
+) -> Result<nits_protocol::UpgradeResult, ContextError> {
+    endpoint_upgrade(
+        &DaemonEndpoint::resolve(ctx, StartPolicy::RequireRunning)?,
+        intent,
+    )
+    .await
+}
+
+/// Activate exactly the inspected daemon build, even if the installation is
+/// replaced while a caller prepares its matching adapter.
+pub async fn upgrade_verified(
+    ctx: &Context,
+    intent: nits_protocol::UpgradeIntent,
+    expected: nits_protocol::BuildDigest,
+) -> Result<nits_protocol::UpgradeResult, ContextError> {
+    endpoint_upgrade_verified(
+        &DaemonEndpoint::resolve(ctx, StartPolicy::RequireRunning)?,
+        intent,
+        expected,
+    )
+    .await
+}
+
+pub async fn endpoint_upgrade_verified(
+    endpoint: &DaemonEndpoint,
+    intent: nits_protocol::UpgradeIntent,
+    expected: nits_protocol::BuildDigest,
+) -> Result<nits_protocol::UpgradeResult, ContextError> {
+    endpoint_upgrade_selected(endpoint, intent, Some(expected)).await
+}
+
+/// Upgrade precisely the endpoint already selected by a native host.
+pub async fn endpoint_upgrade(
+    endpoint: &DaemonEndpoint,
+    intent: nits_protocol::UpgradeIntent,
+) -> Result<nits_protocol::UpgradeResult, ContextError> {
+    endpoint_upgrade_selected(endpoint, intent, None).await
+}
+
+async fn endpoint_upgrade_selected(
+    endpoint: &DaemonEndpoint,
+    intent: nits_protocol::UpgradeIntent,
+    expected: Option<nits_protocol::BuildDigest>,
+) -> Result<nits_protocol::UpgradeResult, ContextError> {
+    match endpoint {
+        DaemonEndpoint::Local { spec, .. } => Ok(match expected {
+            Some(digest) => crate::upgrade::begin_verified(spec, intent, digest).await,
+            None => crate::upgrade::begin(spec, intent).await,
+        }),
+        DaemonEndpoint::Ssh { target, .. } => remote_management(target, ManagementCommand::Upgrade { intent, expected }).await,
+        DaemonEndpoint::WebSocket { .. } => Ok(nits_protocol::UpgradeResult::Failed { failure: nits_protocol::UpgradeFailure {
+            stage: nits_protocol::UpgradeStage::PreparingRestart,
+            kind: nits_protocol::UpgradeFailureKind::NotManaged,
+            message: "this WebSocket daemon is managed elsewhere; select its managed Local or Ssh context".into(),
+        } }),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ManagementCommand {
+    Status,
+    Upgrade {
+        intent: nits_protocol::UpgradeIntent,
+        expected: Option<nits_protocol::BuildDigest>,
+    },
+}
+
+async fn remote_management<T: serde::de::DeserializeOwned>(
+    target: &SshTarget,
+    operation: ManagementCommand,
+) -> Result<T, ContextError> {
+    use tokio::io::AsyncReadExt;
+    let mut command = tokio::process::Command::new(target.ssh.as_deref().unwrap_or("ssh"));
+    command
+        .arg(&target.host)
+        .arg(remote_word(&target.nits))
+        .arg("daemon");
+    match operation {
+        ManagementCommand::Status => {
+            command.arg("control-status");
+        }
+        ManagementCommand::Upgrade { intent, expected } => {
+            command.args([
+                "control-upgrade",
+                "--intent",
+                match intent {
+                    nits_protocol::UpgradeIntent::Automatic => "automatic",
+                    nits_protocol::UpgradeIntent::Explicit => "explicit",
+                },
+            ]);
+            if let Some(digest) = expected {
+                command.args(["--expected-build", &digest.to_string()]);
+            }
+        }
+    }
+    command
+        .args(target.args.iter().map(|arg| remote_word(arg)))
+        .arg("--json")
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    let mut child = command
+        .spawn()
+        .map_err(io("starting remote maintenance control"))?;
+    let stdout = child.stdout.take().ok_or_else(|| ContextError::Io {
+        what: "remote maintenance stdout".into(),
+        source: std::io::Error::other("not piped"),
+    })?;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let mut bytes = Vec::new();
+        stdout
+            .take(128 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(io("reading remote maintenance response"))?;
+        if bytes.len() > 128 * 1024 {
+            return Err(io("remote maintenance response")(std::io::Error::other(
+                "response exceeds limit",
+            )));
+        }
+        let exit = child
+            .wait()
+            .await
+            .map_err(io("waiting for remote maintenance"))?;
+        if !exit.success() {
+            return Err(io("remote maintenance")(std::io::Error::other(format!(
+                "SSH/installed command exited {exit}; incumbent was not assumed stopped"
+            ))));
+        }
+        serde_json::from_slice(&bytes).map_err(|error| {
+            io("decoding remote maintenance response")(std::io::Error::other(error))
+        })
+    })
+    .await
+    .map_err(|_| {
+        io("remote maintenance")(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "SSH maintenance exceeded 30 seconds; inspect the operation before retrying",
+        ))
+    })?
 }
 
 /// Start the daemon if it is not running. Returns whether it was started.
@@ -716,6 +912,20 @@ mod tests {
             DaemonEndpoint::resolve(&legacy, StartPolicy::StartIfNeeded),
             Err(ContextError::LegacyNitsd { .. })
         ));
+    }
+
+    #[test]
+    fn configured_remote_arguments_remain_literal_shell_words() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("must-not-exist");
+        let words = vec!["".to_owned(), "/opt/installed Nits/nits".into(), "apostrophe'quote".into(), "line\nline".into(), format!("$(touch {})", marker.display()), "semi;colon".into(), "--expected-build".into(), "abcd".into()];
+        let script = format!("set -- {}; printf '%s\\0' \"$@\"", words.iter().map(|word| remote_word(word)).collect::<Vec<_>>().join(" "));
+        let output = std::process::Command::new("sh").args(["-c", &script]).output().unwrap();
+        assert!(output.status.success());
+        let mut expected = words.join("\0").into_bytes();
+        expected.push(0);
+        assert_eq!(output.stdout, expected);
+        assert!(!marker.exists());
     }
 
     #[test]

@@ -406,6 +406,31 @@ module Shell = {
             refSelector=?model.refSelector
             dispatch
           />
+          <DaemonStatus management=model.daemonManagement chrome=model.chrome dispatch />
+          {switch model.connection {
+          | UpgradeRequired({client, supported}) =>
+            <UI.Message
+              kind=Alert
+              text={"This UI host uses protocol " ++
+              client ++
+              "; the daemon requires " ++
+              supported->Array.join(
+                ", ",
+              ) ++ ". Upgrade and reopen the Nits bridge or desktop application. Drafts remain available here; refreshing this page alone does not upgrade its host."}
+            />
+          | Restarting({operation}) =>
+            <UI.Message
+              text={"Restarting to version " ++
+              operation.target.release.version ++ ". Drafts and your current review are retained."}
+            />
+          | Disconnected(_) | Connecting(_) | Subscribed(_) | Rejected(_) => React.null
+          }}
+          {Array.length(model.uncertainMutations) > 0
+            ? <UI.Message
+                kind=Alert
+                text="A mutation reply was lost. Its outcome remains unknown until its committed event is received; it was not sent again. Check the review before repeating the action."
+              />
+            : React.null}
           {switch model.lastError {
           | Some(error) => <p role="alert"> {React.string(RpcErrorText.message(error))} </p>
           | None => React.null

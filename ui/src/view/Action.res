@@ -27,6 +27,8 @@ module SearchKind = {
 @@warning("-27")
 @schema @tag("type")
 type t =
+  | @as("InspectDaemon") InspectDaemon({})
+  | @as("UpgradeDaemon") UpgradeDaemon({})
   | @as("Connect") Connect({})
   | @as("Disconnect") Disconnect({})
   | @as("ListWorkspaces") ListWorkspaces({})

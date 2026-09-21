@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use nits_client_core::{
     Action, Bytes, CacheConfig, ClientCore, Config, DiskTier, Effect, IdSeed, Input, KeyChord,
-    Keymap, TransportEvent, ViewBatchKind, ViewDelivery, ViewEncoder, ViewPatch,
+    Keymap, ManagementReply, ManagementRequest, ManagementRequestId, TransportEvent, ViewBatchKind, ViewDelivery, ViewEncoder, ViewPatch,
 };
 use nits_protocol::{Author, BuildInfo, ClientId, ClientMsg, Envelope, ServerMsg};
 use nitsd::contexts::DaemonEndpoint;
@@ -189,6 +189,7 @@ impl HostFactory {
             // Host identity is installed before the first attach/connect.
             let _ = core.handle(Input::User(Action::SetReferenceContext { context }));
         }
+        let (management, management_rx) = mpsc::unbounded_channel();
         let host = Host {
             core,
             endpoint: self.endpoint.clone(),
@@ -197,11 +198,14 @@ impl HostFactory {
             keys_file: self.keys_file.clone(),
             writer: None,
             connection: None,
+            generation: ConnectionGeneration(0),
+            management,
+            management_tasks: tokio::task::JoinSet::new(),
             patches: patches_tx,
             encoder: ViewEncoder::default(),
             shutdown: shutdown.clone(),
         };
-        tokio::spawn(host.run(actions_rx, shutdown));
+        tokio::spawn(host.run(actions_rx, management_rx, shutdown));
         (
             Handle {
                 actions: actions_tx,
@@ -321,8 +325,32 @@ impl Handle {
 }
 
 /// Something the transport tasks report to the host task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConnectionGeneration(u64);
+
 #[derive(Debug)]
-enum Incoming {
+struct Incoming {
+    generation: ConnectionGeneration,
+    event: IncomingEvent,
+}
+
+#[derive(Debug, Clone)]
+struct ConnectionFeed {
+    generation: ConnectionGeneration,
+    incoming: mpsc::UnboundedSender<Incoming>,
+}
+
+impl ConnectionFeed {
+    fn send(&self, event: IncomingEvent) -> Result<(), mpsc::error::SendError<Incoming>> {
+        self.incoming.send(Incoming {
+            generation: self.generation,
+            event,
+        })
+    }
+}
+
+#[derive(Debug)]
+enum IncomingEvent {
     Connected(mpsc::UnboundedSender<ClientMsg>),
     Msg(ServerMsg),
     Disconnected,
@@ -368,6 +396,10 @@ struct Host {
     patches: mpsc::UnboundedSender<ViewDelivery>,
     encoder: ViewEncoder,
     shutdown: CancellationToken,
+    /// Messages already queued by an aborted transport cannot affect its successor.
+    generation: ConnectionGeneration,
+    management: mpsc::UnboundedSender<(ManagementRequestId, ManagementReply)>,
+    management_tasks: tokio::task::JoinSet<()>,
 }
 
 impl Host {
@@ -395,6 +427,7 @@ impl Host {
     async fn run(
         mut self,
         mut actions: mpsc::UnboundedReceiver<Command>,
+        mut management: mpsc::UnboundedReceiver<(ManagementRequestId, ManagementReply)>,
         shutdown: CancellationToken,
     ) {
         let (incoming_tx, mut incoming) = mpsc::unbounded_channel::<Incoming>();
@@ -414,17 +447,9 @@ impl Host {
                     }
                     None => break,
                 },
-                Some(msg) = incoming.recv() => match msg {
-                    Incoming::Connected(writer) => {
-                        self.writer = Some(writer);
-                        self.feed(Input::Transport(TransportEvent::Connected), &incoming_tx);
-                    }
-                    Incoming::Msg(msg) => self.feed(Input::Server(msg), &incoming_tx),
-                    Incoming::Disconnected => {
-                        self.writer = None;
-                        self.feed(Input::Transport(TransportEvent::Disconnected), &incoming_tx);
-                    }
-                },
+                Some(msg) = incoming.recv() => self.receive(msg, &incoming_tx),
+                Some((id, reply)) = management.recv() => self.feed(Input::DaemonManaged { id, reply }, &incoming_tx),
+                _ = self.management_tasks.join_next(), if !self.management_tasks.is_empty() => {},
                 _ = ticker.tick() => {
                     let now = Self::now_ms();
                     self.feed(Input::Tick(now), &incoming_tx);
@@ -434,6 +459,35 @@ impl Host {
         self.writer = None;
         if let Some(connection) = self.connection.take() {
             connection.abort();
+        }
+    }
+
+    fn receive(&mut self, incoming: Incoming, sender: &mpsc::UnboundedSender<Incoming>) {
+        if incoming.generation != self.generation {
+            return;
+        }
+        match incoming.event {
+            IncomingEvent::Connected(writer) => {
+                self.writer = Some(writer);
+                self.feed(Input::Transport(TransportEvent::Connected), sender);
+            }
+            IncomingEvent::Msg(msg) => self.feed(Input::Server(msg), sender),
+            IncomingEvent::Disconnected => {
+                self.writer = None;
+                self.feed(Input::Transport(TransportEvent::Disconnected), sender);
+            }
+        }
+    }
+
+    fn next_connection(&mut self, incoming: &mpsc::UnboundedSender<Incoming>) -> ConnectionFeed {
+        self.generation = ConnectionGeneration(self.generation.0.wrapping_add(1));
+        self.writer = None;
+        if let Some(connection) = self.connection.take() {
+            connection.abort();
+        }
+        ConnectionFeed {
+            generation: self.generation,
+            incoming: incoming.clone(),
         }
     }
 
@@ -452,21 +506,35 @@ impl Host {
 
     fn effect(&mut self, effect: Effect, incoming: &mpsc::UnboundedSender<Incoming>) {
         match effect {
+            Effect::ManageDaemon { id, request } => {
+                let endpoint = self.endpoint.clone();
+                let replies = self.management.clone();
+                self.management_tasks.spawn(async move {
+                    let reply = match request {
+                        ManagementRequest::Inspect => ManagementReply::Status(
+                            nitsd::contexts::endpoint_upgrade_status(&endpoint)
+                                .await
+                                .map_err(|error| error.to_string()),
+                        ),
+                        ManagementRequest::Upgrade => ManagementReply::Upgrade(
+                            nitsd::contexts::endpoint_upgrade(
+                                &endpoint,
+                                nits_protocol::UpgradeIntent::Explicit,
+                            )
+                            .await
+                            .map_err(|error| error.to_string()),
+                        ),
+                    };
+                    let _ = replies.send((id, reply));
+                });
+            }
             Effect::Connect => {
-                if let Some(connection) = self.connection.take() {
-                    connection.abort();
-                }
-                self.connection = Some(tokio::spawn(connect(
-                    self.endpoint.clone(),
-                    incoming.clone(),
-                )));
+                let feed = self.next_connection(incoming);
+                self.connection = Some(tokio::spawn(connect(self.endpoint.clone(), feed)));
             }
             Effect::Disconnect => {
-                self.writer = None;
-                if let Some(connection) = self.connection.take() {
-                    connection.abort();
-                }
-                let _ = incoming.send(Incoming::Disconnected);
+                let feed = self.next_connection(incoming);
+                let _ = feed.send(IncomingEvent::Disconnected);
             }
             Effect::Send(msg) => {
                 if let Some(w) = &self.writer
@@ -537,7 +605,7 @@ impl Host {
 
 /// Dial the daemon; on success run reader and writer tasks until either
 /// side closes. Every outcome reaches the host as an `Incoming`.
-async fn connect(endpoint: DaemonEndpoint, incoming: mpsc::UnboundedSender<Incoming>) {
+async fn connect(endpoint: DaemonEndpoint, incoming: ConnectionFeed) {
     match nitsd::contexts::dial(&endpoint).await {
         Ok(connection) => {
             let (read, write) = connection.into_parts();
@@ -545,18 +613,18 @@ async fn connect(endpoint: DaemonEndpoint, incoming: mpsc::UnboundedSender<Incom
         }
         Err(err) => {
             tracing::warn!(%err, ?endpoint, "connect failed");
-            let _ = incoming.send(Incoming::Disconnected);
+            let _ = incoming.send(IncomingEvent::Disconnected);
         }
     }
 }
 
-async fn serve_framed<R, W>(mut read: R, mut write: W, incoming: mpsc::UnboundedSender<Incoming>)
+async fn serve_framed<R, W>(mut read: R, mut write: W, incoming: ConnectionFeed)
 where
     R: FrameRead + 'static,
     W: FrameWrite + 'static,
 {
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ClientMsg>();
-    if incoming.send(Incoming::Connected(out_tx)).is_err() {
+    if incoming.send(IncomingEvent::Connected(out_tx)).is_err() {
         return;
     }
     // A byte-frame read is not cancellation-safe: dropping `recv_msg` after
@@ -580,7 +648,7 @@ where
         loop {
             match transport::recv_msg::<_, ServerMsg>(&mut read).await {
                 Ok(Some(env)) => {
-                    if reader_incoming.send(Incoming::Msg(env.msg)).is_err() {
+                    if reader_incoming.send(IncomingEvent::Msg(env.msg)).is_err() {
                         return;
                     }
                 }
@@ -595,7 +663,7 @@ where
     let _ = sides.join_next().await;
     sides.abort_all();
     while sides.join_next().await.is_some() {}
-    let _ = incoming.send(Incoming::Disconnected);
+    let _ = incoming.send(IncomingEvent::Disconnected);
 }
 
 /// Sensible defaults for a native UI host: 100 ms ticks and the user's key
@@ -697,15 +765,94 @@ mod tests {
         assert_eq!(memory_remote.cache.disk, DiskTier::Disabled);
     }
 
+    #[test]
+    fn queued_messages_from_retired_connections_cannot_replace_current_state_or_writer() {
+        let identity = identity();
+        let mut core = ClientCore::new(Config {
+            client_id: identity.client_id,
+            client: identity.client,
+            author: identity.author,
+            id_seed: IdSeed(1),
+            cache: CacheConfig::default(),
+        });
+        core.handle(Input::User(Action::Connect)).unwrap();
+        let (patches, _patches) = mpsc::unbounded_channel();
+        let (management, _management) = mpsc::unbounded_channel();
+        let mut host = Host {
+            core,
+            endpoint: DaemonEndpoint::WebSocket {
+                url: "ws://review.example:7677".into(),
+            },
+            kv: KvStore::open(&KvConfig::Memory).unwrap(),
+            tick: Duration::from_millis(100),
+            keys_file: None,
+            writer: None,
+            connection: None,
+            generation: ConnectionGeneration(2),
+            management,
+            management_tasks: tokio::task::JoinSet::new(),
+            patches,
+        };
+        let (incoming, _received) = mpsc::unbounded_channel();
+        let (current, _sent) = mpsc::unbounded_channel();
+        host.receive(
+            Incoming {
+                generation: ConnectionGeneration(2),
+                event: IncomingEvent::Connected(current.clone()),
+            },
+            &incoming,
+        );
+        let before = host.core.view().clone();
+        let (retired, _old_sent) = mpsc::unbounded_channel();
+        for event in [
+            IncomingEvent::Connected(retired),
+            IncomingEvent::Msg(ServerMsg::Rejected {
+                error: nits_protocol::RpcError::Cancelled,
+            }),
+            IncomingEvent::Disconnected,
+        ] {
+            host.receive(
+                Incoming {
+                    generation: ConnectionGeneration(1),
+                    event,
+                },
+                &incoming,
+            );
+            assert_eq!(host.core.view(), &before);
+            assert!(host.writer.as_ref().unwrap().same_channel(&current));
+        }
+        host.receive(
+            Incoming {
+                generation: ConnectionGeneration(2),
+                event: IncomingEvent::Disconnected,
+            },
+            &incoming,
+        );
+        assert!(host.writer.is_none());
+        assert!(matches!(
+            host.core.connection(),
+            nits_client_core::Connection::Disconnected { .. }
+        ));
+    }
+
     #[tokio::test]
     async fn outbound_work_does_not_cancel_a_fragmented_inbound_frame() {
         let (host, mut peer) = tokio::io::duplex(4096);
         let (read, write) = transport::byte_stream(host);
         let (incoming, mut received) = mpsc::unbounded_channel();
-        let connection = tokio::spawn(serve_framed(read, write, incoming));
-        let out = match received.recv().await.unwrap() {
-            Incoming::Connected(out) => out,
-            Incoming::Msg(_) | Incoming::Disconnected => panic!("connection did not start"),
+        let connection = tokio::spawn(serve_framed(
+            read,
+            write,
+            ConnectionFeed {
+                generation: ConnectionGeneration(1),
+                incoming,
+            },
+        ));
+        let out = match received.recv().await.unwrap().event {
+            IncomingEvent::Connected(out) => out,
+            IncomingEvent::Msg(_) | IncomingEvent::Disconnected => {
+                panic!("connection did not start")
+            }
         };
 
         let payload = serde_json::to_vec(&Envelope::current(ServerMsg::Rejected {
@@ -729,8 +876,8 @@ mod tests {
             .expect("fragmented frame timed out")
             .expect("connection ended during fragmented frame");
         assert!(matches!(
-            inbound,
-            Incoming::Msg(ServerMsg::Rejected {
+            inbound.event,
+            IncomingEvent::Msg(ServerMsg::Rejected {
                 error: nits_protocol::RpcError::Cancelled
             })
         ));

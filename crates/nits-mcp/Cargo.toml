@@ -15,6 +15,7 @@ description = "MCP (Model Context Protocol) stdio server that proxies to a nitsd
 path = "src/lib.rs"
 
 [dependencies]
+tempfile = { workspace = true }
 nits-protocol = { workspace = true, features = ["schema"] }
 schemars = { workspace = true }
 nitsd = { workspace = true }
@@ -34,7 +35,6 @@ tokio = { workspace = true, features = ["test-util"] }
 nits-config = { path = "../nits-config" }
 nits-review-core = { workspace = true }
 nits-test-support = { workspace = true }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

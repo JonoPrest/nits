@@ -131,6 +131,9 @@
     "name": "review-box",
     "type": "Named"
   },
+  "daemon_management": {
+    "type": "Idle"
+  },
   "diff": {
     "collapsed": false,
     "content": {
@@ -1076,6 +1079,7 @@
       "selected": 0
     }
   },
+  "uncertain_mutations": [],
   "visual": {
     "end": 6,
     "side": "Head",

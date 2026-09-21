@@ -174,6 +174,7 @@ registry!(
     Tab,
     Mode,
     ConnectionView,
+    DaemonManagement,
     Draft,
     DraftPurpose,
     PendingEvent,
@@ -326,6 +327,13 @@ enum_fixture!(
         ConnectionView::Disconnected,
         ConnectionView::Connecting,
         ConnectionView::Subscribed,
+        ConnectionView::Restarting {
+            operation: proto_named::<UpgradeOperation>("default")?
+        },
+        ConnectionView::UpgradeRequired {
+            client: ProtocolVersion::CURRENT,
+            supported: vec![ProtocolVersion::new(9, 0, 0)]
+        },
         ConnectionView::Rejected {
             error: proto_named::<RpcError>("UnsupportedProtocol")?,
         },
@@ -793,6 +801,8 @@ enum_fixture!(
     ActionKind,
     "Action",
     [
+        Action::InspectDaemon,
+        Action::UpgradeDaemon,
         Action::Connect,
         Action::Disconnect,
         Action::ListWorkspaces,
@@ -1098,6 +1108,8 @@ enum_fixture!(
         ViewPatch::Connection {
             connection: ConnectionView::Subscribed,
             last_error: Some(proto_named::<RpcError>("NotFound")?),
+            uncertain_mutations: Vec::new(),
+            daemon_management: DaemonManagement::Idle,
         },
         ViewPatch::ReviewList {
             home: HomeView::default(),
@@ -1241,6 +1253,8 @@ struct_fixture!(
         focused_comment: Some(comment_id()?),
         connection: ConnectionView::Subscribed,
         last_error: None,
+        uncertain_mutations: Vec::new(),
+        daemon_management: DaemonManagement::Idle,
         workspaces: vec![proto::<Workspace>()?],
         reviews: vec![proto::<Review>()?],
         open_review: Some(proto::<Review>()?.id),
@@ -1538,5 +1552,25 @@ enum_fixture!(
             message: "application outcome must be checked".into()
         },
         SuggestionStatus::Applied,
+    ]
+);
+
+enum_fixture!(
+    DaemonManagement,
+    DaemonManagementKind,
+    "DaemonManagement",
+    [
+        DaemonManagement::Idle,
+        DaemonManagement::Inspecting,
+        DaemonManagement::Upgrading,
+        DaemonManagement::Status {
+            status: proto_named::<ManagedDaemonStatus>("default")?
+        },
+        DaemonManagement::Outcome {
+            result: proto_named::<UpgradeResult>("Accepted")?
+        },
+        DaemonManagement::Unavailable {
+            message: "remote maintenance is unavailable".into()
+        }
     ]
 );

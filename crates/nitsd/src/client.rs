@@ -44,6 +44,7 @@ pub struct Welcome {
 /// errors the daemon could not attach to a request (`id` 0).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unsolicited {
+    Lifecycle(nits_protocol::LifecycleNotice),
     Event(Event),
     TreeDelta(nits_protocol::TreeDelta),
     Error(RpcError),
@@ -303,7 +304,7 @@ impl Client {
         loop {
             match self.next_unsolicited().await? {
                 Unsolicited::Event(e) => return Some(e),
-                Unsolicited::TreeDelta(_) | Unsolicited::Error(_) => {}
+                Unsolicited::TreeDelta(_) | Unsolicited::Error(_) | Unsolicited::Lifecycle(_) => {}
             }
         }
     }
@@ -324,6 +325,9 @@ async fn dispatch(
         return;
     };
     match msg {
+        ServerMsg::Lifecycle { notice } => {
+            let _ = unsolicited.send(Unsolicited::Lifecycle(notice));
+        }
         ServerMsg::Response { id, response } => {
             if let Some(Pending::Single(tx)) = pending.remove(&id) {
                 let _ = tx.send(Ok(response));

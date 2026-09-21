@@ -116,6 +116,8 @@ pub enum Command {
     /// handles the chord itself; the binding exists so hints, help and
     /// tooltips can derive it.
     Submit,
+    InspectDaemon,
+    UpgradeDaemon,
     Connect,
     Disconnect,
     /// Fetch the commit list for the focused repo.
@@ -613,6 +615,8 @@ impl Keymap {
             l('d', C::CheckpointDelta),
             l('f', C::ReviewFinding),
             b(X::Global, keys!("esc"), C::Back, false),
+            b(X::Global, keys!("g D"), C::InspectDaemon, false),
+            b(X::Global, keys!("g U"), C::UpgradeDaemon, false),
             b(X::Global, keys!("ctrl+shift+c"), C::Connect, false),
             b(X::Global, keys!("ctrl+shift+d"), C::Disconnect, false),
             b(X::Global, keys!("g W"), C::GoHome, false),
@@ -1120,6 +1124,8 @@ pub fn label(command: Command) -> &'static str {
         Command::PrevBrowseRepo => "previous Browse repository",
         Command::ToggleSidebar => "toggle sidebar",
         Command::Submit => "submit",
+        Command::InspectDaemon => "daemon status",
+        Command::UpgradeDaemon => "activate installed version",
         Command::Connect => "connect",
         Command::Disconnect => "disconnect",
         Command::Commits => "commits",
@@ -1215,6 +1221,8 @@ pub fn modes_of(command: Command) -> &'static [Mode] {
         | Command::NextBrowseRepo
         | Command::PrevBrowseRepo
         | Command::ToggleSidebar
+        | Command::InspectDaemon
+        | Command::UpgradeDaemon
         | Command::Connect
         | Command::Disconnect
         | Command::Commits

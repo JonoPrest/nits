@@ -31,6 +31,8 @@ pub enum ViewPatch {
     Connection {
         connection: ConnectionView,
         last_error: Option<RpcError>,
+        uncertain_mutations: Vec<nits_protocol::ClientSeq>,
+        daemon_management: crate::DaemonManagement,
     },
     ReviewList {
         home: crate::HomeView,
@@ -152,6 +154,8 @@ impl ViewModel {
             ViewSection::Connection => ViewPatch::Connection {
                 connection: self.connection.clone(),
                 last_error: self.last_error.clone(),
+                uncertain_mutations: self.uncertain_mutations.clone(),
+                daemon_management: self.daemon_management.clone(),
             },
             ViewSection::ReviewList => ViewPatch::ReviewList {
                 home: self.home.clone(),
@@ -245,9 +249,13 @@ impl ViewModel {
             ViewPatch::Connection {
                 connection,
                 last_error,
+                uncertain_mutations,
+                daemon_management,
             } => {
                 self.connection = connection;
                 self.last_error = last_error;
+                self.uncertain_mutations = uncertain_mutations;
+                self.daemon_management = daemon_management;
             }
             ViewPatch::ReviewList {
                 home,

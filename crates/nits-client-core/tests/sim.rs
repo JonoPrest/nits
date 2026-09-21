@@ -1,6 +1,6 @@
 //! Plan 3.3: optimistic mutations under races, driven through the two-client
-//! simulator. Every case ends with both clients showing exactly what the
-//! daemon holds and nothing pending.
+//! simulator. Confirmed work converges; a lost unacknowledged request retains
+//! an explicit uncertain overlay until a durable event reconciles it.
 
 use nits_client_core::{Action, Effect};
 use nits_protocol::{
@@ -293,7 +293,7 @@ fn resolve_unresolve_race_converges_and_the_loser_is_undone() {
 }
 
 #[test]
-fn disconnect_mid_pending_then_reconnect_resends_exactly_once() {
+fn disconnect_with_no_receipt_keeps_unknown_outcome_without_replaying() {
     let mut sim = two_clients_one_thread();
     let thread = thread_id(&sim);
     sim.tick(1);
@@ -316,20 +316,19 @@ fn disconnect_mid_pending_then_reconnect_resends_exactly_once() {
     assert_eq!(open.pending.len(), 1);
     assert_eq!(open.snapshot.comments.len(), 2);
 
-    // Reconnect: after the resubscribe the pending mutation goes out again,
-    // once, with its original client_seq.
+    // Receipt loss cannot prove the daemon never admitted this write.
     sim.reconnect(A).unwrap();
     sim.settle();
-    sim.converged().unwrap();
-    let resent: Vec<_> = sim
-        .log()
-        .iter()
-        .filter(|e| e.client_id == sim.client(A).client_id())
-        .collect();
-    assert_eq!(resent.len(), 2, "root comment + the one reply");
-    assert_eq!(sim.daemon_snapshot().comments.len(), 2);
-    assert_eq!(sim.daemon_snapshot().comments[1].body, "lost?");
+    assert_eq!(sim.log().len(), 1, "no automatic second submission");
+    assert_eq!(sim.daemon_snapshot().comments.len(), 1);
+    assert_eq!(sim.client(A).pending_count(), 1);
+    assert_eq!(sim.client(A).view().uncertain_mutations.len(), 1);
+}
 
+#[test]
+fn reconnect_replay_reconciles_a_committed_mutation_without_resubmitting() {
+    let mut sim = two_clients_one_thread();
+    let thread = thread_id(&sim);
     // The other case: the daemon committed it but the reply was lost.
     sim.tick(1);
     sim.act(
@@ -341,7 +340,7 @@ fn disconnect_mid_pending_then_reconnect_resends_exactly_once() {
     )
     .unwrap();
     assert!(sim.deliver_up(A)); // daemon has it
-    assert_eq!(sim.log().len(), 3);
+    assert_eq!(sim.log().len(), 2);
     sim.disconnect(A); // Committed + Event never arrive
     assert_eq!(sim.client(A).pending_count(), 1);
     sim.reconnect(A).unwrap();
@@ -350,8 +349,8 @@ fn disconnect_mid_pending_then_reconnect_resends_exactly_once() {
     // pending entry before the resubscribe is even answered: nothing is
     // re-sent, nothing is rejected, no second comment.
     sim.converged().unwrap();
-    assert_eq!(sim.log().len(), 3);
-    assert_eq!(sim.daemon_snapshot().comments.len(), 3);
+    assert_eq!(sim.log().len(), 2);
+    assert_eq!(sim.daemon_snapshot().comments.len(), 2);
     assert!(sim.client(A).view().last_error.is_none());
 }
 
@@ -410,7 +409,7 @@ fn step() -> impl Strategy<Value = Step> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
     #[test]
-    fn any_interleaving_converges(steps in prop::collection::vec(step(), 0..40)) {
+    fn any_interleaving_converges_or_exposes_only_unknown_outcomes(steps in prop::collection::vec(step(), 0..40)) {
         let mut sim = two_clients_one_thread();
         let thread = thread_id(&sim);
         for s in steps {
@@ -462,7 +461,7 @@ proptest! {
             let _ = sim.reconnect(p);
         }
         sim.settle();
-        match sim.converged() {
+        match sim.converged_or_uncertain() {
             Ok(()) => {}
             Err(Divergence::NotOpen(_)) => prop_assert!(false, "review closed"),
             Err(e) => prop_assert!(false, "{e}: daemon={:?}", sim.daemon_snapshot().comments),

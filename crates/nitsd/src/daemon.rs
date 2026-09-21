@@ -44,6 +44,7 @@ impl std::ops::Deref for OwnedCore {
 }
 
 pub struct Daemon {
+    admission: Arc<crate::admission::Admission>,
     core: Arc<OwnedCore>,
     writer: std::sync::mpsc::Sender<WriteJob>,
     events: broadcast::Sender<Arc<Event>>,
@@ -85,11 +86,14 @@ pub enum DaemonError {
     /// The writer thread or a blocking task went away.
     #[error("daemon is shutting down")]
     Shutdown,
+    #[error("daemon is restarting (operation {0}); request was not admitted")]
+    Restarting(nits_protocol::UpgradeId),
 }
 
 impl From<DaemonError> for RpcError {
     fn from(e: DaemonError) -> Self {
         match e {
+            DaemonError::Restarting(operation_id) => RpcError::Restarting { operation_id },
             DaemonError::Core(c) => c.into_rpc(),
             DaemonError::Shutdown => RpcError::Internal {
                 message: e.to_string(),
@@ -169,6 +173,7 @@ impl Daemon {
         let (events, _) = broadcast::channel(EVENT_BACKLOG);
         let (deltas, _) = broadcast::channel(EVENT_BACKLOG);
         Ok(Arc::new(Self {
+            admission: crate::admission::Admission::new(),
             core,
             writer,
             events,
@@ -178,6 +183,41 @@ impl Daemon {
             connections: std::sync::atomic::AtomicUsize::new(0),
             build,
         }))
+    }
+
+    /// Independent of review subscription filters; only current-protocol peers
+    /// receive these messages. Legacy peers use the documented EOF fallback.
+    pub fn lifecycle(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Option<nits_protocol::UpgradeOperation>> {
+        self.admission.subscribe()
+    }
+
+    /// Close admission before announcing the operation. The owned draining task
+    /// keeps accepted Core jobs alive even if the requester disappears.
+    pub fn prepare_restart(
+        self: &Arc<Self>,
+        operation: nits_protocol::UpgradeOperation,
+    ) -> nits_protocol::UpgradeOperation {
+        let (operation, first) = self.admission.close(operation);
+        if !first {
+            return operation;
+        }
+        let daemon = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::select! {
+                () = daemon.shutdown.cancelled() => return,
+                () = daemon.admission.drained() => {},
+            }
+            // Connections drain their accepted responses independently. Bound
+            // the final output phase so an unread socket cannot retain shutdown.
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
+            while daemon.connections() > 0 && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            daemon.shutdown.cancel();
+        });
+        operation
     }
 
     /// Token every accept loop and background task watches.
@@ -232,11 +272,15 @@ impl Daemon {
         T: Send + 'static,
         F: FnOnce(&Core) -> Result<T, CoreError> + Send + 'static,
     {
+        let permit = self.admission.accept()?;
         let core = Arc::clone(&self.core);
-        tokio::task::spawn_blocking(move || f(&core))
-            .await
-            .map_err(|_| DaemonError::Shutdown)?
-            .map_err(DaemonError::Core)
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            f(&core)
+        })
+        .await
+        .map_err(|_| DaemonError::Shutdown)?
+        .map_err(DaemonError::Core)
     }
 
     /// Run a mutation on the writer thread. Returns the events it appended,
@@ -246,10 +290,12 @@ impl Daemon {
         T: Send + 'static,
         F: FnOnce(&Core) -> Result<T, CoreError> + Send + 'static,
     {
+        let permit = self.admission.accept()?;
         let (tx, rx) = oneshot::channel();
         let broadcast = self.events.clone();
         let review_workspaces = Arc::clone(&self.review_workspaces);
         let job: WriteJob = Box::new(move |core| {
+            let _permit = permit;
             let result = (|| {
                 let before = core.last_seq()?;
                 let out = f(core);

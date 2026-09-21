@@ -712,6 +712,10 @@ async fn collect_events(
                 last_seq = e.seq;
                 events.push(e);
             }
+            Ok(Some(Unsolicited::Lifecycle(nits_protocol::LifecycleNotice::Restarting { operation }))) => {
+                if !events.is_empty() { break; }
+                return Err(OpsError::Rpc(RpcError::RestartInterrupted { operation_id: operation.id }));
+            }
             Ok(Some(Unsolicited::Error(RpcError::SeqTooOld { oldest }))) => {
                 return Err(OpsError::Invalid(format!(
                     "since is older than the daemon's backlog; restart from {oldest}"

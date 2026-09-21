@@ -3,8 +3,8 @@
     "name": "nitsd",
     "version": "0.1.0"
   },
-  "protocol": "0.17.0",
-  "schema": 10,
+  "protocol": "0.18.0",
+  "schema": 9,
   "type": "Welcome",
   "upgrade": null
 }

@@ -45,6 +45,16 @@ pub enum ConnectionView {
     Disconnected,
     Connecting,
     Subscribed,
+    /// An announced handoff; the host preserves drafts and bounded recovery.
+    Restarting {
+        operation: nits_protocol::UpgradeOperation,
+    },
+    /// This host executable cannot speak the replacement protocol. Reloading a
+    /// browser page does not replace the bridge or desktop process serving it.
+    UpgradeRequired {
+        client: nits_protocol::ProtocolVersion,
+        supported: Vec<nits_protocol::ProtocolVersion>,
+    },
     /// The daemon refused the handshake; shown until the next `Connect`.
     Rejected {
         error: RpcError,
@@ -404,6 +414,9 @@ pub struct ViewModel {
     pub connection: ConnectionView,
     /// Last request error the daemon returned; cleared on (re)subscribe.
     pub last_error: Option<RpcError>,
+    /// Lost mutation receipts are not replayed; durable event identities retire them.
+    pub daemon_management: crate::DaemonManagement,
+    pub uncertain_mutations: Vec<nits_protocol::ClientSeq>,
     /// Workspaces and their repos, listed on subscribe; the review list is
     /// the union of every workspace's reviews.
     pub workspaces: Vec<Workspace>,

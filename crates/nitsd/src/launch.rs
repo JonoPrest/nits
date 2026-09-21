@@ -20,6 +20,29 @@ use crate::ownership::{self, Ownership, Phase, SocketOwnership};
 
 pub mod stdio;
 
+static CLI_PROGRAM: std::sync::OnceLock<(PathBuf, ProgramSelection)> = std::sync::OnceLock::new();
+
+/// Whether a private remote entry point must preserve its configured invoked
+/// executable instead of inheriting an unrelated remote `NITS_BIN` setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramSelection {
+    ConfiguredEnvironment,
+    InvokedProgram,
+}
+
+/// Preserve the selected installed path (including a symlink) before a worker
+/// is frozen or that installation is replaced. Desktop/library callers do not
+/// register their own executable as a daemon program.
+pub fn register_cli_program(selection: ProgramSelection) -> std::io::Result<()> {
+    let selected = std::env::args_os()
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| std::io::Error::other("missing executable argv"))?;
+    let selected = crate::build::executable(&selected).or_else(|_| std::env::current_exe())?;
+    let _ = CLI_PROGRAM.set((selected, selection));
+    Ok(())
+}
+
 /// How long to wait for a freshly started daemon to listen.
 pub const START_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -61,7 +84,7 @@ impl DaemonSpec {
         }
     }
 
-    fn args(&self) -> Vec<String> {
+    pub(crate) fn args(&self) -> Vec<String> {
         let mut a = self.argv_prefix.clone();
         a.extend([
             "--data-dir".to_string(),
@@ -93,8 +116,14 @@ pub const NITS_BIN_ENV: &str = "NITS_BIN";
 /// Other embedders (the desktop app) look next to themselves, then `PATH`.
 #[must_use]
 pub fn nits_binary() -> PathBuf {
+    if let Some((program, ProgramSelection::InvokedProgram)) = CLI_PROGRAM.get() {
+        return program.clone();
+    }
     if let Some(p) = std::env::var_os(NITS_BIN_ENV).filter(|v| !v.is_empty()) {
         return PathBuf::from(p);
+    }
+    if let Some((program, _)) = CLI_PROGRAM.get() {
+        return program.clone();
     }
     match std::env::current_exe() {
         Ok(exe) if exe.file_stem().is_some_and(|s| s == "nits") => exe,
@@ -185,9 +214,14 @@ pub async fn ensure_daemon(spec: &DaemonSpec) -> std::io::Result<bool> {
     let start = Instant::now();
     let mut spawned = false;
     loop {
+        let endpoint_upgrading = crate::upgrade::endpoint_active(&spec.socket)?;
         match availability(spec).await? {
-            Availability::Listening => return Ok(spawned),
-            Availability::Stopped if !spawned => {
+            Availability::Listening if !endpoint_upgrading => return Ok(spawned),
+            Availability::Stopped
+                if !spawned
+                    && !endpoint_upgrading
+                    && !crate::upgrade::coordinator_active(&spec.data_dir)? =>
+            {
                 // Status/stop concern the selected endpoint. Starting also
                 // requires the explicitly configured store to be unowned; do
                 // not silently substitute an endpoint's previous data path.
@@ -196,7 +230,9 @@ pub async fn ensure_daemon(spec: &DaemonSpec) -> std::io::Result<bool> {
                     spawned = true;
                 }
             }
-            Availability::Stopped | Availability::Transitioning { .. } => {}
+            Availability::Listening
+            | Availability::Stopped
+            | Availability::Transitioning { .. } => {}
         }
         if start.elapsed() > START_TIMEOUT {
             return Err(std::io::Error::new(

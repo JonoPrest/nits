@@ -29,6 +29,19 @@ module ViewPrefs = {
   }
 }
 
+module DaemonManagement = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t =
+    | @as("Idle") Idle({})
+    | @as("Inspecting") Inspecting({})
+    | @as("Status") Status({status: Lifecycle.ManagedDaemonStatus.t})
+    | @as("Upgrading") Upgrading({})
+    | @as("Outcome") Outcome({result: Lifecycle.UpgradeResult.t})
+    | @as("Unavailable") Unavailable({message: string})
+  @@warning("+27")
+}
+
 module ConnectionView = {
   @@warning("-27")
   @schema @tag("type")
@@ -36,6 +49,12 @@ module ConnectionView = {
     | @as("Disconnected") Disconnected({})
     | @as("Connecting") Connecting({})
     | @as("Subscribed") Subscribed({})
+    | @as("Restarting") Restarting({operation: Lifecycle.UpgradeOperation.t})
+    | @as("UpgradeRequired")
+    UpgradeRequired({
+        client: Ids.protocolVersion,
+        supported: array<Ids.protocolVersion>,
+      })
     | @as("Rejected") Rejected({error: Rpc.RpcError.t})
   @@warning("+27")
 }
@@ -534,6 +553,8 @@ module Command = {
     | CheckRequested
     | CheckpointDelta
     | FocusCommits
+    | InspectDaemon
+    | UpgradeDaemon
     | Connect
     | Disconnect
     | Commits
@@ -775,6 +796,8 @@ module ViewModel = {
     @as("focused_comment") focusedComment: @s.null option<string>,
     connection: ConnectionView.t,
     @as("last_error") lastError: @s.null option<Rpc.RpcError.t>,
+    @as("uncertain_mutations") uncertainMutations: array<Ids.clientSeq>,
+    @as("daemon_management") daemonManagement: DaemonManagement.t,
     workspaces: array<Domain.Workspace.t>,
     reviews: array<Domain.Review.t>,
     @as("open_review") openReview: @s.null option<reviewId>,
@@ -829,6 +852,8 @@ module ViewModel = {
     focusedComment: None,
     connection: Disconnected({}),
     lastError: None,
+    uncertainMutations: [],
+    daemonManagement: Idle({}),
     workspaces: [],
     reviews: [],
     openReview: None,
@@ -854,6 +879,8 @@ module ViewPatch = {
     Connection({
         connection: ConnectionView.t,
         @as("last_error") lastError: @s.null option<Rpc.RpcError.t>,
+        @as("uncertain_mutations") uncertainMutations: array<Ids.clientSeq>,
+        @as("daemon_management") daemonManagement: DaemonManagement.t,
       })
     | @as("ReviewList")
     ReviewList({
@@ -925,7 +952,13 @@ module ViewPatch = {
   /// Install a patch into the UI's copy of the model.
   let apply = (model: ViewModel.t, patch: t): ViewModel.t =>
     switch patch {
-    | Connection({connection, lastError}) => {...model, connection, lastError}
+    | Connection({connection, lastError, uncertainMutations, daemonManagement}) => {
+        ...model,
+        connection,
+        lastError,
+        uncertainMutations,
+        daemonManagement,
+      }
     | ReviewList({
         home,
         daemonContext,

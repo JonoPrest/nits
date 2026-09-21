@@ -16,6 +16,9 @@ description = "Nits: daemon-backed code review. Client, daemon and MCP server in
 name = "nits"
 path = "src/main.rs"
 
+[features]
+upgrade-fixture-previous-protocol = ["nits-protocol/upgrade-fixture-previous-protocol"]
+
 [dependencies]
 nits-client-web = { path = "../nits-client-web", version = "0.1.0" }
 nits-client-host = { workspace = true }

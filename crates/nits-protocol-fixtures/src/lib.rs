@@ -20,6 +20,7 @@ use nits_protocol::domain::*;
 use nits_protocol::events::*;
 use nits_protocol::ids::*;
 use nits_protocol::invariants::*;
+use nits_protocol::lifecycle::*;
 use nits_protocol::render::*;
 use nits_protocol::replay::*;
 use nits_protocol::rpc::*;
@@ -158,6 +159,26 @@ macro_rules! registry {
 }
 
 registry!(
+    BuildDigest,
+    ReleaseVersion,
+    ReleaseChannel,
+    ControlVersion,
+    WorkerVersion,
+    ReleaseRelation,
+    ReleaseIdentity,
+    BuildDescriptor,
+    UpgradeId,
+    UpgradeStage,
+    UpgradeFailureKind,
+    UpgradeFailure,
+    UpgradeProgress,
+    UpgradeOperation,
+    UpgradeResult,
+    UpgradeIntent,
+    InstalledCandidate,
+    ManagedDaemonState,
+    ManagedDaemonStatus,
+    LifecycleNotice,
     // domain
     Workspace,
     Repo,
@@ -765,6 +786,8 @@ fn review_snapshot() -> Result<ReviewSnapshot, FixtureError> {
 // Registrations
 // ---------------------------------------------------------------------------
 
+mod lifecycle_fixtures;
+
 struct_fixture!(Workspace, "Workspace", workspace());
 struct_fixture!(Repo, "Repo", repo());
 enum_fixture!(
@@ -1356,6 +1379,11 @@ enum_fixture!(
     ServerMsgKind,
     "ServerMsg",
     [
+        ServerMsg::Lifecycle {
+            notice: LifecycleNotice::Restarting {
+                operation: lifecycle_fixtures::operation()?
+            }
+        },
         ServerMsg::Welcome {
             protocol: ProtocolVersion::CURRENT,
             daemon: daemon_build(),
@@ -1814,6 +1842,12 @@ enum_fixture!(
     RpcErrorKind,
     "RpcError",
     [
+        RpcError::Restarting {
+            operation_id: UpgradeId::from_parts(1, 1)
+        },
+        RpcError::RestartInterrupted {
+            operation_id: UpgradeId::from_parts(1, 1)
+        },
         RpcError::NotFound {
             kind: EntityKind::Comment,
             id: comment_id().to_string()

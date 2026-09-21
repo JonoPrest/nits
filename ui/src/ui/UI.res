@@ -4,12 +4,13 @@
 // variants are spelled out rather than interpolated.
 
 module Box = {
-  type direction = Row | Column
+  type direction = Row | Column | WrappingRow
   type gap = NoGap | Xs | Sm | Md
   @react.component
   let make = (~children, ~direction=Column, ~gap=NoGap, ~grow=false) => {
     let dir = switch direction {
     | Row => "flex flex-row items-center"
+    | WrappingRow => "flex flex-row flex-wrap items-center"
     | Column => "flex flex-col"
     }
     let gapClass = switch gap {
@@ -20,6 +21,19 @@ module Box = {
     }
     let growClass = grow ? " min-h-0 flex-1" : ""
     <div className={dir ++ gapClass ++ growClass}> children </div>
+  }
+}
+
+/// Short asynchronous outcome text wraps safely around identifiers and paths.
+module Message = {
+  type kind = Status | Alert
+  @react.component
+  let make = (~text: string, ~kind=Status) => {
+    let role = switch kind {
+    | Status => "status"
+    | Alert => "alert"
+    }
+    <p role className="m-0 min-w-0 break-words text-sm"> {React.string(text)} </p>
   }
 }
 
