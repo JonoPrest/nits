@@ -11,7 +11,12 @@ type pending = {
   received: float,
   pieces: array<string>,
 }
-type state = Starting | Ready(Delivery.ViewRevision.t) | Receiving(pending) | AwaitingSnapshot
+type state =
+  | Starting
+  | Ready(Delivery.ViewRevision.t)
+  | Receiving(pending)
+  // Keep the last accepted/assembling revision until a new host generation.
+  | AwaitingSnapshot(option<Delivery.ViewRevision.t>)
 type t = {mutable state: state}
 type outcome =
   | Buffered
@@ -20,11 +25,17 @@ type outcome =
 
 let make = () => {state: Starting}
 let reset = decoder => decoder.state = Starting
-let fail = (decoder, reason) => {
-  let alreadyWaiting = decoder.state == AwaitingSnapshot
-  decoder.state = AwaitingSnapshot
-  alreadyWaiting ? Buffered : Resync(reason)
+let beginResync = (decoder, after, reason) => {
+  decoder.state = AwaitingSnapshot(after)
+  Resync(reason)
 }
+let fail = (decoder, reason) =>
+  switch decoder.state {
+  | Starting => beginResync(decoder, None, reason)
+  | Ready(revision) => beginResync(decoder, Some(revision), reason)
+  | Receiving(pending) => beginResync(decoder, Some(pending.revision), reason)
+  | AwaitingSnapshot(_) => Buffered
+  }
 let isInteger: float => bool = %raw(`Number.isInteger`)
 let unsigned = value => isInteger(value) && value >= 0. && value <= 4294967295.
 let positive = value => value > 0. && unsigned(value)
@@ -62,10 +73,16 @@ let frame = (decoder, frame: Delivery.ViewFrame.t) => {
     fail(decoder, "invalid view revision")
   } else {
     switch decoder.state {
-    | Starting | AwaitingSnapshot =>
+    | Starting =>
       switch frame.kind {
       | Delta => Buffered
       | Snapshot => start(decoder, frame)
+      }
+    | AwaitingSnapshot(after) =>
+      switch (frame.kind, after) {
+      | (Delta, _) => Buffered
+      | (Snapshot, Some(previous)) if frame.revision <= previous => Buffered
+      | (Snapshot, _) => start(decoder, frame)
       }
     | Ready(previous) =>
       if frame.revision <= previous {
