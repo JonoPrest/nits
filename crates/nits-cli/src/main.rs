@@ -2496,16 +2496,13 @@ mod tests {
     #[test]
     fn requester_identity_does_not_supply_the_required_recipient() {
         let review = ReviewId::from_parts(1, 1).to_string();
-        let error = Cli::try_parse_from([
-            "nits",
-            "--agent",
-            "requester",
-            "review",
-            "request",
-            &review,
-        ])
-        .unwrap_err();
-        assert_eq!(error.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        let error =
+            Cli::try_parse_from(["nits", "--agent", "requester", "review", "request", &review])
+                .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
         assert!(error.to_string().contains("<AGENT>"));
     }
 
