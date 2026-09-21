@@ -37,6 +37,7 @@ const MIGRATIONS: &[Migration] = &[
     migrate_5_to_6,
     migrate_6_to_7,
     migrate_7_to_8,
+    migrate_8_to_9,
 ];
 
 /// Schema 7 captures working-tree HEAD provenance. Missing historical HEADs
@@ -185,8 +186,8 @@ fn migrate_3_to_4(txn: &WriteTransaction) -> Result<(), String> {
             if let Some(context) = stored.event.pointer_mut("/body/comment/context")
                 && !context.is_null()
             {
-                let change: nits_protocol::ChangeKind = serde_json::from_value(context.clone())?;
-                *context = serde_json::to_value(nits_protocol::CommentContext::Diff { change })?;
+                let change = context.take();
+                *context = serde_json::json!({"type": "Diff", "change": change});
             }
             stored.schema = SchemaVersion::new(4);
             Ok(())
@@ -228,10 +229,70 @@ fn migrate_7_to_8(txn: &WriteTransaction) -> Result<(), String> {
                 let oid: Option<nits_protocol::BlobOid> = serde_json::from_value(blob)?;
                 body.insert(
                     "content".into(),
-                    serde_json::to_value(nits_protocol::ViewedContent::from(oid))?,
+                    match oid {
+                        Some(oid) => serde_json::json!({"type": "Blob", "oid": oid}),
+                        None => serde_json::json!({"type": "Missing"}),
+                    },
                 );
             }
             stored.schema = SchemaVersion::new(8);
+            Ok(())
+        })?;
+        tables.clear_views()?;
+        tables.clear_view_seq()?;
+        Ok(())
+    }
+    migrate(txn).map_err(|error| error.to_string())
+}
+
+/// Schema 9 includes Git modes in blob identities. Historical marks and comment
+/// diffs never recorded modes, so preserve the OIDs with explicit Unknown modes.
+/// Gitlink commits remain commits, and original event identity/discussion stays
+/// untouched. Derived views are rebuilt only after every migration completes.
+fn migrate_8_to_9(txn: &WriteTransaction) -> Result<(), String> {
+    fn unknown_mode(blob: &mut serde_json::Value) {
+        if blob.is_string() {
+            let oid = blob.take();
+            *blob = serde_json::json!({"oid": oid, "mode": "Unknown"});
+        }
+    }
+    fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
+        let mut tables = tables::Write::open(txn)?;
+        rewrite_raw_events(&mut tables, |stored| {
+            if let Some(content) = stored.event.pointer_mut("/body/content")
+                && content.get("type").and_then(serde_json::Value::as_str) == Some("Blob")
+                && let Some(fields) = content.as_object_mut()
+                && let Some(oid) = fields.remove("oid")
+            {
+                fields.insert(
+                    "entry".into(),
+                    serde_json::json!({"oid": oid, "mode": "Unknown"}),
+                );
+            }
+            if let Some(change) = stored.event.pointer_mut("/body/comment/context/change") {
+                let fields: &[&str] = match change.get("type").and_then(serde_json::Value::as_str) {
+                    Some("Added") => &["new"],
+                    Some("Deleted") => &["old"],
+                    Some("Modified" | "Renamed") => &["old", "new"],
+                    _ => &[],
+                };
+                for field in fields {
+                    if let Some(blob) = change.get_mut(*field) {
+                        unknown_mode(blob);
+                    }
+                }
+                if let Some(submodule) = change.get_mut("change") {
+                    let field = match submodule.get("type").and_then(serde_json::Value::as_str) {
+                        Some("BlobToSubmodule") => Some("old"),
+                        Some("SubmoduleToBlob") => Some("new"),
+                        _ => None,
+                    };
+                    if let Some(blob) = field.and_then(|field| submodule.get_mut(field)) {
+                        unknown_mode(blob);
+                    }
+                }
+            }
+            stored.schema = SchemaVersion::new(9);
             Ok(())
         })?;
         tables.clear_views()?;

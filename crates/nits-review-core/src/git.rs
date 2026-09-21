@@ -16,9 +16,9 @@ use std::process::Command;
 use gix::bstr::ByteSlice;
 use gix::objs::tree::EntryKind as K;
 use nits_protocol::{
-    BlobOid, ChangeKind, CommitInfo, CommitOid, Oid, RefCandidate, RefSpec, RepoId, RepoPath,
-    ResolvedRef, ResolvedSource, Sig, Timestamp, TreeDelta, TreeEntry, TreeEntryKind, TreeOid,
-    TreeSnapshot,
+    BlobEntry, BlobMode, BlobOid, ChangeKind, CommitInfo, CommitOid, Oid, RefCandidate, RefSpec,
+    RepoId, RepoPath, ResolvedRef, ResolvedSource, Sig, Timestamp, TreeDelta, TreeEntry,
+    TreeEntryKind, TreeOid, TreeSnapshot,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -842,12 +842,12 @@ impl Repo {
                                 new: CommitOid::new(raw.new),
                             },
                             (false, true) => SubmoduleChange::BlobToSubmodule {
-                                old: BlobOid::new(raw.old),
+                                old: blob_entry(raw.old, raw.old_mode)?,
                                 new: CommitOid::new(raw.new),
                             },
                             (true, false) => SubmoduleChange::SubmoduleToBlob {
                                 old: CommitOid::new(raw.old),
-                                new: BlobOid::new(raw.new),
+                                new: blob_entry(raw.new, raw.new_mode)?,
                             },
                             (false, false) => {
                                 return Err(GitError::Parse(
@@ -861,19 +861,19 @@ impl Repo {
             } else {
                 match raw.status {
                     RawStatus::Added => ChangeKind::Added {
-                        new: BlobOid::new(raw.new),
+                        new: blob_entry(raw.new, raw.new_mode)?,
                     },
                     RawStatus::Deleted => ChangeKind::Deleted {
-                        old: BlobOid::new(raw.old),
+                        old: blob_entry(raw.old, raw.old_mode)?,
                     },
                     RawStatus::Modified | RawStatus::TypeChanged => ChangeKind::Modified {
-                        old: BlobOid::new(raw.old),
-                        new: BlobOid::new(raw.new),
+                        old: blob_entry(raw.old, raw.old_mode)?,
+                        new: blob_entry(raw.new, raw.new_mode)?,
                     },
                     RawStatus::Renamed { from } => ChangeKind::Renamed {
                         from,
-                        old: BlobOid::new(raw.old),
-                        new: BlobOid::new(raw.new),
+                        old: blob_entry(raw.old, raw.old_mode)?,
+                        new: blob_entry(raw.new, raw.new_mode)?,
                     },
                 }
             };
@@ -1017,6 +1017,19 @@ impl Repo {
 pub struct FileChangeRaw {
     pub path: RepoPath,
     pub kind: ChangeKind,
+}
+
+fn blob_entry(oid: Oid, mode: u32) -> Result<BlobEntry, GitError> {
+    let mode = match mode {
+        0o100_644 => BlobMode::Regular,
+        0o100_755 => BlobMode::Executable,
+        0o120_000 => BlobMode::Symlink,
+        other => return Err(GitError::Parse(format!("unsupported blob mode {other:o}"))),
+    };
+    Ok(BlobEntry {
+        oid: BlobOid::new(oid),
+        mode,
+    })
 }
 
 fn sig(s: &gix::actor::SignatureRef<'_>) -> Result<Sig, GitError> {

@@ -377,10 +377,10 @@ impl ClientCore {
                             opts: render.opts.clone(),
                             first_chunk,
                         },
-                        (RenderTarget::Blob { oid }, _) => Request::BlobRender {
+                        (RenderTarget::Blob { entry }, _) => Request::BlobRender {
                             repo_id: render.repo_id,
                             path: render.path.clone(),
-                            blob_oid: *oid,
+                            entry: *entry,
                             first_chunk,
                         },
                         (RenderTarget::Diff { .. }, false) => Request::FileRender {
@@ -841,20 +841,15 @@ impl ClientCore {
         else {
             return None;
         };
-        let oid = snapshot
+        let entry = snapshot
             .entries
             .iter()
             .find(|e| e.path == file.path)
-            .and_then(|e| match e.kind {
-                nits_protocol::TreeEntryKind::File { oid, .. }
-                | nits_protocol::TreeEntryKind::Symlink { oid } => Some(oid),
-                nits_protocol::TreeEntryKind::Dir { .. }
-                | nits_protocol::TreeEntryKind::Submodule { .. } => None,
-            })?;
+            .and_then(|e| e.kind.blob_entry())?;
         Some(RenderKey {
             repo_id: file.repo_id,
             path: file.path.clone(),
-            target: RenderTarget::Blob { oid },
+            target: RenderTarget::Blob { entry },
             opts: RenderOpts::default(),
         })
     }
@@ -1135,7 +1130,10 @@ mod tests {
             repo_id: RepoId::from_parts(1, 1),
             path: RepoPath::new("a.rs").unwrap(),
             target: RenderTarget::Blob {
-                oid: nits_protocol::BlobOid::from_bytes([1; 20]),
+                entry: nits_protocol::BlobEntry {
+                    oid: nits_protocol::BlobOid::from_bytes([1; 20]),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
             },
             opts: RenderOpts::default(),
             lang: None,

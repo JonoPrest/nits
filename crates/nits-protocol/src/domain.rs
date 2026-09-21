@@ -526,6 +526,38 @@ pub struct Thread {
     pub resolution: ThreadResolution,
 }
 
+/// Git stores these blob entry modes, not arbitrary filesystem permission bits.
+/// `Unknown` preserves historical entries whose mode was never recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum BlobMode {
+    Regular,
+    Executable,
+    Symlink,
+    Unknown,
+}
+
+impl BlobMode {
+    #[must_use]
+    pub const fn octal(self) -> Option<&'static str> {
+        match self {
+            Self::Regular => Some("100644"),
+            Self::Executable => Some("100755"),
+            Self::Symlink => Some("120000"),
+            Self::Unknown => None,
+        }
+    }
+}
+
+/// A blob and its tree-entry mode. Equal bytes can have different entry identities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BlobEntry {
+    pub oid: BlobOid,
+    pub mode: BlobMode,
+}
+
 /// Content identity of a reviewed tree entry. Git stores a gitlink as a commit
 /// OID, not a blob; a missing entry identifies a deletion explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumDiscriminants)]
@@ -534,13 +566,18 @@ pub struct Thread {
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ViewedContent {
     Missing,
-    Blob { oid: BlobOid },
+    Blob { entry: BlobEntry },
     Submodule { commit: CommitOid },
 }
 
 impl From<Option<BlobOid>> for ViewedContent {
     fn from(blob: Option<BlobOid>) -> Self {
-        blob.map_or(Self::Missing, |oid| Self::Blob { oid })
+        blob.map_or(Self::Missing, |oid| Self::Blob {
+            entry: BlobEntry {
+                oid,
+                mode: BlobMode::Unknown,
+            },
+        })
     }
 }
 
@@ -754,19 +791,19 @@ pub enum SubmoduleChange {
         new: CommitOid,
     },
     BlobToSubmodule {
-        old: BlobOid,
+        old: BlobEntry,
         new: CommitOid,
     },
     SubmoduleToBlob {
         old: CommitOid,
-        new: BlobOid,
+        new: BlobEntry,
     },
 }
 
 impl SubmoduleChange {
     pub fn old_blob(&self) -> Option<BlobOid> {
         match self {
-            Self::BlobToSubmodule { old, .. } => Some(*old),
+            Self::BlobToSubmodule { old, .. } => Some(old.oid),
             Self::Added { .. }
             | Self::Deleted { .. }
             | Self::Updated { .. }
@@ -777,7 +814,7 @@ impl SubmoduleChange {
 
     pub fn new_blob(&self) -> Option<BlobOid> {
         match self {
-            Self::SubmoduleToBlob { new, .. } => Some(*new),
+            Self::SubmoduleToBlob { new, .. } => Some(new.oid),
             Self::Added { .. }
             | Self::Deleted { .. }
             | Self::Updated { .. }
@@ -789,7 +826,7 @@ impl SubmoduleChange {
     pub fn viewed_content(&self) -> ViewedContent {
         match self {
             Self::Deleted { .. } => ViewedContent::Missing,
-            Self::SubmoduleToBlob { new, .. } => ViewedContent::Blob { oid: *new },
+            Self::SubmoduleToBlob { new, .. } => ViewedContent::Blob { entry: *new },
             Self::Added { new }
             | Self::Updated { new, .. }
             | Self::Renamed { new, .. }
@@ -811,19 +848,19 @@ pub enum ChangeKind {
         change: SubmoduleChange,
     },
     Added {
-        new: BlobOid,
+        new: BlobEntry,
     },
     Deleted {
-        old: BlobOid,
+        old: BlobEntry,
     },
     Modified {
-        old: BlobOid,
-        new: BlobOid,
+        old: BlobEntry,
+        new: BlobEntry,
     },
     Renamed {
         from: RepoPath,
-        old: BlobOid,
-        new: BlobOid,
+        old: BlobEntry,
+        new: BlobEntry,
     },
 }
 
@@ -833,7 +870,7 @@ impl ChangeKind {
             Self::Submodule { change } => change.viewed_content(),
             Self::Deleted { .. } => ViewedContent::Missing,
             Self::Added { new } | Self::Modified { new, .. } | Self::Renamed { new, .. } => {
-                ViewedContent::Blob { oid: *new }
+                ViewedContent::Blob { entry: *new }
             }
         }
     }
@@ -845,7 +882,7 @@ impl ChangeKind {
             ChangeKind::Added { .. } => None,
             ChangeKind::Deleted { old }
             | ChangeKind::Modified { old, .. }
-            | ChangeKind::Renamed { old, .. } => Some(*old),
+            | ChangeKind::Renamed { old, .. } => Some(old.oid),
         }
     }
 
@@ -856,7 +893,7 @@ impl ChangeKind {
             ChangeKind::Deleted { .. } => None,
             ChangeKind::Added { new }
             | ChangeKind::Modified { new, .. }
-            | ChangeKind::Renamed { new, .. } => Some(*new),
+            | ChangeKind::Renamed { new, .. } => Some(new.oid),
         }
     }
 }
@@ -905,6 +942,29 @@ pub enum TreeEntryKind {
     Submodule {
         commit: CommitOid,
     },
+}
+
+impl TreeEntryKind {
+    #[must_use]
+    pub fn blob_entry(&self) -> Option<BlobEntry> {
+        match self {
+            Self::File {
+                oid, executable, ..
+            } => Some(BlobEntry {
+                oid: *oid,
+                mode: if *executable {
+                    BlobMode::Executable
+                } else {
+                    BlobMode::Regular
+                },
+            }),
+            Self::Symlink { oid } => Some(BlobEntry {
+                oid: *oid,
+                mode: BlobMode::Symlink,
+            }),
+            Self::Dir { .. } | Self::Submodule { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -638,7 +638,15 @@ fn archived_working_tree_reviews_preserve_history_and_refresh_on_reopen() {
     assert_eq!(archived.comments, original.comments);
     assert_eq!(archived.threads, original.threads);
     assert!(core.working_tree_reviews(rid(1)).unwrap().is_empty());
-    core.blob_render(rid(1), &p("src/main.rs"), blob).unwrap();
+    core.blob_render(
+        rid(1),
+        &p("src/main.rs"),
+        nits_protocol::BlobEntry {
+            oid: blob,
+            mode: nits_protocol::BlobMode::Regular,
+        },
+    )
+    .unwrap();
 
     core.update_review(&human(), review, "reopened".into(), ReviewStatus::Open)
         .unwrap();
@@ -677,7 +685,15 @@ fn archived_working_tree_reviews_preserve_history_and_refresh_on_reopen() {
     assert_eq!(reopened.threads, original.threads);
     assert_eq!(core.working_tree_reviews(rid(1)).unwrap(), vec![review]);
     // Old anchor blobs remain readable after refreshing as well.
-    core.blob_render(rid(1), &p("src/main.rs"), blob).unwrap();
+    core.blob_render(
+        rid(1),
+        &p("src/main.rs"),
+        nits_protocol::BlobEntry {
+            oid: blob,
+            mode: nits_protocol::BlobMode::Regular,
+        },
+    )
+    .unwrap();
 }
 
 #[test]
@@ -843,7 +859,12 @@ fn viewed_marks_track_the_head_blob_and_reject_agents() {
             .viewed_state(review_id(1), rid(1), &p("src/main.rs"))
             .unwrap(),
         ViewedState::ChangedSinceViewed {
-            marked: nits_protocol::ViewedContent::Blob { oid: marked }
+            marked: nits_protocol::ViewedContent::Blob {
+                entry: nits_protocol::BlobEntry {
+                    oid: marked,
+                    mode: nits_protocol::BlobMode::Regular
+                }
+            }
         }
     );
     w.core
@@ -1280,8 +1301,11 @@ fn file_render_and_snapshot_and_reopen() {
             rid(1),
             &p("src/main.rs"),
             match &header.target {
-                nits_protocol::RenderTarget::Diff { change } => change.new_blob().unwrap(),
-                nits_protocol::RenderTarget::Blob { oid } => *oid,
+                nits_protocol::RenderTarget::Diff { change } => nits_protocol::BlobEntry {
+                    oid: change.new_blob().unwrap(),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
+                nits_protocol::RenderTarget::Blob { entry } => *entry,
             },
         )
         .unwrap();
@@ -1663,6 +1687,7 @@ fn review_requests_are_durable_state_separate_from_findings() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // One pinned Browse comment crosses refresh, mutation and restart boundaries.
 fn browse_comments_pin_arbitrary_ref_blobs_through_review_refresh_and_restart() {
     use nits_protocol::{CommentContext, TreeEntryKind};
     let w = world();
@@ -1746,11 +1771,23 @@ fn browse_comments_pin_arbitrary_ref_blobs_through_review_refresh_and_restart() 
             panic!()
         };
         let (header, _) = reopened
-            .blob_render(rid(1), &p("unchanged.txt"), blob_oid)
+            .blob_render(
+                rid(1),
+                &p("unchanged.txt"),
+                nits_protocol::BlobEntry {
+                    oid: blob_oid,
+                    mode: nits_protocol::BlobMode::Regular,
+                },
+            )
             .unwrap();
         assert_eq!(
             header.target,
-            nits_protocol::RenderTarget::Blob { oid: blob_oid }
+            nits_protocol::RenderTarget::Blob {
+                entry: nits_protocol::BlobEntry {
+                    oid: blob_oid,
+                    mode: nits_protocol::BlobMode::Regular
+                }
+            }
         );
         assert_eq!(
             (side, lines.start().get(), lines.end().get()),
@@ -2028,7 +2065,14 @@ fn requested_h1_checked_after_h2_is_changed_and_delta_survives_gc_restart_rebuil
         nits_protocol::ThreadResolution::Deferred { .. }
     ));
     let (_, original_rows) = core
-        .blob_render(rid(1), &p("round.txt"), original_blob)
+        .blob_render(
+            rid(1),
+            &p("round.txt"),
+            nits_protocol::BlobEntry {
+                oid: original_blob,
+                mode: nits_protocol::BlobMode::Regular,
+            },
+        )
         .unwrap();
     assert!(format!("{original_rows:?}").contains("H1"));
     assert_eq!(core.files_scoped(id, &scope).unwrap().0, files);

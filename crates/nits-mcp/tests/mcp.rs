@@ -299,6 +299,84 @@ fn main_feature(rid: &str) -> Value {
 }
 
 #[tokio::test]
+async fn mode_and_file_type_changes_are_visible_in_diff_and_whole_file_tools() {
+    let repo = RepoBuilder::new()
+        .commit("initial", files!["entry" => "destination"])
+        .build()
+        .unwrap();
+    let blob = repo
+        .git(&["rev-parse", "HEAD:entry"])
+        .unwrap()
+        .trim()
+        .to_owned();
+    let mut revisions = Vec::new();
+    for (mode, name) in [
+        ("100644", "Regular"),
+        ("100755", "Executable"),
+        ("120000", "Symlink"),
+    ] {
+        repo.git(&[
+            "update-index",
+            "--cacheinfo",
+            &format!("{mode},{blob},entry"),
+        ])
+        .unwrap();
+        repo.git(&["commit", "--allow-empty", "-qm", name]).unwrap();
+        revisions.push((mode, name, repo.rev_parse("HEAD").unwrap()));
+    }
+    let h = start_with_repo(repo);
+    let client = human(&h).await;
+    let (workspace, repo_id) = seed(&h, &client).await;
+    let mut server = server(&h);
+    init(&mut server).await;
+    for (old_mode, old_name, base) in &revisions {
+        for (new_mode, new_name, head) in &revisions {
+            if old_mode == new_mode {
+                continue;
+            }
+            let created = call(
+                &mut server,
+                "create_review",
+                json!({
+                    "workspace_id": workspace, "title": "Mode transition", "targets": [{
+                        "repo_id": repo_id, "base": {"type": "Commit", "oid": base},
+                        "head": {"type": "Commit", "oid": head}
+                    }]
+                }),
+            )
+            .await;
+            let diff = call(
+                &mut server,
+                "get_diff",
+                json!({"review_id": created["review_id"], "repo_id": repo_id, "path": "entry"}),
+            )
+            .await;
+            assert_eq!(
+                diff["change"]["old"],
+                json!({"oid": blob, "mode": old_name})
+            );
+            assert_eq!(
+                diff["change"]["new"],
+                json!({"oid": blob, "mode": new_name})
+            );
+            assert_eq!(diff["content"]["additions"], 0);
+            assert_eq!(diff["content"]["deletions"], 0);
+            let text = diff["text"].as_str().unwrap();
+            assert!(
+                text.contains(old_mode) && text.contains(new_mode) && text.contains('→'),
+                "{text}"
+            );
+            for (side, expected_mode) in [("Base", old_name), ("Head", new_name)] {
+                let file = call(&mut server, "get_file", json!({"review_id": created["review_id"], "repo_id": repo_id, "path": "entry", "side": side})).await;
+                assert_eq!(file["mode"], *expected_mode);
+                assert_eq!(file["blob_oid"], blob);
+                assert!(file["text"].as_str().unwrap().contains("destination"));
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn tools_list_is_json_rpc_conformant() {
     let h = start();
     let mut s = server(&h);
@@ -2442,7 +2520,15 @@ async fn submodule_changes_are_metadata_in_mcp_and_never_source_line_anchors() {
         assert!(rendered.starts_with(text), "{rendered}");
         for (field, oid) in [("old", previous), ("new", next)] {
             if let Some(oid) = oid {
-                assert_eq!(change["change"][field], *oid);
+                let expected = if matches!(
+                    (kind, field),
+                    ("BlobToSubmodule", "old") | ("SubmoduleToBlob", "new")
+                ) {
+                    json!({"oid": oid, "mode": "Regular"})
+                } else {
+                    json!(oid)
+                };
+                assert_eq!(change["change"][field], expected);
                 assert!(rendered.contains(oid), "{rendered}");
             }
         }

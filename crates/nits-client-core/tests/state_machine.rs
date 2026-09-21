@@ -1135,7 +1135,10 @@ fn stream_item_strategy() -> impl Strategy<Value = StreamItem> {
         path: nits_protocol::RepoPath::new("a.rs").unwrap(),
         target: nits_protocol::RenderTarget::Diff {
             change: nits_protocol::ChangeKind::Added {
-                new: nits_protocol::BlobOid::new(Oid::from_bytes([1; 20])),
+                new: nits_protocol::BlobEntry {
+                    oid: nits_protocol::BlobOid::new(Oid::from_bytes([1; 20])),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
             },
         },
         opts: nits_protocol::RenderOpts::default(),
@@ -1425,7 +1428,10 @@ fn reference_header() -> nits_protocol::FileRenderHeader {
         path: nits_protocol::RepoPath::new("src/main.rs").unwrap(),
         target: nits_protocol::RenderTarget::Diff {
             change: nits_protocol::ChangeKind::Added {
-                new: nits_protocol::BlobOid::new(Oid::from_bytes([7; 20])),
+                new: nits_protocol::BlobEntry {
+                    oid: nits_protocol::BlobOid::new(Oid::from_bytes([7; 20])),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
             },
         },
         opts: RenderOpts::default(),
@@ -2456,7 +2462,10 @@ fn submodule_metadata_counts_as_a_file_and_tracks_typed_viewed_identity() {
         ),
         (
             ViewedContent::Blob {
-                oid: BlobOid::from_bytes([8; 20]),
+                entry: nits_protocol::BlobEntry {
+                    oid: BlobOid::from_bytes([8; 20]),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
             },
             ViewedState::ChangedSinceViewed,
         ),
@@ -2538,6 +2547,117 @@ fn submodule_metadata_counts_as_a_file_and_tracks_typed_viewed_identity() {
             .unwrap();
         assert_eq!(core.view().diffs[0].viewed, ViewedState::Viewed);
         assert_eq!(core.view().progress.viewed, 1);
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One typed-identity matrix follows the actual diff and Browse request flows.
+fn blob_mode_identity_controls_viewed_progress_for_diffs_and_browse() {
+    use nits_client_core::ViewedState;
+    use nits_protocol::{BlobEntry, BlobMode, RenderTarget, ViewedContent, ViewedMark};
+    let review_id = ReviewId::from_parts(4, 4);
+    let oid = nits_protocol::BlobOid::from_bytes([8; 20]);
+    for mode in [
+        BlobMode::Regular,
+        BlobMode::Executable,
+        BlobMode::Symlink,
+        BlobMode::Unknown,
+    ] {
+        let current = BlobEntry {
+            oid,
+            mode: BlobMode::Executable,
+        };
+        let marked = BlobEntry { oid, mode };
+        let mut core = subscribed(1);
+        let effects = core
+            .handle(Input::User(Action::OpenReview { review_id }))
+            .unwrap();
+        let (request, _) = sent_request(&effects).unwrap();
+        let mut header = reference_header();
+        header.target = RenderTarget::Diff {
+            change: nits_protocol::ChangeKind::Modified {
+                old: BlobEntry {
+                    mode: BlobMode::Regular,
+                    ..current
+                },
+                new: current,
+            },
+        };
+        let file = FileRef {
+            repo_id: header.repo_id,
+            path: header.path.clone(),
+        };
+        let mut snap = snapshot(review_id, Seq::new(1));
+        let targets = resolved(1);
+        let tree = nits_protocol::TreeSnapshot {
+            repo_id: file.repo_id,
+            root_oid: targets.first().head.tree,
+            entries: vec![nits_protocol::TreeEntry {
+                path: file.path.clone(),
+                kind: nits_protocol::TreeEntryKind::File {
+                    oid,
+                    size: 0,
+                    executable: true,
+                },
+            }],
+        };
+        snap.resolved = Some(targets);
+        snap.viewed.push(ViewedMark {
+            review_id,
+            repo_id: file.repo_id,
+            path: file.path.clone(),
+            viewer: nits_protocol::Human {
+                name: "someone".into(),
+                machine: "host".into(),
+            },
+            content: ViewedContent::Blob { entry: marked },
+        });
+        for item in [
+            StreamItem::ReviewSnapshot { snapshot: snap },
+            StreamItem::TreeSnapshot { snapshot: tree },
+            StreamItem::Header {
+                header: header.clone(),
+            },
+        ] {
+            core.handle(Input::Server(ServerMsg::StreamItem { id: request, item }))
+                .unwrap();
+        }
+        core.handle(Input::Server(ServerMsg::StreamEnd { id: request }))
+            .unwrap();
+        let expected = if mode == BlobMode::Executable {
+            ViewedState::Viewed
+        } else {
+            ViewedState::ChangedSinceViewed
+        };
+        assert_eq!(core.view().diffs[0].viewed, expected);
+        assert_eq!(
+            core.view().progress.viewed,
+            u32::from(mode == BlobMode::Executable)
+        );
+        let mut effects = core
+            .handle(Input::User(Action::SetTab {
+                tab: nits_client_core::Tab::Browse,
+            }))
+            .unwrap();
+        effects.extend(
+            core.handle(Input::User(Action::Viewport {
+                file,
+                first_row: 0,
+                last_row: 10,
+            }))
+            .unwrap(),
+        );
+        let (request, message) = sent_request(&effects).unwrap();
+        assert!(matches!(message, Request::BlobRender { entry, .. } if entry == current));
+        header.target = RenderTarget::Blob { entry: current };
+        core.handle(Input::Server(ServerMsg::StreamItem {
+            id: request,
+            item: StreamItem::Header { header },
+        }))
+        .unwrap();
+        core.handle(Input::Server(ServerMsg::StreamEnd { id: request }))
+            .unwrap();
+        assert_eq!(core.view().diff.as_ref().unwrap().viewed, expected);
     }
 }
 #[path = "creation/mod.rs"]

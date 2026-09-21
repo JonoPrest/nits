@@ -34,6 +34,8 @@ let schemas: dict<S.t<unknown>> = Dict.fromArray([
   ("Comment", erase(Domain.Comment.schema)),
   ("ThreadResolution", erase(Domain.ThreadResolution.schema)),
   ("Thread", erase(Domain.Thread.schema)),
+  ("BlobMode", erase(Domain.BlobMode.schema)),
+  ("BlobEntry", erase(Domain.BlobEntry.schema)),
   ("ViewedContent", erase(Domain.ViewedContent.schema)),
   ("SubmoduleChange", erase(Domain.SubmoduleChange.schema)),
   ("ViewedMark", erase(Domain.ViewedMark.schema)),

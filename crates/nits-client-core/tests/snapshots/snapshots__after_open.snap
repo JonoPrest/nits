@@ -1,6 +1,6 @@
 ---
 source: crates/nits-client-core/tests/snapshots.rs
-assertion_line: 447
+assertion_line: 462
 expression: core.view()
 ---
 {
@@ -85,8 +85,14 @@ expression: core.view()
       "type": "Diff",
       "change": {
         "type": "Modified",
-        "old": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
-        "new": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+        "old": {
+          "oid": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+          "mode": "Regular"
+        },
+        "new": {
+          "oid": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+          "mode": "Regular"
+        }
       }
     },
     "file": {
@@ -259,8 +265,14 @@ expression: core.view()
         "type": "Diff",
         "change": {
           "type": "Modified",
-          "old": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
-          "new": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+          "old": {
+            "oid": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+            "mode": "Regular"
+          },
+          "new": {
+            "oid": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+            "mode": "Regular"
+          }
         }
       },
       "file": {
@@ -432,7 +444,10 @@ expression: core.view()
         "type": "Diff",
         "change": {
           "type": "Added",
-          "new": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+          "new": {
+            "oid": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+            "mode": "Regular"
+          }
         }
       },
       "file": {
@@ -1688,8 +1703,14 @@ expression: core.view()
           "type": "Diff",
           "change": {
             "type": "Modified",
-            "old": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
-            "new": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+            "old": {
+              "oid": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+              "mode": "Regular"
+            },
+            "new": {
+              "oid": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+              "mode": "Regular"
+            }
           }
         },
         "opts": {
@@ -1705,7 +1726,10 @@ expression: core.view()
           "type": "Diff",
           "change": {
             "type": "Added",
-            "new": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+            "new": {
+              "oid": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+              "mode": "Regular"
+            }
           }
         },
         "opts": {
@@ -1723,8 +1747,14 @@ expression: core.view()
           "type": "Diff",
           "change": {
             "type": "Modified",
-            "old": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
-            "new": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+            "old": {
+              "oid": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+              "mode": "Regular"
+            },
+            "new": {
+              "oid": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+              "mode": "Regular"
+            }
           }
         },
         "opts": {

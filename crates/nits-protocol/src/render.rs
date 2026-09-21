@@ -7,8 +7,8 @@
 use serde::{Deserialize, Serialize};
 use strum::{EnumDiscriminants, EnumIter};
 
-use crate::domain::{ChangeKind, RenderOpts};
-use crate::ids::{BlobOid, RepoId};
+use crate::domain::{BlobEntry, ChangeKind, RenderOpts};
+use crate::ids::RepoId;
 use crate::invariants::{ColRange, LineNo, RepoPath};
 
 /// Syntax-highlight class for a span. A closed set so the UI's stylesheet
@@ -124,14 +124,14 @@ impl ChunkIndex {
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum RenderTarget {
     Diff { change: ChangeKind },
-    Blob { oid: BlobOid },
+    Blob { entry: BlobEntry },
 }
 
 impl RenderTarget {
     pub fn viewed_content(&self) -> crate::ViewedContent {
         match self {
             Self::Diff { change } => change.viewed_content(),
-            Self::Blob { oid } => crate::ViewedContent::Blob { oid: *oid },
+            Self::Blob { entry } => crate::ViewedContent::Blob { entry: *entry },
         }
     }
 }

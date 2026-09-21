@@ -358,12 +358,12 @@ impl Connection {
             Request::BlobRender {
                 repo_id,
                 path,
-                blob_oid,
+                entry,
                 first_chunk,
             } => {
                 let r = self
                     .daemon
-                    .read(move |core| core.blob_render(repo_id, &path, blob_oid))
+                    .read(move |core| core.blob_render(repo_id, &path, entry))
                     .await
                     .map(|(header, rendered)| {
                         stream_render(&self.outbox, id, header, &rendered, first_chunk);

@@ -310,7 +310,7 @@ fn blob_on(target: &RenderTarget, side: Side) -> Option<BlobOid> {
             Side::Base => change.old_blob(),
             Side::Head => change.new_blob(),
         },
-        RenderTarget::Blob { oid } => Some(*oid),
+        RenderTarget::Blob { entry } => Some(entry.oid),
     }
 }
 

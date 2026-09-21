@@ -37,7 +37,7 @@ let base = (): View.DiffView.t => {
   })
   {
     ...diff,
-    target: Blob({oid: "original"}),
+    target: Blob({entry: {oid: "original", mode: Regular}}),
     viewed: Unviewed,
     firstRow: 0,
     lastRow: 2,
@@ -209,7 +209,7 @@ test("Browse loading and non-source content never expose comment targets", () =>
 
 test("same-length ref changes clear cached rows by blob identity", () => {
   let before = base()
-  let after = {...before, target: Blob({oid: "different"})}
+  let after = {...before, target: Blob({entry: {oid: "different", mode: Regular}})}
   expect(DiffSeen.fileKey(before))->not_->toBe(DiffSeen.fileKey(after))
   let seen = DiffSeen.mergeSeen(Dict.make(), "", DiffSeen.fileKey(before), before.rows)
   let next = DiffSeen.mergeSeen(

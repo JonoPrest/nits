@@ -622,7 +622,7 @@ impl Sim {
             Request::BlobRender {
                 repo_id,
                 path,
-                blob_oid,
+                entry,
                 first_chunk,
             } => {
                 if let Some(render) = self
@@ -632,8 +632,7 @@ impl Sim {
                     .find(|r| {
                         r.header.repo_id == repo_id
                             && r.header.path == path
-                            && r.header.target
-                                == (nits_protocol::RenderTarget::Blob { oid: blob_oid })
+                            && r.header.target == (nits_protocol::RenderTarget::Blob { entry })
                     })
                     .cloned()
                 {

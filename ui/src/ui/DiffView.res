@@ -128,6 +128,7 @@ let make = (
       <RepositoryIdentity.File repositories file=diff.file />
       <UI.CopyPath path={diff.file.path} fileLabel=title chrome dispatch />
       stats
+      <BlobMetadata target=diff.target />
       {switch (diff.target, diff.content) {
       | (Diff(_), Text(_)) =>
         <UI.Button

@@ -113,8 +113,14 @@ fn header(n: u8) -> FileRenderHeader {
         path: RepoPath::new("round.txt").unwrap(),
         target: RenderTarget::Diff {
             change: ChangeKind::Modified {
-                old: BlobOid::from_bytes([1; 20]),
-                new: BlobOid::from_bytes([n; 20]),
+                old: nits_protocol::BlobEntry {
+                    oid: BlobOid::from_bytes([1; 20]),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
+                new: nits_protocol::BlobEntry {
+                    oid: BlobOid::from_bytes([n; 20]),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
             },
         },
         opts: RenderOpts::default(),

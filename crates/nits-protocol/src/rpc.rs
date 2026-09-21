@@ -15,8 +15,7 @@ use crate::domain::{
 };
 use crate::events::Event;
 use crate::ids::{
-    BlobOid, ClientId, ClientSeq, CommentId, RepoId, RequestId, ReviewId, Seq, ThreadId,
-    WorkspaceId,
+    ClientId, ClientSeq, CommentId, RepoId, RequestId, ReviewId, Seq, ThreadId, WorkspaceId,
 };
 use crate::invariants::{NonEmpty, RepoPath};
 use crate::render::{ChunkIndex, FileRenderHeader, RenderChunk};
@@ -355,7 +354,7 @@ pub enum Request {
     BlobRender {
         repo_id: RepoId,
         path: RepoPath,
-        blob_oid: BlobOid,
+        entry: crate::BlobEntry,
         first_chunk: ChunkIndex,
     },
     /// A single chunk of a render already known from a header.

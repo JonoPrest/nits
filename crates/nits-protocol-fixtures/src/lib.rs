@@ -185,6 +185,8 @@ registry!(
     Comment,
     ThreadResolution,
     Thread,
+    BlobMode,
+    BlobEntry,
     ViewedMark,
     ViewedContent,
     SubmoduleChange,
@@ -349,6 +351,13 @@ fn oid(seed: u8) -> Oid {
         *x = v;
     }
     Oid::from_bytes(b)
+}
+
+fn blob_entry(n: u8) -> BlobEntry {
+    BlobEntry {
+        oid: blob(n),
+        mode: BlobMode::Regular,
+    }
 }
 
 fn blob(seed: u8) -> BlobOid {
@@ -556,8 +565,8 @@ fn comment() -> Result<Comment, FixtureError> {
         state: CommentState::Live,
         context: Some(CommentContext::Diff {
             change: ChangeKind::Modified {
-                old: blob(30),
-                new: blob(31),
+                old: blob_entry(30),
+                new: blob_entry(31),
             },
         }),
     })
@@ -597,14 +606,16 @@ fn viewed_mark() -> Result<ViewedMark, FixtureError> {
         repo_id: repo_id(),
         path: path("src/lib.rs")?,
         viewer: human(),
-        content: ViewedContent::Blob { oid: blob(30) },
+        content: ViewedContent::Blob {
+            entry: blob_entry(30),
+        },
     })
 }
 
 fn modified() -> ChangeKind {
     ChangeKind::Modified {
-        old: blob(29),
-        new: blob(30),
+        old: blob_entry(29),
+        new: blob_entry(30),
     }
 }
 
@@ -922,6 +933,15 @@ enum_fixture!(
     ]
 );
 struct_fixture!(Thread, "Thread", thread());
+unit_enum_fixture!(BlobMode, "BlobMode");
+struct_fixture!(
+    BlobEntry,
+    "BlobEntry",
+    BlobEntry {
+        oid: blob(30),
+        mode: BlobMode::Executable
+    }
+);
 struct_fixture!(ViewedMark, "ViewedMark", viewed_mark()?);
 struct_fixture!(
     GapRow,
@@ -981,13 +1001,17 @@ enum_fixture!(
                 new: commit(2)
             }
         },
-        ChangeKind::Added { new: blob(30) },
-        ChangeKind::Deleted { old: blob(29) },
+        ChangeKind::Added {
+            new: blob_entry(30)
+        },
+        ChangeKind::Deleted {
+            old: blob_entry(29)
+        },
         modified(),
         ChangeKind::Renamed {
             from: path("src/old.rs")?,
-            old: blob(29),
-            new: blob(30)
+            old: blob_entry(29),
+            new: blob_entry(30)
         },
     ]
 );
@@ -1129,7 +1153,9 @@ enum_fixture!(
             repo_id: repo_id(),
             path: path("src/lib.rs")?,
             viewer: human(),
-            content: ViewedContent::Blob { oid: blob(30) }
+            content: ViewedContent::Blob {
+                entry: blob_entry(30)
+            }
         },
         EventBody::FileUnviewed {
             review_id: review_id(),
@@ -1223,7 +1249,9 @@ enum_fixture!(
     "RenderTarget",
     [
         RenderTarget::Diff { change: modified() },
-        RenderTarget::Blob { oid: blob(30) },
+        RenderTarget::Blob {
+            entry: blob_entry(30)
+        },
     ]
 );
 enum_fixture!(
@@ -1616,7 +1644,7 @@ enum_fixture!(
         Request::BlobRender {
             repo_id: repo_id(),
             path: path("src/lib.rs")?,
-            blob_oid: blob(30),
+            entry: blob_entry(30),
             first_chunk: ChunkIndex::FIRST
         },
         Request::RenderChunk {
@@ -1944,7 +1972,9 @@ enum_fixture!(
     "ViewedContent",
     [
         ViewedContent::Missing,
-        ViewedContent::Blob { oid: blob(30) },
+        ViewedContent::Blob {
+            entry: blob_entry(30)
+        },
         ViewedContent::Submodule { commit: commit(2) },
     ]
 );
@@ -1965,12 +1995,12 @@ enum_fixture!(
             new: commit(2)
         },
         SubmoduleChange::BlobToSubmodule {
-            old: blob(30),
+            old: blob_entry(30),
             new: commit(2)
         },
         SubmoduleChange::SubmoduleToBlob {
             old: commit(1),
-            new: blob(30)
+            new: blob_entry(30)
         },
     ]
 );

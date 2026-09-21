@@ -1695,9 +1695,13 @@ async fn content(ops: &Ops, cmd: Cmd, json: bool) -> anyhow::Result<()> {
             side,
         } => {
             let path = RepoPath::new(path)?;
-            let (_, _, header, chunks) = ops.file_at(review, repo, &path, side.into()).await?;
+            let (_, entry, header, chunks) = ops.file_at(review, repo, &path, side.into()).await?;
             emit(json, &(&header, &chunks), || {
-                render_text::render_blob(&header, &chunks)
+                format!(
+                    "{}\n{}",
+                    render_text::mode(entry.mode),
+                    render_text::render_blob(&header, &chunks)
+                )
             })
         }
         _ => unreachable!("dispatched by main"),

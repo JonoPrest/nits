@@ -11,8 +11,14 @@
     "repo_id": "01HF7YAT000000000000000002",
     "target": {
       "change": {
-        "new": "a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5",
-        "old": "838485868788898a8b8c8d8e8f90919293949596",
+        "new": {
+          "mode": "Regular",
+          "oid": "a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5"
+        },
+        "old": {
+          "mode": "Regular",
+          "oid": "838485868788898a8b8c8d8e8f90919293949596"
+        },
         "type": "Modified"
       },
       "type": "Diff"

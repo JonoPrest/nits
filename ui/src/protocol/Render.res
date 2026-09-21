@@ -66,7 +66,7 @@ module RenderTarget = {
   @schema @tag("type")
   type t =
     | @as("Diff") Diff({change: Domain.ChangeKind.t})
-    | @as("Blob") Blob({oid: blobOid})
+    | @as("Blob") Blob({entry: Domain.BlobEntry.t})
 }
 
 /// One gap's expander row: which gap, and the row it is on.

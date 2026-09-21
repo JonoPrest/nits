@@ -717,7 +717,7 @@ impl Server {
     async fn get_file(&self, p: tools::GetFile) -> Result<Value, ToolError> {
         let ops = self.ops()?;
         let path = p.path;
-        let (repo_id, blob_oid, header, chunks) =
+        let (repo_id, entry, header, chunks) =
             ops.file_at(p.review_id, p.repo_id, &path, p.side).await?;
         let lines = match header.content {
             RenderContent::Submodule => {
@@ -761,7 +761,8 @@ impl Server {
             repo_id,
             path,
             side: p.side,
-            blob_oid,
+            blob_oid: entry.oid,
+            mode: entry.mode,
             lang: header.lang,
             content: header.content,
             lines,

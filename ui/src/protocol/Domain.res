@@ -229,6 +229,16 @@ module DiffScope = {
   @@warning("+27")
 }
 
+module BlobMode = {
+  @schema
+  type t = Regular | Executable | Symlink | @as("Unknown") UnknownMode
+}
+
+module BlobEntry = {
+  @schema
+  type t = {oid: blobOid, mode: BlobMode.t}
+}
+
 module SubmoduleChange = {
   @schema @tag("type")
   type t =
@@ -236,18 +246,18 @@ module SubmoduleChange = {
     | @as("Deleted") Deleted({old: commitOid})
     | @as("Updated") Updated({old: commitOid, new: commitOid})
     | @as("Renamed") Renamed({from: string, old: commitOid, new: commitOid})
-    | @as("BlobToSubmodule") BlobToSubmodule({old: blobOid, new: commitOid})
-    | @as("SubmoduleToBlob") SubmoduleToBlob({old: commitOid, new: blobOid})
+    | @as("BlobToSubmodule") BlobToSubmodule({old: BlobEntry.t, new: commitOid})
+    | @as("SubmoduleToBlob") SubmoduleToBlob({old: commitOid, new: BlobEntry.t})
 }
 
 module ChangeKind = {
   @schema @tag("type")
   type t =
     | @as("Submodule") Submodule({change: SubmoduleChange.t})
-    | @as("Added") Added({new: blobOid})
-    | @as("Deleted") Deleted({old: blobOid})
-    | @as("Modified") Modified({old: blobOid, new: blobOid})
-    | @as("Renamed") Renamed({from: string, old: blobOid, new: blobOid})
+    | @as("Added") Added({new: BlobEntry.t})
+    | @as("Deleted") Deleted({old: BlobEntry.t})
+    | @as("Modified") Modified({old: BlobEntry.t, new: BlobEntry.t})
+    | @as("Renamed") Renamed({from: string, old: BlobEntry.t, new: BlobEntry.t})
 }
 
 module CommentContext = {
@@ -317,7 +327,7 @@ module ViewedContent = {
   @schema @tag("type")
   type t =
     | @as("Missing") Missing({})
-    | @as("Blob") Blob({oid: blobOid})
+    | @as("Blob") Blob({entry: BlobEntry.t})
     | @as("Submodule") Submodule({commit: commitOid})
   @@warning("+27")
 }

@@ -116,7 +116,7 @@ pub async fn single(
                         RenderTarget::Diff { change } => {
                             c.render_change(repo_id, &path, change, opts)?
                         }
-                        RenderTarget::Blob { oid } => c.blob_render(repo_id, &path, oid)?,
+                        RenderTarget::Blob { entry } => c.blob_render(repo_id, &path, entry)?,
                     };
                     rendered.chunk(index).ok_or_else(|| CoreError::NotFound {
                         kind: EntityKind::Chunk,

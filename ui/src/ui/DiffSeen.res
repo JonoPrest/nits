@@ -6,14 +6,15 @@
 /// (another file, a re-render with new totals).
 let fileKey = (diff: View.DiffView.t): string =>
   switch diff.target {
-  | Blob({oid}) => oid
+  | Blob({entry}) => BlobMetadata.key(entry)
   | Diff({change}) =>
     switch change {
     | Submodule({change}) => SubmoduleView.text(change)
-    | Added({new}) => "added:" ++ new
-    | Deleted({old}) => "deleted:" ++ old
-    | Modified({old, new}) => old ++ ":" ++ new
-    | Renamed({from, old, new}) => from ++ ":" ++ old ++ ":" ++ new
+    | Added({new}) => "added:" ++ BlobMetadata.key(new)
+    | Deleted({old}) => "deleted:" ++ BlobMetadata.key(old)
+    | Modified({old, new}) => BlobMetadata.key(old) ++ ":" ++ BlobMetadata.key(new)
+    | Renamed({from, old, new}) =>
+      from ++ ":" ++ BlobMetadata.key(old) ++ ":" ++ BlobMetadata.key(new)
     }
   } ++
   "\x00" ++

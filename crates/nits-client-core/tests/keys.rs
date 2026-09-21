@@ -149,8 +149,14 @@ fn header(p: &str) -> FileRenderHeader {
         path: path(p),
         target: RenderTarget::Diff {
             change: ChangeKind::Modified {
-                old: blob(10),
-                new: blob(11),
+                old: nits_protocol::BlobEntry {
+                    oid: blob(10),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
+                new: nits_protocol::BlobEntry {
+                    oid: blob(11),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
             },
         },
         opts: RenderOpts::default(),
@@ -380,7 +386,12 @@ fn ready() -> ClientCore {
     let _ = FileChange {
         repo_id: repo_id(),
         path: path("x"),
-        kind: ChangeKind::Added { new: blob(1) },
+        kind: ChangeKind::Added {
+            new: nits_protocol::BlobEntry {
+                oid: blob(1),
+                mode: nits_protocol::BlobMode::Regular,
+            },
+        },
     };
     core
 }
@@ -697,7 +708,12 @@ fn every_action_is_reachable_from_a_binding() {
             repo_id: repo_id(),
             path: path("src/a.rs"),
             viewer: mine.as_human().unwrap(),
-            content: nits_protocol::ViewedContent::Blob { oid: blob(11) },
+            content: nits_protocol::ViewedContent::Blob {
+                entry: nits_protocol::BlobEntry {
+                    oid: blob(11),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
+            },
         },
     ];
     for (i, body) in bodies.into_iter().enumerate() {
@@ -810,8 +826,14 @@ fn every_action_is_reachable_from_a_binding() {
         },
         context: Some(nits_protocol::CommentContext::Diff {
             change: ChangeKind::Modified {
-                old: blob(3),
-                new: blob(4),
+                old: nits_protocol::BlobEntry {
+                    oid: blob(3),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
+                new: nits_protocol::BlobEntry {
+                    oid: blob(4),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
             },
         }),
         anchor,

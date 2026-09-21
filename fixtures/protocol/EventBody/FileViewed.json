@@ -1,6 +1,9 @@
 {
   "content": {
-    "oid": "a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5",
+    "entry": {
+      "mode": "Regular",
+      "oid": "a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5"
+    },
     "type": "Blob"
   },
   "path": "src/lib.rs",
