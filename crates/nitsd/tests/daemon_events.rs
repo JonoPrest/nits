@@ -140,3 +140,60 @@ async fn an_error_after_a_commit_still_broadcasts_the_durable_event() {
         .unwrap();
     assert_eq!(*actual, expected[0]);
 }
+
+#[tokio::test]
+async fn unexpected_writer_panic_stops_listeners_and_status_cannot_report_running() {
+    use nits_config::Context;
+    use nitsd::contexts::{Status, status};
+    use nitsd::daemon::DaemonError;
+    use nitsd::server::{UnixServer, WsServer};
+
+    let (dir, daemon) = daemon();
+    let socket = dir.path().join("nitsd.sock");
+    let unix = UnixServer::bind(&socket).unwrap();
+    let ws = WsServer::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let contexts = [
+        Context::Local {
+            data_dir: Some(dir.path().to_path_buf()),
+            socket: Some(socket.clone()),
+        },
+        Context::Ws {
+            url: format!("ws://{}", ws.addr()),
+        },
+    ];
+    // Use the same cancellation token wiring as the daemon's serve entrypoint.
+    let unix = tokio::spawn(unix.run(Arc::clone(&daemon), daemon.shutdown().clone()));
+    let ws = tokio::spawn(ws.run(Arc::clone(&daemon), daemon.shutdown().clone()));
+    for context in &contexts {
+        assert!(matches!(status(context).await, Status::Running { .. }));
+    }
+
+    let result = daemon
+        .write(|_| -> Result<(), CoreError> { panic!("injected unexpected writer failure") })
+        .await;
+    assert!(matches!(result, Err(DaemonError::Shutdown)));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        unix.await.unwrap();
+        ws.await.unwrap();
+    })
+    .await
+    .expect("writer failure must stop both daemon listeners");
+    assert!(daemon.shutdown().is_cancelled());
+    assert!(!socket.exists());
+    for context in &contexts {
+        assert!(matches!(status(context).await, Status::Stopped));
+    }
+    assert!(matches!(
+        daemon
+            .write(|core| core.create_workspace(
+                &ctx(ClientSeq::new(1)),
+                WorkspaceId::from_parts(1, 1),
+                "cannot commit after writer failure".into(),
+            ))
+            .await,
+        Err(DaemonError::Shutdown)
+    ));
+    assert!(daemon.core().events_after(None).unwrap().is_empty());
+}

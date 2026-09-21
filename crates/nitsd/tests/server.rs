@@ -107,7 +107,7 @@ fn start_on(repo: TestRepo, transport: Transport) -> Harness {
     )
     .unwrap();
     let server = UnixServer::bind(&socket).unwrap();
-    let shutdown = CancellationToken::new();
+    let shutdown = daemon.shutdown().clone();
     tokio::spawn(server.run(Arc::clone(&daemon), shutdown.clone()));
     let ws_addr = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -266,6 +266,93 @@ fn file_comment(n: u128, body: &str) -> Mutation {
         body: body.into(),
         context: None,
     }
+}
+
+async fn malformed_unicode_suggestion_preserves_file_events_and_writer(t: Transport) {
+    let h = start_on(small_repo(), t);
+    let client = connect(&h, 1, "ada").await;
+    seed(&h, &client).await;
+    let path = h.repo.path().join("a.rs");
+    let original = std::fs::read(&path).unwrap();
+    let blob = h.repo.git(&["rev-parse", "feature:a.rs"]).unwrap();
+    let anchor = nits_review_core::comments::lines_anchor(
+        rid(),
+        RepoPath::new("a.rs").unwrap(),
+        nits_protocol::Side::Head,
+        blob.parse().unwrap(),
+        1,
+        1,
+    )
+    .unwrap();
+    mutate(
+        &client,
+        4,
+        Mutation::AddComment {
+            review_id: review_id(),
+            comment_id: comment_id(1),
+            kind: CommentKind::Suggestion {
+                patch: "@@ -1,1 +1,1 @@\né\n".into(),
+            },
+            anchor,
+            body: "malformed suggestion".into(),
+            context: None,
+        },
+    )
+    .await
+    .unwrap();
+    let before = h.daemon.core().last_seq().unwrap();
+    let mut broadcasts = h.daemon.subscribe();
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        mutate(
+            &client,
+            5,
+            Mutation::ApplySuggestion {
+                review_id: review_id(),
+                comment_id: comment_id(1),
+            },
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(
+        matches!(error, RpcError::Invalid { reason } if reason.contains("unexpected line in hunk"))
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(h.daemon.core().last_seq().unwrap(), before);
+    assert!(h.daemon.core().events_after(before).unwrap().is_empty());
+    assert!(matches!(
+        broadcasts.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    assert!(!h.daemon.shutdown().is_cancelled());
+
+    // Both the originating connection and a fresh client can still commit.
+    let fresh = connect(&h, 2, "bea").await;
+    for (client, seq, comment) in [(&client, 6, 2), (&fresh, 1, 3)] {
+        let event = tokio::time::timeout(
+            Duration::from_secs(5),
+            mutate(
+                client,
+                seq,
+                file_comment(comment, "writer is still healthy"),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(event.body, EventBody::CommentCreated { .. }));
+        assert_eq!(*broadcasts.recv().await.unwrap(), event);
+    }
+    let after = h.daemon.core().events_after(before).unwrap();
+    assert_eq!(after.len(), 2);
+    assert!(
+        after
+            .iter()
+            .all(|event| matches!(event.body, EventBody::CommentCreated { .. }))
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
 }
 
 #[tokio::test]
@@ -1091,6 +1178,7 @@ macro_rules! on_both_transports {
 }
 
 on_both_transports! {
+    malformed_unicode_suggestion_preserves_file_events_and_writer,
     two_clients_one_writes_other_receives_in_order,
     reconnect_with_since_receives_exactly_the_gap,
     scopes_filter_events,
