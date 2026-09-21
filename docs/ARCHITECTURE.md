@@ -256,6 +256,14 @@ TreeDelta    { from_root, to_root, added: [TreeEntry], removed: [path], changed:
 
 ### 4.8 Transports
 
+Each daemon connection owns its writer, subscription tails and concurrent request
+futures. Dropping or aborting the serving future drops that work and both transport
+halves; writer failure also stops input processing. Clean input EOF drains already
+queued replies in order, while transport errors close immediately. Server shutdown
+cancels and joins accepted connections. Already-started blocking Core reads and
+queued writer-thread mutations finish independently; cancellation does not roll
+back committed work or detach connection tasks that retain the daemon.
+
 - **Unix socket**, length-prefixed JSON frames. Multiplexed: `Request{id}` / `Response{id}` / `Event{seq}`.
 - **WebSocket**, same JSON envelopes, one per binary (or text) message — the socket does the framing, so no length prefix. Plain TCP, opt-in via `nits daemon serve --ws-listen <addr>`, for browser clients and remote daemons. Inside `nitsd`, servers and context-aware clients share `FrameRead`/`FrameWrite`; `DaemonEndpoint = Local | Ssh | WebSocket` resolves lifecycle once and every UI reconnect dials the selected framing through the same path as CLI/MCP.
 - **MCP**, `nits mcp` on stdio (newline-delimited JSON-RPC), proxying to the daemon's unix socket or ws port. Tools: `list_contexts`, `use_context`, `list_workspaces`, `list_reviews`, `get_review` (snapshot + changed files), `create_review`, `ensure_directory_review`, `update_review`, `update_review_target`, `get_diff`, `get_file` (numbered text, any side, unchanged files too), `list_comments`, `add_comment` (review / file / line anchors), `suggest`, `reply`, `resolve`, `defer`, `request_review`, `subscribe_events` (long-poll; pass `last_seq` back as `since_seq`). Author is `Agent{name: clientInfo.name, model: $NITS_AGENT_MODEL, session_id: $NITS_SESSION_ID, invoked_by: $USER@host, via: Mcp}`. `mark_viewed` is deliberately not offered. Anchors go up with a zero `context_hash`; the daemon computes the real one.
