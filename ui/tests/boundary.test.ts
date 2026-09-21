@@ -75,3 +75,13 @@ it("directory bootstrap permits WorkingTree only on the head side", () => {
   const request = { type: "EnsureDirectoryReview", client_seq: 1, options };
   expect(Registry.roundtrip("Request", request).TAG).toBe("Error");
 });
+
+it("suggestion preview is a single response and never a streamed item", () => {
+  const preview = JSON.parse(
+    readFileSync(join(fixturesRoot, "protocol", "Response", "SuggestionPreview.json"), "utf8"),
+  );
+  expect(Registry.roundtrip("Response", preview).TAG).toBe("Ok");
+  expect(Registry.roundtrip("StreamItem", preview).TAG).toBe("Error");
+  expect(Registry.roundtrip("ServerMsg", { type: "Response", id: 1, response: preview }).TAG).toBe("Ok");
+  expect(Registry.roundtrip("ServerMsg", { type: "StreamItem", id: 1, item: preview }).TAG).toBe("Error");
+});

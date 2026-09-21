@@ -364,7 +364,6 @@ module StreamItem = {
   @schema @tag("type")
   type t =
     | @as("ReviewSnapshot") ReviewSnapshot({snapshot: ReviewSnapshot.t})
-    | SuggestionPreview({preview: Suggestion.Preview.t})
     | @as("TreeSnapshot") TreeSnapshot({snapshot: TreeSnapshot.t})
     | @as("Header") Header({header: Render.FileRenderHeader.t})
     | @as("Chunk") Chunk({@as("repo_id") repoId: repoId, path: string, chunk: Render.RenderChunk.t})
