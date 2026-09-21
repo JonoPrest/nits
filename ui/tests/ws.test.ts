@@ -110,6 +110,7 @@ const creationFixture = () => JSON.parse(readFileSync(join(fixtures, "ReviewCrea
 const creationPatch = (creation: unknown, context = { type: "Named", name: "review-box" }) => {
   const patch = patchFixture("ReviewList");
   patch.home.creating = creation;
+  patch.open_review = null;
   patch.daemon_context = context;
   return patch;
 };
@@ -167,4 +168,28 @@ it("never restores a tab-local draft into another daemon context", () => {
   second.message([creationPatch(null, { type: "Named", name: "another-daemon" }), patchFixture("Connection")]);
   expect(second.sent).toHaveLength(1);
   expect(errors.some(message => message.includes("different daemon context"))).toBe(true);
+});
+
+it("comment submit commands do not freeze a retained hidden review-creation draft", async () => {
+  vi.useFakeTimers();
+  const core = CoreWs.make("ws://test", () => {});
+  const first = FakeWebSocket.instances[0];
+  first.open();
+  const creation = creationFixture();
+  const retained = creationPatch(creation);
+  retained.open_review = patchFixture("ReviewList").open_review;
+  const hints = patchFixture("Hints");
+  hints.bindings = [{ command: "Submit", keys: "ctrl+enter", label: "submit" }];
+  first.message([retained, hints, patchFixture("Connection")]);
+  dispatchJson(core, { type: "RunCommand", command: "Submit" });
+  const Keys = await import("../src/view/Keys.res.mjs");
+  core.key(Keys.ofBrowser({ key: "Enter", ctrlKey: true, altKey: false, shiftKey: false, metaKey: false }));
+  first.close();
+  vi.advanceTimersByTime(1000);
+  const second = FakeWebSocket.instances[1];
+  second.open();
+  second.message([creationPatch(null), patchFixture("Connection")]);
+  const actions = second.sent.map(text => JSON.parse(text)).filter(message => message.cmd === "dispatch");
+  expect(actions).toHaveLength(1);
+  expect(actions[0].action).toMatchObject({ type: "RestoreReviewCreation", resume: "Editing", creation: { review_id: creation.review_id } });
 });

@@ -129,7 +129,10 @@ let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.
   connect()
   {
     dispatch: action => {
-      let creationIntent = CreationRecovery.beforeAction(recovery, action)
+      let creationIntent = switch action {
+      | RunCommand({command: Submit}) if store.model.openReview != None => false
+      | _ => CreationRecovery.beforeAction(recovery, action)
+      }
       if creationIntent && (!open_.contents || recovering.contents) {
         onError(
           "The connection is recovering. Your review inputs are retained; wait before retrying.",
@@ -143,7 +146,9 @@ let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.
       switch store.model.bindings->Array.find(h => h.keys == text) {
       | Some(hint) =>
         keyPrefix := ""
-        let _ = CreationRecovery.beforeAction(recovery, RunCommand({command: hint.command}))
+        if store.model.openReview == None {
+          let _ = CreationRecovery.beforeAction(recovery, RunCommand({command: hint.command}))
+        }
       | None =>
         keyPrefix := (
             store.model.bindings->Array.some(h => h.keys->String.startsWith(text ++ " "))
