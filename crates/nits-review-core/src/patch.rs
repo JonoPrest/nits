@@ -49,9 +49,11 @@ pub fn apply(original: &[u8], patch: &str) -> Result<Vec<u8>, PatchError> {
             if body == "\\ No newline at end of file" {
                 continue;
             }
-            let (tag, content) = body.split_at(body.len().min(1));
+            let mut chars = body.chars();
+            let tag = chars.next();
+            let content = chars.as_str();
             match tag {
-                " " | "-" => {
+                Some(' ' | '-') => {
                     let found = old_lines.get(cursor).copied();
                     if found != Some(content) {
                         return Err(PatchError::Mismatch {
@@ -60,13 +62,13 @@ pub fn apply(original: &[u8], patch: &str) -> Result<Vec<u8>, PatchError> {
                             found: found.map(str::to_owned),
                         });
                     }
-                    if tag == " " {
+                    if tag == Some(' ') {
                         out.push(content.to_owned());
                     }
                     cursor += 1;
                 }
-                "+" => out.push(content.to_owned()),
-                "" => {
+                Some('+') => out.push(content.to_owned()),
+                None => {
                     // A blank patch line is an empty context line.
                     let found = old_lines.get(cursor).copied();
                     if found != Some("") {
@@ -79,7 +81,7 @@ pub fn apply(original: &[u8], patch: &str) -> Result<Vec<u8>, PatchError> {
                     out.push(String::new());
                     cursor += 1;
                 }
-                _ => return Err(PatchError::Line(body.to_owned())),
+                Some(_) => return Err(PatchError::Line(body.to_owned())),
             }
         }
     }
@@ -101,6 +103,7 @@ fn parse_old_start(header: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn replaces_a_line() {
@@ -135,5 +138,44 @@ mod tests {
     fn preserves_missing_trailing_newline() {
         let out = apply(b"a\nb", "@@ -2,1 +2,1 @@\n-b\n+c\n").unwrap();
         assert_eq!(out, b"a\nc");
+    }
+
+    #[test]
+    fn unicode_content_is_allowed_but_unicode_prefixes_are_rejected() {
+        let out = apply("é\n".as_bytes(), "@@ -1,1 +1,1 @@\n-é\n+🦀\n").unwrap();
+        assert_eq!(out, "🦀\n".as_bytes());
+        for body in ["é", "中", "🦀"] {
+            assert_eq!(
+                apply(b"a\nb\nc\n", &format!("@@ -2,1 +2,1 @@\n{body}\n")),
+                Err(PatchError::Line(body.to_owned()))
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_utf8_patches_do_not_panic(
+            original in prop::collection::vec(any::<u8>(), 0..1024),
+            patch in prop::collection::vec(any::<char>(), 0..1024),
+        ) {
+            let patch: String = patch.into_iter().collect();
+            let _ = apply(&original, &patch);
+            // Raw random text usually fails before a hunk. Also exercise the
+            // body parser with an in-range header on every generated input.
+            let _ = apply(&original, &format!("@@ -1,1 +1,1 @@\n{patch}"));
+        }
+
+        #[test]
+        fn every_non_ascii_hunk_prefix_is_a_typed_line_error(
+            prefix in any::<char>().prop_filter("non-ASCII prefix", |c| !c.is_ascii()),
+            suffix in prop::collection::vec(any::<char>(), 0..256),
+        ) {
+            let body: String = std::iter::once(prefix).chain(suffix).collect();
+            let expected = body.lines().next().unwrap().to_owned();
+            prop_assert_eq!(
+                apply(b"a\nb\nc\n", &format!("@@ -2,1 +2,1 @@\n{body}")),
+                Err(PatchError::Line(expected))
+            );
+        }
     }
 }

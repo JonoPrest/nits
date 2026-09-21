@@ -29,7 +29,7 @@ pub struct Daemon {
     events: broadcast::Sender<Arc<Event>>,
     deltas: broadcast::Sender<Arc<TreeDelta>>,
     review_workspaces: Arc<Mutex<HashMap<ReviewId, WorkspaceId>>>,
-    /// Cancelled by `Request::Shutdown`, ctrl-c, or the idle timer.
+    /// Cancelled by `Request::Shutdown`, ctrl-c, the idle timer, or writer exit.
     shutdown: tokio_util::sync::CancellationToken,
     /// Open connections, for the idle timer.
     connections: std::sync::atomic::AtomicUsize,
@@ -62,7 +62,7 @@ impl Drop for ConnectionGuard {
 pub enum DaemonError {
     #[error(transparent)]
     Core(#[from] CoreError),
-    /// The writer thread or a blocking task went away; only on shutdown.
+    /// The writer thread or a blocking task went away.
     #[error("daemon is shutting down")]
     Shutdown,
 }
@@ -105,9 +105,15 @@ impl Daemon {
         let core = Arc::new(Core::open(data_dir)?);
         let (writer, jobs) = std::sync::mpsc::channel::<WriteJob>();
         let writer_core = Arc::clone(&core);
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let shutdown_on_writer_exit = shutdown.clone().drop_guard();
         std::thread::Builder::new()
             .name("nitsd-writer".into())
             .spawn(move || {
+                // An unexpected unwind may leave a mutation partly committed.
+                // Stop the daemon instead of serving reads as if it were healthy
+                // or trying further writes against potentially inconsistent state.
+                let _shutdown_on_writer_exit = shutdown_on_writer_exit;
                 for job in jobs {
                     job(&writer_core);
                 }
@@ -121,7 +127,7 @@ impl Daemon {
             events,
             deltas,
             review_workspaces: Arc::new(Mutex::new(HashMap::new())),
-            shutdown: tokio_util::sync::CancellationToken::new(),
+            shutdown,
             connections: std::sync::atomic::AtomicUsize::new(0),
             build,
         }))
