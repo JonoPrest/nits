@@ -9,7 +9,10 @@ use nits_protocol::{Cell, FileRenderHeader, LineRange, RenderChunk, RenderConten
 /// A rendered diff or blob as numbered text.
 #[must_use]
 pub fn render(header: &FileRenderHeader, chunks: &[RenderChunk]) -> String {
-    if let nits_protocol::RenderTarget::Diff { change: nits_protocol::ChangeKind::Submodule { change } } = &header.target {
+    if let nits_protocol::RenderTarget::Diff {
+        change: nits_protocol::ChangeKind::Submodule { change },
+    } = &header.target
+    {
         return submodule(change);
     }
     let mut out = String::new();
@@ -65,7 +68,10 @@ fn render_blob_selected(
     chunks: &[RenderChunk],
     lines: Option<LineRange>,
 ) -> String {
-    if let nits_protocol::RenderTarget::Diff { change: nits_protocol::ChangeKind::Submodule { change } } = &header.target {
+    if let nits_protocol::RenderTarget::Diff {
+        change: nits_protocol::ChangeKind::Submodule { change },
+    } = &header.target
+    {
         return submodule(change);
     }
     let mut out = String::new();
@@ -140,9 +146,17 @@ pub fn submodule(change: &nits_protocol::SubmoduleChange) -> String {
     match change {
         SubmoduleChange::Added { new } => format!("Submodule added\nnew commit: {new}\n"),
         SubmoduleChange::Deleted { old } => format!("Submodule removed\nold commit: {old}\n"),
-        SubmoduleChange::Updated { old, new } => format!("Submodule updated\nold commit: {old}\nnew commit: {new}\n"),
-        SubmoduleChange::Renamed { from, old, new } => format!("Submodule renamed from {from}\nold commit: {old}\nnew commit: {new}\n"),
-        SubmoduleChange::BlobToSubmodule { old, new } => format!("Blob replaced by submodule\nold blob: {old}\nnew commit: {new}\n"),
-        SubmoduleChange::SubmoduleToBlob { old, new } => format!("Submodule replaced by blob\nold commit: {old}\nnew blob: {new}\n"),
+        SubmoduleChange::Updated { old, new } => {
+            format!("Submodule updated\nold commit: {old}\nnew commit: {new}\n")
+        }
+        SubmoduleChange::Renamed { from, old, new } => {
+            format!("Submodule renamed from {from}\nold commit: {old}\nnew commit: {new}\n")
+        }
+        SubmoduleChange::BlobToSubmodule { old, new } => {
+            format!("Blob replaced by submodule\nold blob: {old}\nnew commit: {new}\n")
+        }
+        SubmoduleChange::SubmoduleToBlob { old, new } => {
+            format!("Submodule replaced by blob\nold commit: {old}\nnew blob: {new}\n")
+        }
     }
 }

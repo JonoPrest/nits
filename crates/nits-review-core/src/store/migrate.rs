@@ -36,6 +36,7 @@ const MIGRATIONS: &[Migration] = &[
     migrate_4_to_5,
     migrate_5_to_6,
     migrate_6_to_7,
+    migrate_7_to_8,
 ];
 
 /// Schema 7 captures working-tree HEAD provenance. Missing historical HEADs
@@ -203,6 +204,34 @@ fn migrate_4_to_5(txn: &WriteTransaction) -> Result<(), String> {
         let mut tables = tables::Write::open(txn)?;
         rewrite_raw_events(&mut tables, |stored| {
             stored.schema = SchemaVersion::new(5);
+            Ok(())
+        })?;
+        tables.clear_views()?;
+        tables.clear_view_seq()?;
+        Ok(())
+    }
+    migrate(txn).map_err(|error| error.to_string())
+}
+
+/// Preserve historical blob/deletion marks while admitting commit-valued gitlinks.
+fn migrate_7_to_8(txn: &WriteTransaction) -> Result<(), String> {
+    fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
+        let mut tables = tables::Write::open(txn)?;
+        rewrite_raw_events(&mut tables, |stored| {
+            if let Some(body) = stored
+                .event
+                .get_mut("body")
+                .and_then(serde_json::Value::as_object_mut)
+                && body.get("type").and_then(serde_json::Value::as_str) == Some("FileViewed")
+                && let Some(blob) = body.remove("blob_oid")
+            {
+                let oid: Option<nits_protocol::BlobOid> = serde_json::from_value(blob)?;
+                body.insert(
+                    "content".into(),
+                    serde_json::to_value(nits_protocol::ViewedContent::from(oid))?,
+                );
+            }
+            stored.schema = SchemaVersion::new(8);
             Ok(())
         })?;
         tables.clear_views()?;

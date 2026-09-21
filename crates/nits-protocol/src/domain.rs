@@ -738,28 +738,51 @@ pub enum DiffScope {
 #[strum_discriminants(name(SubmoduleChangeKind), derive(EnumIter, Hash))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum SubmoduleChange {
-    Added { new: CommitOid },
-    Deleted { old: CommitOid },
-    Updated { old: CommitOid, new: CommitOid },
-    Renamed { from: RepoPath, old: CommitOid, new: CommitOid },
-    BlobToSubmodule { old: BlobOid, new: CommitOid },
-    SubmoduleToBlob { old: CommitOid, new: BlobOid },
+    Added {
+        new: CommitOid,
+    },
+    Deleted {
+        old: CommitOid,
+    },
+    Updated {
+        old: CommitOid,
+        new: CommitOid,
+    },
+    Renamed {
+        from: RepoPath,
+        old: CommitOid,
+        new: CommitOid,
+    },
+    BlobToSubmodule {
+        old: BlobOid,
+        new: CommitOid,
+    },
+    SubmoduleToBlob {
+        old: CommitOid,
+        new: BlobOid,
+    },
 }
 
 impl SubmoduleChange {
     pub fn old_blob(&self) -> Option<BlobOid> {
         match self {
             Self::BlobToSubmodule { old, .. } => Some(*old),
-            Self::Added { .. } | Self::Deleted { .. } | Self::Updated { .. }
-            | Self::Renamed { .. } | Self::SubmoduleToBlob { .. } => None,
+            Self::Added { .. }
+            | Self::Deleted { .. }
+            | Self::Updated { .. }
+            | Self::Renamed { .. }
+            | Self::SubmoduleToBlob { .. } => None,
         }
     }
 
     pub fn new_blob(&self) -> Option<BlobOid> {
         match self {
             Self::SubmoduleToBlob { new, .. } => Some(*new),
-            Self::Added { .. } | Self::Deleted { .. } | Self::Updated { .. }
-            | Self::Renamed { .. } | Self::BlobToSubmodule { .. } => None,
+            Self::Added { .. }
+            | Self::Deleted { .. }
+            | Self::Updated { .. }
+            | Self::Renamed { .. }
+            | Self::BlobToSubmodule { .. } => None,
         }
     }
 
@@ -767,7 +790,9 @@ impl SubmoduleChange {
         match self {
             Self::Deleted { .. } => ViewedContent::Missing,
             Self::SubmoduleToBlob { new, .. } => ViewedContent::Blob { oid: *new },
-            Self::Added { new } | Self::Updated { new, .. } | Self::Renamed { new, .. }
+            Self::Added { new }
+            | Self::Updated { new, .. }
+            | Self::Renamed { new, .. }
             | Self::BlobToSubmodule { new, .. } => ViewedContent::Submodule { commit: *new },
         }
     }
@@ -782,7 +807,9 @@ impl SubmoduleChange {
 #[strum_discriminants(name(ChangeKindKind), derive(EnumIter, Hash, Serialize, Deserialize))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ChangeKind {
-    Submodule { change: SubmoduleChange },
+    Submodule {
+        change: SubmoduleChange,
+    },
     Added {
         new: BlobOid,
     },
@@ -805,8 +832,9 @@ impl ChangeKind {
         match self {
             Self::Submodule { change } => change.viewed_content(),
             Self::Deleted { .. } => ViewedContent::Missing,
-            Self::Added { new } | Self::Modified { new, .. } | Self::Renamed { new, .. } =>
-                ViewedContent::Blob { oid: *new },
+            Self::Added { new } | Self::Modified { new, .. } | Self::Renamed { new, .. } => {
+                ViewedContent::Blob { oid: *new }
+            }
         }
     }
 

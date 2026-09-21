@@ -34,6 +34,10 @@ let make = (
   // Patches are viewport-bounded (§6.3): accumulate every row this file
   // has ever shown so scrolling/loading only ever adds rows.
   let key = DiffSeen.fileKey(diff)
+  React.useEffect1(() => {
+    setDrag(_ => None)
+    None
+  }, [key])
   let prevKey = React.useRef("")
   let seen = React.useRef(Dict.make())
   seen.current = DiffSeen.mergeSeen(seen.current, prevKey.current, key, diff.rows)
@@ -107,20 +111,26 @@ let make = (
             </span>
           : React.null}
         <span className="file-diff-actions">
-          <button
-            type_="button"
-            className="btn btn-ghost"
-            title="comment on this file"
-            onClick={_ => dispatch(CommentFile({file: diff.file}))}
-          >
-            {React.string("💬")}
-          </button>
-          <UI.Button
-            label="expand file"
-            kind=Ghost
-            title="show the whole file as context"
-            onClick={() => dispatch(ExpandContext({file: diff.file, full: true}))}
-          />
+          {SubmoduleView.canCommentFile(diff.target)
+            ? <button
+                type_="button"
+                className="btn btn-ghost"
+                title="comment on this file"
+                onClick={_ => dispatch(CommentFile({file: diff.file}))}
+              >
+                {React.string("💬")}
+              </button>
+            : React.null}
+          {switch diff.content {
+          | Text(_) =>
+            <UI.Button
+              label="expand file"
+              kind=Ghost
+              title="show the whole file as context"
+              onClick={() => dispatch(ExpandContext({file: diff.file, full: true}))}
+            />
+          | Binary(_) | Submodule(_) => React.null
+          }}
           <label className="chip-check" title="mark viewed (v)">
             <input
               type_="checkbox"

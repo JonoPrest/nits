@@ -18,7 +18,23 @@ let make = (~target: Render.RenderTarget.t) =>
   | Diff({change: Submodule({change})}) =>
     <div className="submodule-change" role="note" ariaLabel="Submodule change">
       <pre> {React.string(text(change))} </pre>
-      <p> {React.string("Gitlink metadata has no line diff. Discuss this change in the review conversation.")} </p>
+      <p>
+        {React.string(
+          "Gitlink metadata has no line diff. Discuss this change in the review conversation.",
+        )}
+      </p>
     </div>
   | Diff({change: Added(_) | Deleted(_) | Modified(_) | Renamed(_)}) | Blob(_) => React.null
+  }
+
+/// File anchors require a head blob; gitlink commit identities cannot anchor text.
+let canCommentFile = (target: Render.RenderTarget.t) =>
+  switch target {
+  | Diff({change: Submodule({change: SubmoduleToBlob(_)})}) => true
+  | Diff({
+      change: Submodule({
+        change: Added(_) | Deleted(_) | Updated(_) | Renamed(_) | BlobToSubmodule(_),
+      }),
+    }) => false
+  | Diff({change: Added(_) | Deleted(_) | Modified(_) | Renamed(_)}) | Blob(_) => true
   }

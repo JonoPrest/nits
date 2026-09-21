@@ -696,11 +696,21 @@ impl Core {
         opts: RenderOpts,
     ) -> Result<(FileRenderHeader, Rendered), CoreError> {
         if matches!(kind, ChangeKind::Submodule { .. }) {
-            let rendered = Rendered { content: nits_protocol::RenderContent::Submodule, rows: vec![] };
-            return Ok((FileRenderHeader {
-                repo_id, path: path.clone(), target: RenderTarget::Diff { change: kind }, opts,
-                lang: None, content: rendered.content.clone(),
-            }, rendered));
+            let rendered = Rendered {
+                content: nits_protocol::RenderContent::Submodule,
+                rows: vec![],
+            };
+            return Ok((
+                FileRenderHeader {
+                    repo_id,
+                    path: path.clone(),
+                    target: RenderTarget::Diff { change: kind },
+                    opts,
+                    lang: None,
+                    content: rendered.content.clone(),
+                },
+                rendered,
+            ));
         }
         let repo = self.repo(repo_id)?;
         let old = kind.old_blob().map(|b| repo.blob(b)).transpose()?;
@@ -798,15 +808,20 @@ impl Core {
         use nits_protocol::ViewedContent;
         let (_, resolved) = self.resolved(id)?;
         let target = Self::target(&resolved, repo_id)?;
-        let snap = self.repo(repo_id)?.tree_snapshot(repo_id, target.head.tree)?;
-        Ok(snap.entries.iter().find(|entry| &entry.path == path).map_or(
-            ViewedContent::Missing,
-            |entry| match entry.kind {
-                TreeEntryKind::File { oid, .. } | TreeEntryKind::Symlink { oid } => ViewedContent::Blob { oid },
+        let snap = self
+            .repo(repo_id)?
+            .tree_snapshot(repo_id, target.head.tree)?;
+        Ok(snap
+            .entries
+            .iter()
+            .find(|entry| &entry.path == path)
+            .map_or(ViewedContent::Missing, |entry| match entry.kind {
+                TreeEntryKind::File { oid, .. } | TreeEntryKind::Symlink { oid } => {
+                    ViewedContent::Blob { oid }
+                }
                 TreeEntryKind::Submodule { commit } => ViewedContent::Submodule { commit },
                 TreeEntryKind::Dir { .. } => ViewedContent::Missing,
-            },
-        ))
+            }))
     }
 
     /// Human-only: agents get `Forbidden`.

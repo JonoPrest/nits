@@ -981,3 +981,7 @@
 @layer components {
   .app-home .app-left-tree > .panel > .panel-header { @apply sticky top-0 z-10; }
 }
+/* Gitlink identities have no text rows, but remain readable at narrow widths. */
+.submodule-change { padding: 1rem; font-size: 0.875rem; }
+.submodule-change pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.submodule-change p { margin-top: 0.75rem; color: var(--color-muted); }

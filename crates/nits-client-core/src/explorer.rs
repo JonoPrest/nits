@@ -7,8 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use nits_protocol::{
-    Author, ViewedContent, ChangeKind, ChangeKindKind, RenderTarget, RepoId, RepoPath, ReviewSnapshot,
-    TreeEntryKind, TreeSnapshot,
+    Author, ChangeKind, ChangeKindKind, RenderTarget, RepoId, RepoPath, ReviewSnapshot,
+    TreeEntryKind, TreeSnapshot, ViewedContent,
 };
 use serde::{Deserialize, Serialize};
 use strum::EnumDiscriminants;

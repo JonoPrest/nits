@@ -768,42 +768,59 @@ impl Repo {
             let kind = if old_gitlink || new_gitlink {
                 use nits_protocol::SubmoduleChange;
                 let change = match raw.status {
-                    RawStatus::Added => SubmoduleChange::Added { new: CommitOid::new(raw.new) },
-                    RawStatus::Deleted => SubmoduleChange::Deleted { old: CommitOid::new(raw.old) },
+                    RawStatus::Added => SubmoduleChange::Added {
+                        new: CommitOid::new(raw.new),
+                    },
+                    RawStatus::Deleted => SubmoduleChange::Deleted {
+                        old: CommitOid::new(raw.old),
+                    },
                     RawStatus::Renamed { from } => SubmoduleChange::Renamed {
-                        from, old: CommitOid::new(raw.old), new: CommitOid::new(raw.new),
+                        from,
+                        old: CommitOid::new(raw.old),
+                        new: CommitOid::new(raw.new),
                     },
-                    RawStatus::Modified | RawStatus::TypeChanged => match (old_gitlink, new_gitlink) {
-                        (true, true) => SubmoduleChange::Updated {
-                            old: CommitOid::new(raw.old), new: CommitOid::new(raw.new),
-                        },
-                        (false, true) => SubmoduleChange::BlobToSubmodule {
-                            old: BlobOid::new(raw.old), new: CommitOid::new(raw.new),
-                        },
-                        (true, false) => SubmoduleChange::SubmoduleToBlob {
-                            old: CommitOid::new(raw.old), new: BlobOid::new(raw.new),
-                        },
-                        (false, false) => return Err(GitError::Parse("submodule change has no gitlink".into())),
-                    },
+                    RawStatus::Modified | RawStatus::TypeChanged => {
+                        match (old_gitlink, new_gitlink) {
+                            (true, true) => SubmoduleChange::Updated {
+                                old: CommitOid::new(raw.old),
+                                new: CommitOid::new(raw.new),
+                            },
+                            (false, true) => SubmoduleChange::BlobToSubmodule {
+                                old: BlobOid::new(raw.old),
+                                new: CommitOid::new(raw.new),
+                            },
+                            (true, false) => SubmoduleChange::SubmoduleToBlob {
+                                old: CommitOid::new(raw.old),
+                                new: BlobOid::new(raw.new),
+                            },
+                            (false, false) => {
+                                return Err(GitError::Parse(
+                                    "submodule change has no gitlink".into(),
+                                ));
+                            }
+                        }
+                    }
                 };
                 ChangeKind::Submodule { change }
-            } else { match raw.status {
-                RawStatus::Added => ChangeKind::Added {
-                    new: BlobOid::new(raw.new),
-                },
-                RawStatus::Deleted => ChangeKind::Deleted {
-                    old: BlobOid::new(raw.old),
-                },
-                RawStatus::Modified | RawStatus::TypeChanged => ChangeKind::Modified {
-                    old: BlobOid::new(raw.old),
-                    new: BlobOid::new(raw.new),
-                },
-                RawStatus::Renamed { from } => ChangeKind::Renamed {
-                    from,
-                    old: BlobOid::new(raw.old),
-                    new: BlobOid::new(raw.new),
-                },
-            }};
+            } else {
+                match raw.status {
+                    RawStatus::Added => ChangeKind::Added {
+                        new: BlobOid::new(raw.new),
+                    },
+                    RawStatus::Deleted => ChangeKind::Deleted {
+                        old: BlobOid::new(raw.old),
+                    },
+                    RawStatus::Modified | RawStatus::TypeChanged => ChangeKind::Modified {
+                        old: BlobOid::new(raw.old),
+                        new: BlobOid::new(raw.new),
+                    },
+                    RawStatus::Renamed { from } => ChangeKind::Renamed {
+                        from,
+                        old: BlobOid::new(raw.old),
+                        new: BlobOid::new(raw.new),
+                    },
+                }
+            };
             out.push(FileChangeRaw {
                 path: raw.path,
                 kind,

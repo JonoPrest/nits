@@ -533,7 +533,9 @@ fn apply_ops(s: &Store, ops: &[Op]) -> usize {
                     repo_id: repo_id(),
                     path: RepoPath::new("a.txt").unwrap(),
                     viewer: viewer.clone(),
-                    content: nits_protocol::ViewedContent::Blob { oid: self::blob(blob) },
+                    content: nits_protocol::ViewedContent::Blob {
+                        oid: self::blob(blob),
+                    },
                 }
             }
             Op::Unviewed { review } => {
@@ -1445,4 +1447,97 @@ fn schema_six_worktree_snapshots_preserve_unknown_head_through_upgrade_and_rebui
             expected
         );
     }
+}
+
+#[test]
+fn schema_seven_blob_and_missing_viewed_marks_keep_provenance_through_upgrade() {
+    use nits_protocol::ViewedContent;
+    use redb::ReadableTable;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("schema-seven.redb");
+    let expected = {
+        let store = Store::open(&path).unwrap();
+        store
+            .append(new_event(EventBody::WorkspaceCreated {
+                workspace: workspace(),
+            }))
+            .unwrap();
+        store
+            .append(new_event(EventBody::ReviewCreated { review: review(1) }))
+            .unwrap();
+        for (name, content) in [
+            ("source", ViewedContent::Blob { oid: blob(3) }),
+            ("deleted", ViewedContent::Missing),
+        ] {
+            store
+                .append(new_event(EventBody::FileViewed {
+                    review_id: review_id(1),
+                    repo_id: repo_id(),
+                    path: RepoPath::new(name).unwrap(),
+                    viewer: Human {
+                        name: "ada".into(),
+                        machine: "box".into(),
+                    },
+                    content,
+                }))
+                .unwrap();
+        }
+        (
+            store.events_after(None).unwrap(),
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+        )
+    };
+    {
+        let db = redb::Database::open(&path).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut log = txn
+                .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
+                .unwrap();
+            let rows = log
+                .iter()
+                .unwrap()
+                .map(|row| {
+                    let (key, bytes) = row.unwrap();
+                    let mut raw: serde_json::Value = serde_json::from_slice(bytes.value()).unwrap();
+                    raw["schema"] = serde_json::json!(7);
+                    if raw["event"]["body"]["type"] == "FileViewed" {
+                        let body = raw["event"]["body"].as_object_mut().unwrap();
+                        let content = body.remove("content").unwrap();
+                        body.insert(
+                            "blob_oid".into(),
+                            content
+                                .get("oid")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                        );
+                    }
+                    (key.value(), serde_json::to_vec(&raw).unwrap())
+                })
+                .collect::<Vec<_>>();
+            for (key, bytes) in rows {
+                log.insert(key, bytes.as_slice()).unwrap();
+            }
+        }
+        txn.commit().unwrap();
+    }
+    stamp_schema(&path, 7);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.events_after(None).unwrap(), expected.0);
+    assert_eq!(
+        store.review_snapshot(review_id(1)).unwrap().unwrap(),
+        expected.1
+    );
+    store.rebuild_views().unwrap();
+    assert_eq!(
+        store.review_snapshot(review_id(1)).unwrap().unwrap(),
+        expected.1
+    );
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.events_after(None).unwrap(), expected.0);
+    assert_eq!(
+        store.review_snapshot(review_id(1)).unwrap().unwrap(),
+        expected.1
+    );
 }
