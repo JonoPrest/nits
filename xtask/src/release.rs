@@ -393,7 +393,7 @@ pub fn publish(package: Releasable, dry_run: bool) -> anyhow::Result<()> {
 /// minutes, so this covers it with margin without waiting forever on a limit
 /// that is never going to clear.
 const RATE_LIMIT_ATTEMPTS: u32 = 20;
-const RATE_LIMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+const RATE_LIMIT_WAIT: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// `cargo publish` one crate, waiting out a crates.io rate limit rather than
 /// failing on it.
