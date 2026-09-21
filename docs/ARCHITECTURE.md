@@ -169,6 +169,8 @@ ownership before appending an event, then publish the opened repository to the
 cache under the same registry guard. Directory bootstrap checks ownership before
 creating its workspace. Existing ambiguous IDs fail explicitly on Git access;
 workspace/review metadata and workspace-scoped detach remain available for repair.
+Filesystem watches use the same validated checkout ownership and reconcile their
+roots when memberships change, so repair also restores automatic refresh.
 Review source reads, suggestions and revision retention also require the target's
 membership in that review's workspace, so detaching a conflicting member cannot
 redirect an old review to a surviving checkout elsewhere. A fresh ID for an

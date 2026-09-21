@@ -8,7 +8,7 @@
 //! metadata is considered: snapshot indexes, objects and Nits retention refs
 //! must not feed back into the watcher that created them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -104,25 +104,43 @@ async fn run(daemon: Arc<Daemon>, shutdown: CancellationToken) {
     }
 }
 
-/// Start watching newly attached repos and drop detached ones.
+/// Reconcile registrations with validated ownership, including legacy repair.
 async fn sync_repos(
     daemon: &Arc<Daemon>,
     fs_tx: &mpsc::UnboundedSender<RepoId>,
     watched: &mut HashMap<RepoId, Watched>,
 ) {
-    let repos: Vec<(RepoId, PathBuf)> = match daemon.read(nits_review_core::Core::workspaces).await
+    let repos = match daemon
+        .read(|core| {
+            let ids: HashSet<_> = core
+                .workspaces()?
+                .into_iter()
+                .flat_map(|workspace| workspace.repos)
+                .map(|repo| repo.id)
+                .collect();
+            let paths = ids
+                .into_iter()
+                .filter_map(|id| match core.repo_checkout_path(id) {
+                    Ok(path) => Some((id, path)),
+                    Err(error) => {
+                        tracing::warn!(repo = %id, %error, "repository ownership unavailable for watching");
+                        None
+                    }
+                })
+                .collect::<HashMap<_, _>>();
+            Ok(paths)
+        })
+        .await
     {
-        Ok(ws) => ws
-            .into_iter()
-            .flat_map(|w| w.repos)
-            .map(|r| (r.id, PathBuf::from(r.path)))
-            .collect(),
+        Ok(repos) => repos,
         Err(e) => {
             tracing::warn!(error = %e, "listing repos for the watcher");
             return;
         }
     };
-    watched.retain(|id, _| repos.iter().any(|(r, _)| r == id));
+    // An ID can remain present after its old membership is detached. Keep a
+    // registration only if it still watches that ID's canonical checkout.
+    watched.retain(|id, watch| repos.get(id).is_some_and(|path| *path == watch.paths.root));
     for (id, path) in repos {
         if watched.contains_key(&id) {
             continue;
