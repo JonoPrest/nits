@@ -932,21 +932,15 @@ impl Server {
 
     async fn add_comment(&mut self, p: tools::AddComment) -> Result<Value, ToolError> {
         let ops = self.ops_mut()?;
-        let anchor = match (p.path, p.start_line) {
-            (None, Some(_)) => {
-                return Err(ToolError::Invalid("start_line needs a path".into()));
+        let anchor = match p.anchor {
+            tools::CommentAnchor::Review => Anchor::Review,
+            tools::CommentAnchor::File { path } => {
+                ops.anchor(p.review_id, p.repo_id, &path, p.side, None)
+                    .await?
             }
-            (None, None) => Anchor::Review,
-            (Some(path), start) => {
-                let path = RepoPath::new(path)?;
-                ops.anchor(
-                    p.review_id,
-                    p.repo_id,
-                    &path,
-                    p.side,
-                    start.map(|s| (s, p.end_line)),
-                )
-                .await?
+            tools::CommentAnchor::Lines { path, lines } => {
+                ops.anchor(p.review_id, p.repo_id, &path, p.side, Some(lines))
+                    .await?
             }
         };
         let (t, event) = ops
@@ -964,7 +958,7 @@ impl Server {
                 p.repo_id,
                 &path,
                 p.side,
-                Some((p.start_line, p.end_line)),
+                Some(nitsd::ops::line_range(p.start_line, p.end_line)?),
             )
             .await?;
         let (t, event) = ops

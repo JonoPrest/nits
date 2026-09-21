@@ -1666,11 +1666,7 @@ async fn content(ops: &Ops, cmd: Cmd, json: bool) -> anyhow::Result<()> {
 async fn comment(ops: &mut Ops, cmd: CommentCmd, json: bool) -> anyhow::Result<()> {
     match cmd {
         CommentCmd::Add(a) => {
-            let lines = a
-                .line
-                .map(LineRange::single)
-                .or(a.lines)
-                .map(|range| (range.start().get(), Some(range.end().get())));
+            let lines = a.line.map(LineRange::single).or(a.lines);
             let anchor = match a.path {
                 None if lines.is_some() => bail!("--line/--lines need --path"),
                 None => Anchor::Review,

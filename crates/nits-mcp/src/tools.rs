@@ -88,7 +88,7 @@ pub enum ToolCall {
     ))]
     ListComments(ByReview),
     #[strum_discriminants(strum(
-        message = "Start a thread. Anchor to the whole review (no path), a file (path only) or a line range (path + `start_line` [+ `end_line`]) on the given side."
+        message = "Start a thread. Anchor to the whole review (no path), a file (path only) or a line range (path + `start_line` [+ `end_line`]) on the given side. Line bounds must be positive and require a path. An end requires a start and must be at least the start; omitted end means a single line."
     ))]
     AddComment(AddComment),
     #[strum_discriminants(strum(
@@ -563,26 +563,82 @@ fn head() -> Side {
 
 /// Start a thread. Anchor to the whole review (no path), a file (path only)
 /// or a line range (path + `start_line` [+ `end_line`]) on the given side.
+/// Line bounds require a path; `end_line` also requires `start_line`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(try_from = "AddCommentWire")]
+#[schemars(with = "AddCommentWire")]
+pub struct AddComment {
+    pub intent: nits_protocol::CommentIntent,
+    pub review_id: ReviewId,
+    pub repo_id: Option<RepoId>,
+    pub side: Side,
+    pub anchor: CommentAnchor,
+    pub body: String,
+}
+
+/// The comment scope after flat MCP arguments have been parsed. Blob identity
+/// is resolved later against the selected review, repository and side.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CommentAnchor {
+    Review,
+    File { path: RepoPath },
+    Lines { path: RepoPath, lines: LineRange },
+}
+
+/// Keep the flat MCP shape while rejecting incomplete or invalid line ranges
+/// before dispatch can resolve content or append a comment.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct AddComment {
+struct AddCommentWire {
     /// Finding (default) opens an actionable thread, even without a path.
     /// Informational requires no path: summary/status conversation, never approval.
     #[serde(default)]
-    pub intent: nits_protocol::CommentIntent,
-    pub review_id: ReviewId,
+    intent: nits_protocol::CommentIntent,
+    review_id: ReviewId,
     /// Needed only when the review spans several repos.
-    pub repo_id: Option<RepoId>,
-    /// Path relative to the repo root.
-    pub path: Option<String>,
+    repo_id: Option<RepoId>,
+    /// Path relative to the repo root. Required when either line bound is supplied.
+    path: Option<RepoPath>,
     /// Default `Head`.
     #[serde(default = "head")]
-    pub side: Side,
-    /// 1-based.
-    pub start_line: Option<u32>,
-    /// Defaults to `start_line`.
-    pub end_line: Option<u32>,
-    pub body: String,
+    side: Side,
+    /// Inclusive 1-based start; requires `path`.
+    start_line: Option<LineNo>,
+    /// Inclusive 1-based end, at least `start_line`; requires `start_line` and `path`.
+    /// Defaults to `start_line` when omitted.
+    end_line: Option<LineNo>,
+    body: String,
+}
+
+impl TryFrom<AddCommentWire> for AddComment {
+    type Error = nitsd::ops::OpsError;
+
+    fn try_from(wire: AddCommentWire) -> Result<Self, Self::Error> {
+        let anchor = match (wire.path, wire.start_line, wire.end_line) {
+            (None, None, None) => CommentAnchor::Review,
+            (Some(path), None, None) => CommentAnchor::File { path },
+            (Some(path), Some(start), end) => CommentAnchor::Lines {
+                path,
+                lines: LineRange::new(start, end.unwrap_or(start))?,
+            },
+            (_, None, Some(_)) => {
+                return Err(Self::Error::Invalid(
+                    "end_line requires start_line and path".into(),
+                ));
+            }
+            (None, Some(_), _) => {
+                return Err(Self::Error::Invalid("line bounds require a path".into()));
+            }
+        };
+        Ok(Self {
+            intent: wire.intent,
+            review_id: wire.review_id,
+            repo_id: wire.repo_id,
+            side: wire.side,
+            anchor,
+            body: wire.body,
+        })
+    }
 }
 
 /// Start a thread carrying a suggested change: a unified diff against the
@@ -1196,6 +1252,114 @@ mod tests {
         assert_eq!(call.name(), ToolName::ListWorkspaces);
         assert!(ToolCall::parse(ToolName::ListWorkspaces, serde_json::json!({ "x": 1 })).is_err());
         assert!(ToolCall::parse(ToolName::GetReview, serde_json::json!({})).is_err());
+    }
+
+    fn comment_args(anchor: Value) -> Value {
+        let mut args = anchor;
+        args["review_id"] = serde_json::json!(ReviewId::from_parts(1, 1));
+        args["body"] = serde_json::json!("finding");
+        args
+    }
+
+    #[test]
+    fn comment_anchor_arguments_parse_to_exact_scopes() {
+        let path = RepoPath::new("source.rs").unwrap();
+        for (args, expected) in [
+            (serde_json::json!({}), CommentAnchor::Review),
+            (
+                serde_json::json!({"path":null,"start_line":null,"end_line":null}),
+                CommentAnchor::Review,
+            ),
+            (
+                serde_json::json!({"path":"source.rs"}),
+                CommentAnchor::File { path: path.clone() },
+            ),
+            (
+                serde_json::json!({"path":"source.rs","start_line":null,"end_line":null}),
+                CommentAnchor::File { path: path.clone() },
+            ),
+            (
+                serde_json::json!({"path":"source.rs","start_line":2}),
+                CommentAnchor::Lines {
+                    path: path.clone(),
+                    lines: LineRange::single(LineNo::new(2).unwrap()),
+                },
+            ),
+            (
+                serde_json::json!({"path":"source.rs","start_line":2,"end_line":null}),
+                CommentAnchor::Lines {
+                    path: path.clone(),
+                    lines: LineRange::single(LineNo::new(2).unwrap()),
+                },
+            ),
+            (
+                serde_json::json!({"path":"source.rs","start_line":2,"end_line":4}),
+                CommentAnchor::Lines {
+                    path: path.clone(),
+                    lines: LineRange::new(LineNo::new(2).unwrap(), LineNo::new(4).unwrap())
+                        .unwrap(),
+                },
+            ),
+        ] {
+            let Call::Mutating(MutatingCall::AddComment(parsed)) =
+                ToolCall::parse(ToolName::AddComment, comment_args(args))
+                    .unwrap()
+                    .classify()
+            else {
+                panic!("add_comment must remain a mutation");
+            };
+            assert_eq!(parsed.anchor, expected);
+            assert_eq!(parsed.side, Side::Head);
+            assert_eq!(parsed.intent, nits_protocol::CommentIntent::Finding);
+        }
+    }
+
+    #[test]
+    fn comment_anchor_arguments_reject_incomplete_and_invalid_ranges() {
+        for args in [
+            serde_json::json!({"end_line":3}),
+            serde_json::json!({"path":"source.rs","end_line":3}),
+            serde_json::json!({"start_line":1}),
+            serde_json::json!({"start_line":1,"end_line":3}),
+            serde_json::json!({"path":null,"start_line":1}),
+            serde_json::json!({"path":"source.rs","start_line":null,"end_line":3}),
+            serde_json::json!({"path":"source.rs","start_line":0}),
+            serde_json::json!({"path":"source.rs","start_line":1,"end_line":0}),
+            serde_json::json!({"path":"source.rs","start_line":3,"end_line":2}),
+            serde_json::json!({"path":"source.rs","start_line":-1}),
+            serde_json::json!({"path":"source.rs","start_line":1.5}),
+            serde_json::json!({"path":"source.rs","start_line":4294967296u64}),
+            serde_json::json!({"path":"source.rs","start_line":"1"}),
+            serde_json::json!({"path":"../outside.rs"}),
+            serde_json::json!({"path":true}),
+            serde_json::json!({"unexpected":1}),
+            serde_json::json!({"anchor":{"type":"Review"}}),
+        ] {
+            assert!(
+                ToolCall::parse(ToolName::AddComment, comment_args(args.clone())).is_err(),
+                "{args}"
+            );
+        }
+    }
+
+    #[test]
+    fn comment_schema_describes_flat_positive_bounds() {
+        let tool = ToolName::AddComment.tool();
+        assert_eq!(
+            tool.input_schema.get("additionalProperties"),
+            Some(&Value::Bool(false))
+        );
+        let properties = tool.input_schema.get("properties").unwrap();
+        assert!(properties.get("path").is_some());
+        for bound in ["start_line", "end_line"] {
+            let schema = &properties[bound];
+            assert!(schema["description"].as_str().unwrap().contains("requires"));
+            assert_eq!(schema["anyOf"][0]["$ref"], "#/$defs/LineNo");
+        }
+        assert!(properties.get("anchor").is_none());
+        let definitions = tool.input_schema.get("$defs").unwrap();
+        assert_eq!(definitions["LineNo"]["minimum"], 1);
+        assert_eq!(definitions["LineNo"]["format"], "uint32");
     }
 
     #[test]

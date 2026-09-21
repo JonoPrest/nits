@@ -2464,3 +2464,170 @@ async fn submodule_changes_are_metadata_in_mcp_and_never_source_line_anchors() {
         assert!(comments["comments"].as_array().unwrap().is_empty());
     }
 }
+
+#[tokio::test]
+async fn add_comment_rejects_invalid_anchor_shapes_without_appending_events() {
+    let h = start();
+    let c = human(&h).await;
+    let (workspace, repo) = seed(&h, &c).await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    let review = call(
+        &mut s,
+        "create_review",
+        json!({"workspace_id":workspace,"title":"anchor validation","targets":main_feature(&repo)}),
+    )
+    .await;
+    let review_id: ReviewId = serde_json::from_value(review["review_id"].clone()).unwrap();
+    let before = h.daemon.core().last_seq().unwrap();
+    let comments = h.daemon.core().comments(review_id).unwrap();
+    for mut args in [
+        json!({"end_line":3}),
+        json!({"path":"a.rs","end_line":3}),
+        json!({"start_line":1}),
+        json!({"start_line":1,"end_line":2}),
+        json!({"path":null,"start_line":1}),
+        json!({"path":"a.rs","start_line":null,"end_line":2}),
+        json!({"path":"a.rs","start_line":0}),
+        json!({"path":"a.rs","start_line":1,"end_line":0}),
+        json!({"path":"a.rs","start_line":2,"end_line":1}),
+        json!({"path":"a.rs","start_line":-1}),
+        json!({"path":"a.rs","start_line":1.5}),
+        json!({"path":"a.rs","start_line":"1"}),
+        json!({"path":"a.rs","start_line":4294967296u64}),
+        json!({"path":"a.rs","start_line":1,"end_line":4294967296u64}),
+        json!({"path":"a.rs","start_line":3}),
+        json!({"path":"a.rs","start_line":1,"end_line":3}),
+        json!({"path":"../outside.rs"}),
+        json!({"path":true}),
+        json!({"side":"Middle"}),
+        json!({"path":"a.rs","unexpected":true}),
+        json!({"unexpected":true}),
+        json!({"anchor":{"type":"Review"}}),
+        json!({"intent":"Informational","path":"a.rs"}),
+    ] {
+        args["review_id"] = json!(review_id);
+        args["body"] = json!("must not be created");
+        let error = call_err(&mut s, "add_comment", args.clone()).await;
+        assert!(!error.is_empty(), "{args}");
+        assert_eq!(h.daemon.core().last_seq().unwrap(), before, "{args}");
+        assert_eq!(
+            h.daemon.core().comments(review_id).unwrap(),
+            comments,
+            "{args}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn add_comment_preserves_review_file_and_line_anchor_scopes() {
+    use nits_protocol::{Anchor, BlobOid, LineNo, LineRange, Side};
+    let h = start();
+    let c = human(&h).await;
+    let (workspace, repo) = seed(&h, &c).await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    let review = call(
+        &mut s,
+        "create_review",
+        json!({"workspace_id":workspace,"title":"anchor scopes","targets":main_feature(&repo)}),
+    )
+    .await;
+    let review_id: ReviewId = serde_json::from_value(review["review_id"].clone()).unwrap();
+    let repo_id: RepoId = repo.parse().unwrap();
+    let path = nits_protocol::RepoPath::new("a.rs").unwrap();
+    let head: BlobOid = h
+        .repo
+        .git(&["rev-parse", "feature:a.rs"])
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let base: BlobOid = h
+        .repo
+        .git(&["rev-parse", "main:a.rs"])
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    for (mut args, expected) in [
+        (json!({}), Anchor::Review),
+        (
+            json!({"path":null,"start_line":null,"end_line":null}),
+            Anchor::Review,
+        ),
+        (
+            json!({"path":"a.rs"}),
+            Anchor::File {
+                repo_id,
+                path: path.clone(),
+                blob_oid: head,
+            },
+        ),
+        (
+            json!({"repo_id":repo_id,"path":"a.rs","side":"Base","start_line":null,"end_line":null}),
+            Anchor::File {
+                repo_id,
+                path: path.clone(),
+                blob_oid: base,
+            },
+        ),
+        (
+            json!({"path":"a.rs","start_line":1}),
+            Anchor::Lines {
+                repo_id,
+                path: path.clone(),
+                side: Side::Head,
+                blob_oid: head,
+                lines: LineRange::single(LineNo::FIRST),
+                context_hash: nits_protocol::ContextHash::new(0),
+            },
+        ),
+        (
+            json!({"path":"a.rs","start_line":2,"end_line":null}),
+            Anchor::Lines {
+                repo_id,
+                path: path.clone(),
+                side: Side::Head,
+                blob_oid: head,
+                lines: LineRange::single(LineNo::new(2).unwrap()),
+                context_hash: nits_protocol::ContextHash::new(0),
+            },
+        ),
+        (
+            json!({"path":"a.rs","side":"Base","start_line":1,"end_line":2}),
+            Anchor::Lines {
+                repo_id,
+                path: path.clone(),
+                side: Side::Base,
+                blob_oid: base,
+                lines: LineRange::new(LineNo::FIRST, LineNo::new(2).unwrap()).unwrap(),
+                context_hash: nits_protocol::ContextHash::new(0),
+            },
+        ),
+    ] {
+        args["review_id"] = json!(review_id);
+        args["body"] = json!("scoped finding");
+        let receipt = call(&mut s, "add_comment", args.clone()).await;
+        let id: nits_protocol::CommentId =
+            serde_json::from_value(receipt["comment_id"].clone()).unwrap();
+        let mut actual = h
+            .daemon
+            .core()
+            .comments(review_id)
+            .unwrap()
+            .into_iter()
+            .find(|comment| comment.id == id)
+            .unwrap()
+            .anchor;
+        if let Anchor::Lines { context_hash, .. } = &mut actual {
+            assert_ne!(
+                *context_hash,
+                nits_protocol::ContextHash::new(0),
+                "Core computes the actual context hash"
+            );
+            *context_hash = nits_protocol::ContextHash::new(0);
+        }
+        assert_eq!(actual, expected, "{args}");
+    }
+}
