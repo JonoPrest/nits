@@ -5,17 +5,15 @@
 //! [`Ctx`] carrying who is acting, when, and the client-side sequence. Ids
 //! for created entities come from the client (see §5.2 optimistic creation).
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::path::PathBuf;
+use std::sync::Mutex;
 
-use nits_protocol::{
-    Author, ClientId, ClientSeq, EntityKind, Event, EventBody, RepoId, Seq, Timestamp,
-};
+use nits_protocol::{Author, ClientId, ClientSeq, EntityKind, Event, EventBody, Seq, Timestamp};
 
-use crate::git::{GitError, Repo};
+use crate::git::GitError;
 use crate::render::Highlighter;
 use crate::render::cache::{CacheError, RenderCache};
+use crate::repository::RepositoryRegistry;
 use crate::store::{NewEvent, Store, StoreError};
 
 /// Who is acting, from where, and when. Built by the transport per request.
@@ -89,7 +87,7 @@ pub struct Core {
     pub(crate) store: Store,
     pub(crate) cache: RenderCache,
     pub(crate) hl: Highlighter,
-    repos: RwLock<HashMap<RepoId, Arc<Repo>>>,
+    pub(crate) repositories: Mutex<RepositoryRegistry>,
 }
 
 impl std::fmt::Debug for Core {
@@ -108,7 +106,7 @@ impl Core {
             store: Store::open(&data_dir.state())?,
             cache: RenderCache::open(&data_dir.render_cache())?,
             hl: Highlighter::new(),
-            repos: RwLock::new(HashMap::new()),
+            repositories: Mutex::new(RepositoryRegistry::default()),
         })
     }
 
@@ -120,49 +118,6 @@ impl Core {
             client_seq: ctx.client_seq,
             body,
         })?)
-    }
-
-    /// The opened repository for `id`, opening it from its stored path on
-    /// first use.
-    pub(crate) fn repo(&self, id: RepoId) -> Result<Arc<Repo>, CoreError> {
-        if let Some(r) = self
-            .repos
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&id)
-        {
-            return Ok(Arc::clone(r));
-        }
-        let path = self
-            .store
-            .workspaces()?
-            .iter()
-            .flat_map(|w| w.repos.iter())
-            .find(|r| r.id == id)
-            .map(|r| PathBuf::from(&r.path))
-            .ok_or_else(|| CoreError::not_found(EntityKind::Repo, &id))?;
-        let repo = Arc::new(Repo::open(&path)?);
-        self.repos
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, Arc::clone(&repo));
-        Ok(repo)
-    }
-
-    pub(crate) fn open_repo_at(&self, id: RepoId, path: &Path) -> Result<(), CoreError> {
-        let repo = Arc::new(Repo::open(path)?);
-        self.repos
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, repo);
-        Ok(())
-    }
-
-    pub(crate) fn forget_repo(&self, id: RepoId) {
-        self.repos
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&id);
     }
 
     // ---- log access -------------------------------------------------------

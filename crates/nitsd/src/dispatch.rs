@@ -292,7 +292,7 @@ pub async fn open_review(
     for t in resolved.iter().cloned() {
         for r in [t.base, t.head] {
             let snapshot = daemon
-                .read(move |c| c.tree_snapshot_of(t.repo_id, &r))
+                .read(move |c| c.review_tree_snapshot(review_id, t.repo_id, &r))
                 .await?;
             out.send(ServerMsg::StreamItem {
                 id,

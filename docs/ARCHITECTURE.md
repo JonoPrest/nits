@@ -162,6 +162,19 @@ on it uses the same path as commenting inside a diff; the diff is just a way to
 navigate to a blob.
 ```
 
+A repository ID identifies one canonical checkout across its current workspace
+memberships. The same ID/checkout may belong to several workspaces; separate linked
+worktrees remain distinct even when they share Git metadata. Attachments validate
+ownership before appending an event, then publish the opened repository to the
+cache under the same registry guard. Directory bootstrap checks ownership before
+creating its workspace. Existing ambiguous IDs fail explicitly on Git access;
+workspace/review metadata and workspace-scoped detach remain available for repair.
+Review source reads, suggestions and revision retention also require the target's
+membership in that review's workspace, so detaching a conflicting member cannot
+redirect an old review to a surviving checkout elsewhere. A fresh ID for an
+already-attached checkout retains its existing behavior; path deduplication is a
+separate policy.
+
 A root's kind sets its thread lifecycle: `Note`, `Suggestion` and `Request` create
 `Open` actionable threads; `Informational` creates a review-level conversation with
 `ThreadResolution::Informational`, which cannot be resolved or reopened. Replies

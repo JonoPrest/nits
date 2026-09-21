@@ -11,7 +11,7 @@ impl Core {
         targets: &NonEmpty<ResolvedTarget>,
     ) -> Result<(), CoreError> {
         for target in targets {
-            let repo = self.repo(target.repo_id)?;
+            let repo = self.review_repo(review, target.repo_id)?;
             repo.retain_revision(review, &target.base)?;
             repo.retain_revision(review, &target.head)?;
         }
@@ -47,7 +47,7 @@ impl Core {
         }
         validate_round(&snapshot, in_reply_to)?;
         for target in &targets {
-            let repo = self.repo(target.repo_id)?;
+            let repo = self.review_repo(review_id, target.repo_id)?;
             for revision in [&target.base, &target.head] {
                 match &revision.source {
                     ResolvedSource::Commit { oid } => {

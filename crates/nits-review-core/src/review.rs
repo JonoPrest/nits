@@ -2,10 +2,10 @@
 
 use nits_protocol::{
     BlobOid, ChangeKind, CommitInfo, CommitOid, DiffScope, EntityKind, EventBody, FileChange,
-    FileRenderHeader, NonEmpty, RefCandidate, RefSpec, RenderOpts, RenderTarget, Repo, RepoId,
-    RepoPath, ResolvedRef, ResolvedSource, ResolvedTarget, Review, ReviewId, ReviewSnapshot,
-    ReviewStatus, ReviewTarget, ReviewTargetUpdate, TargetRevision, TreeDelta, TreeEntryKind,
-    TreeSnapshot, ViewedMark, Workspace, WorkspaceId,
+    FileRenderHeader, NonEmpty, RefCandidate, RefSpec, RenderOpts, RenderTarget, RepoId, RepoPath,
+    ResolvedRef, ResolvedSource, ResolvedTarget, Review, ReviewId, ReviewSnapshot, ReviewStatus,
+    ReviewTarget, ReviewTargetUpdate, TargetRevision, TreeDelta, TreeEntryKind, TreeSnapshot,
+    ViewedMark, Workspace, WorkspaceId,
 };
 
 use crate::core::{Core, CoreError, Ctx};
@@ -80,59 +80,6 @@ impl Core {
         Ok(())
     }
 
-    /// Attach a repository; the path must be a git work tree.
-    pub fn attach_repo(
-        &self,
-        ctx: &Ctx,
-        workspace_id: WorkspaceId,
-        repo_id: RepoId,
-        path: &str,
-        display_name: String,
-    ) -> Result<Repo, CoreError> {
-        let ws = self.workspace(workspace_id)?;
-        if ws.repos.iter().any(|r| r.id == repo_id) {
-            return Err(CoreError::invalid(format!(
-                "repo {repo_id} already attached"
-            )));
-        }
-        let canonical = std::fs::canonicalize(path)?;
-        self.open_repo_at(repo_id, &canonical)?;
-        let repo = Repo {
-            id: repo_id,
-            path: canonical.to_string_lossy().into_owned(),
-            display_name,
-        };
-        self.append(
-            ctx,
-            EventBody::RepoAttached {
-                workspace_id,
-                repo: repo.clone(),
-            },
-        )?;
-        Ok(repo)
-    }
-
-    pub fn detach_repo(
-        &self,
-        ctx: &Ctx,
-        workspace_id: WorkspaceId,
-        repo_id: RepoId,
-    ) -> Result<(), CoreError> {
-        let ws = self.workspace(workspace_id)?;
-        if !ws.repos.iter().any(|r| r.id == repo_id) {
-            return Err(CoreError::not_found(EntityKind::Repo, &repo_id));
-        }
-        self.append(
-            ctx,
-            EventBody::RepoDetached {
-                workspace_id,
-                repo_id,
-            },
-        )?;
-        self.forget_repo(repo_id);
-        Ok(())
-    }
-
     // ---- reviews ----------------------------------------------------------
 
     pub fn reviews(&self, workspace_id: WorkspaceId) -> Result<Vec<Review>, CoreError> {
@@ -200,7 +147,7 @@ impl Core {
         // committed, or an unresolvable base (say `Upstream` with no
         // upstream configured) would leave a ghost review behind.
         for t in &targets {
-            let repo = self.repo(t.repo_id)?;
+            let repo = self.workspace_repo(workspace_id, t.repo_id)?;
             repo.resolve(&t.base)?;
             repo.resolve(&t.head)?;
         }
@@ -279,7 +226,7 @@ impl Core {
             TargetRevision::Base { ref_spec } => target.base = ref_spec.into(),
             TargetRevision::Head { ref_spec } => target.head = ref_spec,
         }
-        let repo = self.repo(target.repo_id)?;
+        let repo = self.workspace_repo(rec.review.workspace_id, target.repo_id)?;
         repo.resolve(&target.base)
             .and_then(|_| repo.resolve(&target.head))
             .map_err(|error| CoreError::Invalid {
@@ -322,7 +269,7 @@ impl Core {
     ) -> Result<NonEmpty<ResolvedTarget>, CoreError> {
         let mut resolved = Vec::new();
         for t in &review.targets {
-            let repo = self.repo(t.repo_id)?;
+            let repo = self.workspace_repo(review.workspace_id, t.repo_id)?;
             resolved.push(ResolvedTarget {
                 repo_id: t.repo_id,
                 base: repo.resolve(&t.base)?,
@@ -434,7 +381,9 @@ impl Core {
                             let oid = head.ok_or_else(|| {
                                 CoreError::invalid("snapshot has no captured HEAD commit")
                             })?;
-                            t.head = self.repo(t.repo_id)?.resolve(&RefSpec::Commit { oid })?;
+                            t.head = self
+                                .review_repo(id, t.repo_id)?
+                                .resolve(&RefSpec::Commit { oid })?;
                         }
                         Ok(t)
                     })
@@ -443,11 +392,12 @@ impl Core {
             }
             DiffScope::Commit { repo_id, oid } => {
                 Self::target(&resolved, *repo_id)?;
+                self.review_repo(id, *repo_id)?;
                 Ok(NonEmpty::singleton(self.commit_step(*repo_id, *oid)?))
             }
             DiffScope::Worktree { repo_id } => {
                 let target = Self::target(&resolved, *repo_id)?;
-                let repo = self.repo(*repo_id)?;
+                let repo = self.review_repo(id, *repo_id)?;
                 let (base, head) = match target.head.source {
                     ResolvedSource::WorkingTree { head, .. } => {
                         let oid = head.ok_or_else(|| {
@@ -499,7 +449,7 @@ impl Core {
         targets.sort_by_key(|t| (name(t.repo_id), t.repo_id));
         let mut out = Vec::new();
         for t in targets {
-            let repo = self.repo(t.repo_id)?;
+            let repo = self.workspace_repo(rec.review.workspace_id, t.repo_id)?;
             let mut changes = repo.changed_files(t.base.tree, t.head.tree)?;
             // Tree display order (dirs first), so every client shows and
             // steps files in the same order without re-sorting.
@@ -570,7 +520,7 @@ impl Core {
         let mut hits = Vec::new();
         let mut truncated = false;
         'files: for (repo_id, path, oid) in candidates {
-            let repo = self.repo(repo_id)?;
+            let repo = self.review_repo(id, repo_id)?;
             let bytes = repo.blob(oid)?;
             if bytes.len() > MAX_BLOB || crate::git::is_binary(&bytes) {
                 continue;
@@ -620,7 +570,7 @@ impl Core {
             } => oid,
             ResolvedSource::WorkingTree { head: None, .. } => return Ok(vec![]),
         };
-        Ok(self.repo(repo_id)?.commits_between(base, head)?)
+        Ok(self.review_repo(id, repo_id)?.commits_between(base, head)?)
     }
 
     /// A single-commit sub-target for stepping: base = first parent.
@@ -670,6 +620,18 @@ impl Core {
         r: &ResolvedRef,
     ) -> Result<TreeSnapshot, CoreError> {
         Ok(self.repo(repo_id)?.tree_snapshot(repo_id, r.tree)?)
+    }
+
+    /// Read a captured tree only through this review's workspace membership.
+    pub fn review_tree_snapshot(
+        &self,
+        review_id: ReviewId,
+        repo_id: RepoId,
+        revision: &ResolvedRef,
+    ) -> Result<TreeSnapshot, CoreError> {
+        Ok(self
+            .review_repo(review_id, repo_id)?
+            .tree_snapshot(repo_id, revision.tree)?)
     }
 
     // ---- render -----------------------------------------------------------
@@ -809,7 +771,7 @@ impl Core {
         let (_, resolved) = self.resolved(id)?;
         let target = Self::target(&resolved, repo_id)?;
         let snap = self
-            .repo(repo_id)?
+            .review_repo(id, repo_id)?
             .tree_snapshot(repo_id, target.head.tree)?;
         Ok(snap
             .entries
