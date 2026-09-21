@@ -274,7 +274,7 @@ fn workspace_review_comment_round_trip() {
         .args(["show", &review, "a.rs", "--side", "base"])
         .assert()
         .success()
-        .stdout("    1│fn a() {}\n    2│fn z() {}\n");
+        .stdout("100644\n    1│fn a() {}\n    2│fn z() {}\n");
 
     let thread = h.out(&[
         "comment", "add", &review, "--path", "a.rs", "--line", "1", "--body", "hmm",

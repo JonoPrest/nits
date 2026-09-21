@@ -585,7 +585,7 @@ fn changed_files_detects_add_delete_modify_rename() {
     assert_eq!(from.as_str(), "old_name.rs");
     assert_eq!(old, new, "identical content keeps the same blob");
     assert_eq!(
-        repo.blob(*new).unwrap(),
+        repo.blob(new.oid).unwrap(),
         b"fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\n"
     );
 }
@@ -965,5 +965,5 @@ fn binary_detection_and_blob_read() {
     let ChangeKind::Added { new } = changes[0].kind else {
         panic!()
     };
-    assert!(is_binary(&repo.blob(new).unwrap()));
+    assert!(is_binary(&repo.blob(new.oid).unwrap()));
 }

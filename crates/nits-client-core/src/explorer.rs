@@ -192,7 +192,7 @@ pub(crate) fn progress(
         }
         let head = match &f.target {
             RenderTarget::Diff { change } => change.viewed_content(),
-            RenderTarget::Blob { oid } => ViewedContent::Blob { oid: *oid },
+            RenderTarget::Blob { entry } => ViewedContent::Blob { entry: *entry },
         };
         p.total += 1;
         match viewed_state(snapshot, viewer, f.repo_id, &f.path, head) {
@@ -227,14 +227,11 @@ pub(crate) fn build(inputs: &ExplorerInputs<'_>) -> TreeView {
     } {
         let leaves = repos.entry(t.repo_id).or_default();
         for e in &t.entries {
-            match &e.kind {
-                TreeEntryKind::File { oid, .. } | TreeEntryKind::Symlink { oid } => {
-                    leaves.push(Leaf {
-                        path: e.path.clone(),
-                        head_content: ViewedContent::Blob { oid: *oid },
-                    });
-                }
-                TreeEntryKind::Dir { .. } | TreeEntryKind::Submodule { .. } => {}
+            if let Some(entry) = e.kind.blob_entry() {
+                leaves.push(Leaf {
+                    path: e.path.clone(),
+                    head_content: ViewedContent::Blob { entry },
+                });
             }
         }
     }
@@ -243,7 +240,7 @@ pub(crate) fn build(inputs: &ExplorerInputs<'_>) -> TreeView {
         if leaves.iter().all(|l| l.path != f.path) {
             let head_content = match &f.target {
                 RenderTarget::Diff { change } => change.viewed_content(),
-                RenderTarget::Blob { oid } => ViewedContent::Blob { oid: *oid },
+                RenderTarget::Blob { entry } => ViewedContent::Blob { entry: *entry },
             };
             leaves.push(Leaf {
                 path: f.path.clone(),

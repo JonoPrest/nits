@@ -113,6 +113,7 @@ let make = (
           dispatch
         />
         stats
+        <BlobMetadata target=diff.target />
         {diff.fileThreads->Array.length > 0
           ? <span className="tree-threads">
               {React.string(Int.toString(Array.length(diff.fileThreads)))}

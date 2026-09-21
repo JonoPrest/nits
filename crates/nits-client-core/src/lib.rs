@@ -1643,7 +1643,7 @@ impl ClientCore {
                     } => {
                         *id == repo_id
                             && *p == *path
-                            && render.target == (RenderTarget::Blob { oid: *blob_oid })
+                            && matches!(&render.target, RenderTarget::Blob { entry } if entry.oid == *blob_oid)
                     }
                     Anchor::Review => false,
                 });
@@ -1724,9 +1724,12 @@ impl ClientCore {
                 nits_protocol::CommentContext::Diff { change } => RenderTarget::Diff {
                     change: change.clone(),
                 },
-                nits_protocol::CommentContext::Browse { .. } => {
-                    RenderTarget::Blob { oid: blob_oid }
-                }
+                nits_protocol::CommentContext::Browse { .. } => RenderTarget::Blob {
+                    entry: nits_protocol::BlobEntry {
+                        oid: blob_oid,
+                        mode: nits_protocol::BlobMode::Unknown,
+                    },
+                },
             },
             opts: match context {
                 nits_protocol::CommentContext::Browse { .. } => {
@@ -2284,7 +2287,7 @@ impl ClientCore {
                 let blob = match (&render_key.target, side) {
                     (RenderTarget::Diff { change }, nits_protocol::Side::Head) => change.new_blob(),
                     (RenderTarget::Diff { change }, nits_protocol::Side::Base) => change.old_blob(),
-                    (RenderTarget::Blob { oid }, nits_protocol::Side::Head) => Some(*oid),
+                    (RenderTarget::Blob { entry }, nits_protocol::Side::Head) => Some(entry.oid),
                     (RenderTarget::Blob { .. }, nits_protocol::Side::Base) => None,
                 }
                 .ok_or_else(|| CoreError::UnknownFile(file.clone()))?;
@@ -2339,7 +2342,7 @@ impl ClientCore {
                     .ok_or_else(|| CoreError::UnknownFile(file.clone()))?;
                 let blob = match &source.target {
                     RenderTarget::Diff { change } => change.new_blob(),
-                    RenderTarget::Blob { oid } => Some(*oid),
+                    RenderTarget::Blob { entry } => Some(entry.oid),
                 }
                 .ok_or_else(|| CoreError::UnknownFile(file.clone()))?;
                 let anchor = Anchor::File {
@@ -3328,7 +3331,7 @@ impl ClientCore {
         };
         let content = match &render.target {
             RenderTarget::Diff { change } => change.viewed_content(),
-            RenderTarget::Blob { oid } => nits_protocol::ViewedContent::Blob { oid: *oid },
+            RenderTarget::Blob { entry } => nits_protocol::ViewedContent::Blob { entry: *entry },
         };
         let (mutation, body) = if viewed {
             (

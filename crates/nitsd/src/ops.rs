@@ -327,6 +327,18 @@ impl Ops {
         path: &RepoPath,
         side: Side,
     ) -> Result<(RepoId, BlobOid), OpsError> {
+        let (repo_id, entry) = self.blob_entry(review_id, repo_id, path, side).await?;
+        Ok((repo_id, entry.oid))
+    }
+
+    /// Git blob identity including its tracked mode on the selected side.
+    async fn blob_entry(
+        &self,
+        review_id: ReviewId,
+        repo_id: Option<RepoId>,
+        path: &RepoPath,
+        side: Side,
+    ) -> Result<(RepoId, nits_protocol::BlobEntry), OpsError> {
         // ListFiles validates the review's workspace memberships even when the
         // requested path is unchanged. Historical snapshots remain metadata-only
         // and cannot authorize reading a surviving membership in another workspace.
@@ -366,8 +378,11 @@ impl Ops {
         }
         let (repo_id, kind) = found
             .ok_or_else(|| OpsError::Invalid(format!("{path} not found on the {side:?} side")))?;
+        if let Some(entry) = kind.blob_entry() {
+            return Ok((repo_id, entry));
+        }
         match kind {
-            TreeEntryKind::File { oid, .. } | TreeEntryKind::Symlink { oid } => Ok((repo_id, oid)),
+            TreeEntryKind::File { .. } | TreeEntryKind::Symlink { .. } => Err(OpsError::Shape),
             TreeEntryKind::Submodule { .. } => Err(OpsError::Invalid(format!(
                 "{path} is a submodule, not a source blob; inspect its diff for commit identities"
             ))),
@@ -448,17 +463,25 @@ impl Ops {
         repo_id: Option<RepoId>,
         path: &RepoPath,
         side: Side,
-    ) -> Result<(RepoId, BlobOid, FileRenderHeader, Vec<RenderChunk>), OpsError> {
-        let (repo_id, blob_oid) = self.blob(review_id, repo_id, path, side).await?;
+    ) -> Result<
+        (
+            RepoId,
+            nits_protocol::BlobEntry,
+            FileRenderHeader,
+            Vec<RenderChunk>,
+        ),
+        OpsError,
+    > {
+        let (repo_id, entry) = self.blob_entry(review_id, repo_id, path, side).await?;
         let (header, chunks) = self
             .render(Request::BlobRender {
                 repo_id,
                 path: path.clone(),
-                blob_oid,
+                entry,
                 first_chunk: ChunkIndex::FIRST,
             })
             .await?;
-        Ok((repo_id, blob_oid, header, chunks))
+        Ok((repo_id, entry, header, chunks))
     }
 
     /// Submit one mutation with the next client sequence number.

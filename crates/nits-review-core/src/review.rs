@@ -712,12 +712,12 @@ impl Core {
         &self,
         repo_id: RepoId,
         path: &RepoPath,
-        blob: BlobOid,
+        entry: nits_protocol::BlobEntry,
     ) -> Result<(FileRenderHeader, Rendered), CoreError> {
         let repo = self.repo(repo_id)?;
-        let bytes = repo.blob(blob)?;
+        let bytes = repo.blob(entry.oid)?;
         let lang = self.hl.detect(path.as_str(), first_line(&bytes));
-        let target = RenderTarget::Blob { oid: blob };
+        let target = RenderTarget::Blob { entry };
         let opts = RenderOpts::default();
         let rendered = self.cached_render(&target, &opts, lang.as_deref(), || {
             render_blob(&self.hl, &bytes, lang.as_deref())
@@ -783,9 +783,24 @@ impl Core {
             .iter()
             .find(|entry| &entry.path == path)
             .map_or(ViewedContent::Missing, |entry| match entry.kind {
-                TreeEntryKind::File { oid, .. } | TreeEntryKind::Symlink { oid } => {
-                    ViewedContent::Blob { oid }
-                }
+                TreeEntryKind::File {
+                    oid, executable, ..
+                } => ViewedContent::Blob {
+                    entry: nits_protocol::BlobEntry {
+                        oid,
+                        mode: if executable {
+                            nits_protocol::BlobMode::Executable
+                        } else {
+                            nits_protocol::BlobMode::Regular
+                        },
+                    },
+                },
+                TreeEntryKind::Symlink { oid } => ViewedContent::Blob {
+                    entry: nits_protocol::BlobEntry {
+                        oid,
+                        mode: nits_protocol::BlobMode::Symlink,
+                    },
+                },
                 TreeEntryKind::Submodule { commit } => ViewedContent::Submodule { commit },
                 TreeEntryKind::Dir { .. } => ViewedContent::Missing,
             }))

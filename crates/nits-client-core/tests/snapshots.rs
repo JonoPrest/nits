@@ -280,12 +280,27 @@ fn opened() -> ClientCore {
         (
             "src/lib.rs",
             ChangeKind::Modified {
-                old: blob(10),
-                new: blob(11),
+                old: nits_protocol::BlobEntry {
+                    oid: blob(10),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
+                new: nits_protocol::BlobEntry {
+                    oid: blob(11),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
             },
             2,
         ),
-        ("src/parser.rs", ChangeKind::Added { new: blob(12) }, 1),
+        (
+            "src/parser.rs",
+            ChangeKind::Added {
+                new: nits_protocol::BlobEntry {
+                    oid: blob(12),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
+            },
+            1,
+        ),
     ];
     for (p, change, chunks) in files {
         item(StreamItem::Header {

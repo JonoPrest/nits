@@ -513,7 +513,7 @@ impl Core {
                             from,
                             PathFate::Present {
                                 path: change.path,
-                                blob: new,
+                                blob: new.oid,
                             },
                         );
                     }

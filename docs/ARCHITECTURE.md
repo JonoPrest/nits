@@ -355,7 +355,7 @@ Two independent versions, both typed in `nits-protocol::version`.
 - Deprecation path: a daemon may keep serving an old minor for a time and attach
   `Welcome.upgrade: UpgradeNotice { latest, message }`; clients surface it. Once dropped, the
   handshake is rejected with the supported list, so the error is specific and actionable.
-- Protocol 0.14 currently serves **only minor 0.14**: older minors are retired and
+- Protocol 0.15 currently serves **only minor 0.15**: older minors are retired and
   rejected during Hello, before any event or snapshot. The daemon has one serializer;
   the same-major compatibility predicate alone does not prove it can encode an old
   minor. Adding a supported minor requires its serializer. The stable shutdown-only
@@ -735,3 +735,29 @@ and older lifecycle snapshots cannot release a frozen submission. Pending contro
 follow that reconciled state. Automatic defaults must be displayed before the form
 submits, so its recovery snapshot contains the chosen bases even if the host ACK is
 lost; entering a manual base permits immediate submission.
+
+
+### Git entry modes and historical identity
+
+Blob-backed tree entries carry `BlobEntry { oid, mode }` through diff changes,
+whole-file renders, stored diff comment contexts and viewed marks. `BlobMode`
+represents Git's `100644` regular file, `100755` executable file and `120000`
+symlink modes; Git does not preserve arbitrary filesystem permission bits.
+Gitlinks retain their separate commit-valued submodule model. Working-tree
+capture follows Git's `core.filemode` policy.
+
+Mode-only and file-type transitions remain visible in CLI/MCP text and both UI
+render layouts even with zero source-line changes or binary content. Browse
+carries its tree entry mode. Blob-only historical comment anchors have no captured
+mode and display it as unknown rather than inferring it from today's checkout.
+A viewed mark compares the complete entry identity, so changing the executable
+bit or replacing a file with a symlink clears the viewed state even when bytes
+and blob OID stay identical.
+
+Protocol 0.15 carries typed blob entries. Schema 9 migrates historical blob
+viewed marks and persisted diff contexts to `Unknown` modes while preserving
+OIDs, gitlink commits, event identity, comments and discussion. Older migration
+steps keep payloads raw until their shape is current. An unknown historical mark
+never equals a current known-mode entry. Header and chunk cache keys include the
+entry mode; old-format keys miss and regenerate, while unreadable client cache
+values are discarded and fetched again. Event history is never used as a cache.

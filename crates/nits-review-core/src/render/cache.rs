@@ -1,6 +1,6 @@
 //! Content-keyed disk cache for render results.
 //!
-//! Key: `(RenderTarget, RenderOpts, lang)` — all derived from OIDs, so an
+//! Key: `(RenderTarget, RenderOpts, lang)` — including entry OIDs and modes, so an
 //! entry can never be stale; the cache is only ever trimmed. Header and
 //! chunks are stored separately so a header can be served before all chunks
 //! exist and so a single chunk read does not deserialise the whole file.
@@ -22,6 +22,7 @@ pub enum CacheError {
     Redb(#[from] redb::Error),
 }
 
+/// Convert redb operations to the cache error while retaining their source error.
 macro_rules! from_redb {
     ($($e:ty),*) => {$(
         impl From<$e> for CacheError {
@@ -115,6 +116,85 @@ mod tests {
     use nits_protocol::{BlobOid, ChangeKind};
 
     #[test]
+    fn mode_identity_separates_headers_chunks_and_legacy_cache_entries() {
+        use nits_protocol::{BlobEntry, BlobMode};
+        let dir = tempfile::tempdir().unwrap();
+        let cache = RenderCache::open(&dir.path().join("render.redb")).unwrap();
+        let entry = BlobEntry {
+            oid: BlobOid::from_bytes([1; 20]),
+            mode: BlobMode::Regular,
+        };
+        let opts = RenderOpts::default();
+        let rendered =
+            super::super::render_blob(&super::super::Highlighter::new(), b"source\n", None);
+        let blob = RenderTarget::Blob { entry };
+        let diff = RenderTarget::Diff {
+            change: ChangeKind::Modified {
+                old: entry,
+                new: entry,
+            },
+        };
+        for target in [blob, diff] {
+            let key = RenderKey {
+                target: &target,
+                opts: &opts,
+                lang: None,
+            };
+            let legacy_target = match &target {
+                RenderTarget::Blob { .. } => format!(r#"{{"type":"Blob","oid":"{}"}}"#, entry.oid),
+                RenderTarget::Diff { .. } => format!(
+                    r#"{{"type":"Diff","change":{{"type":"Modified","old":"{}","new":"{}"}}}}"#,
+                    entry.oid, entry.oid
+                ),
+            };
+            let legacy = format!(
+                r#"{{"target":{legacy_target},"opts":{},"lang":null}}"#,
+                serde_json::to_string(&opts).unwrap()
+            );
+            let txn = cache.db.begin_write().unwrap();
+            {
+                let mut table = txn.open_table(RENDERS).unwrap();
+                for suffix in ["h", "0"] {
+                    table
+                        .insert(
+                            format!("{legacy}/{suffix}").as_str(),
+                            &b"obsolete cached data"[..],
+                        )
+                        .unwrap();
+                }
+            }
+            txn.commit().unwrap();
+            assert!(cache.header(&key).unwrap().is_none());
+            assert!(cache.chunk(&key, ChunkIndex::FIRST).unwrap().is_none());
+            cache.put(&key, &rendered).unwrap();
+            for mode in [BlobMode::Executable, BlobMode::Symlink, BlobMode::Unknown] {
+                let other = BlobEntry { mode, ..entry };
+                let changed = match &target {
+                    RenderTarget::Blob { .. } => RenderTarget::Blob { entry: other },
+                    RenderTarget::Diff { .. } => RenderTarget::Diff {
+                        change: ChangeKind::Modified {
+                            old: entry,
+                            new: other,
+                        },
+                    },
+                };
+                let changed_key = RenderKey {
+                    target: &changed,
+                    ..key.clone()
+                };
+                assert!(cache.header(&changed_key).unwrap().is_none());
+                assert!(
+                    cache
+                        .chunk(&changed_key, ChunkIndex::FIRST)
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            assert_eq!(cache.header(&key).unwrap(), Some(rendered.content.clone()));
+        }
+    }
+
+    #[test]
     fn header_and_chunks_roundtrip_and_miss_on_other_opts() {
         let dir = tempfile::tempdir().unwrap();
         let cache = RenderCache::open(&dir.path().join("render.redb")).unwrap();
@@ -128,8 +208,14 @@ mod tests {
         );
         let target = RenderTarget::Diff {
             change: ChangeKind::Modified {
-                old: BlobOid::from_bytes([1; 20]),
-                new: BlobOid::from_bytes([2; 20]),
+                old: nits_protocol::BlobEntry {
+                    oid: BlobOid::from_bytes([1; 20]),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
+                new: nits_protocol::BlobEntry {
+                    oid: BlobOid::from_bytes([2; 20]),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
             },
         };
         let default_opts = RenderOpts::default();

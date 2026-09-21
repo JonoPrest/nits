@@ -685,7 +685,12 @@ fn browse_comment_arrives_remotely_inline_and_converges() {
             header: FileRenderHeader {
                 repo_id,
                 path: path.clone(),
-                target: RenderTarget::Blob { oid },
+                target: RenderTarget::Blob {
+                    entry: nits_protocol::BlobEntry {
+                        oid,
+                        mode: nits_protocol::BlobMode::Regular,
+                    },
+                },
                 opts: RenderOpts::default(),
                 lang: None,
                 content: RenderContent::Text {
@@ -759,7 +764,12 @@ fn browse_comment_arrives_remotely_inline_and_converges() {
         );
         assert_eq!(
             sim.client(peer).view().diff.as_ref().unwrap().target,
-            RenderTarget::Blob { oid }
+            RenderTarget::Blob {
+                entry: nits_protocol::BlobEntry {
+                    oid,
+                    mode: nits_protocol::BlobMode::Regular
+                }
+            }
         );
     }
     sim.act(

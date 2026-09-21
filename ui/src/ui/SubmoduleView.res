@@ -7,9 +7,19 @@ let text = (change: Domain.SubmoduleChange.t) =>
   | Renamed({from, old, new}) =>
     "Submodule renamed from " ++ from ++ "\nOld commit: " ++ old ++ "\nNew commit: " ++ new
   | BlobToSubmodule({old, new}) =>
-    "Blob replaced by submodule\nOld blob: " ++ old ++ "\nNew commit: " ++ new
+    "Blob replaced by submodule\nOld blob: " ++
+    old.oid ++
+    " (" ++
+    BlobMetadata.mode(old.mode) ++
+    ")\nNew commit: " ++
+    new
   | SubmoduleToBlob({old, new}) =>
-    "Submodule replaced by blob\nOld commit: " ++ old ++ "\nNew blob: " ++ new
+    "Submodule replaced by blob\nOld commit: " ++
+    old ++
+    "\nNew blob: " ++
+    new.oid ++
+    " (" ++
+    BlobMetadata.mode(new.mode) ++ ")"
   }
 
 @react.component

@@ -1505,7 +1505,7 @@ fn line_anchor(file: &FileRef, target: &RenderTarget, row: &Row, side: Side) -> 
         // here would be followed through an unrelated tree when the review
         // targets move: blob views are head-only.
         (RenderTarget::Blob { .. }, Side::Base) => return None,
-        (RenderTarget::Blob { oid }, Side::Head) => *oid,
+        (RenderTarget::Blob { entry }, Side::Head) => entry.oid,
     };
     Some(Anchor::Lines {
         repo_id: file.repo_id,
@@ -1589,7 +1589,12 @@ mod tests {
         // both cells. A `Base` anchor there would name the blob as the
         // review's base side and be followed through an unrelated tree
         // when the targets move, so it must not be constructible.
-        let target = RenderTarget::Blob { oid: blob(11) };
+        let target = RenderTarget::Blob {
+            entry: nits_protocol::BlobEntry {
+                oid: blob(11),
+                mode: nits_protocol::BlobMode::Regular,
+            },
+        };
         let row = Row::Context {
             left: cell(9),
             right: cell(9),
@@ -1607,8 +1612,14 @@ mod tests {
     fn each_side_of_a_modified_row_anchors_to_its_own_blob() {
         let target = RenderTarget::Diff {
             change: ChangeKind::Modified {
-                old: blob(10),
-                new: blob(11),
+                old: nits_protocol::BlobEntry {
+                    oid: blob(10),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
+                new: nits_protocol::BlobEntry {
+                    oid: blob(11),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
             },
         };
         let row = Row::Modified {

@@ -534,7 +534,10 @@ fn apply_ops(s: &Store, ops: &[Op]) -> usize {
                     path: RepoPath::new("a.txt").unwrap(),
                     viewer: viewer.clone(),
                     content: nits_protocol::ViewedContent::Blob {
-                        oid: self::blob(blob),
+                        entry: nits_protocol::BlobEntry {
+                            oid: self::blob(blob),
+                            mode: nits_protocol::BlobMode::Regular,
+                        },
                     },
                 }
             }
@@ -894,8 +897,14 @@ fn legacy_diff_context_migrates_without_reinterpreting_null_contexts() {
                 .unwrap();
             let context = Some(nits_protocol::CommentContext::Diff {
                 change: nits_protocol::ChangeKind::Modified {
-                    old: blob(2),
-                    new: blob(3),
+                    old: nits_protocol::BlobEntry {
+                        oid: blob(2),
+                        mode: nits_protocol::BlobMode::Unknown,
+                    },
+                    new: nits_protocol::BlobEntry {
+                        oid: blob(3),
+                        mode: nits_protocol::BlobMode::Unknown,
+                    },
                 },
             });
             let mut first = comment(1, 1, 1, 3);
@@ -963,6 +972,9 @@ fn legacy_diff_context_migrates_without_reinterpreting_null_contexts() {
                             && !context.is_null()
                         {
                             *context = context["change"].take();
+                            for side in ["old", "new"] {
+                                context[side] = context[side]["oid"].take();
+                            }
                         }
                         (key.value(), serde_json::to_vec(&value).unwrap())
                     })
@@ -1466,7 +1478,15 @@ fn schema_seven_blob_and_missing_viewed_marks_keep_provenance_through_upgrade() 
             .append(new_event(EventBody::ReviewCreated { review: review(1) }))
             .unwrap();
         for (name, content) in [
-            ("source", ViewedContent::Blob { oid: blob(3) }),
+            (
+                "source",
+                ViewedContent::Blob {
+                    entry: nits_protocol::BlobEntry {
+                        oid: blob(3),
+                        mode: nits_protocol::BlobMode::Unknown,
+                    },
+                },
+            ),
             ("deleted", ViewedContent::Missing),
         ] {
             store
@@ -1507,7 +1527,7 @@ fn schema_seven_blob_and_missing_viewed_marks_keep_provenance_through_upgrade() 
                         body.insert(
                             "blob_oid".into(),
                             content
-                                .get("oid")
+                                .pointer("/entry/oid")
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null),
                         );
@@ -1539,5 +1559,153 @@ fn schema_seven_blob_and_missing_viewed_marks_keep_provenance_through_upgrade() 
     assert_eq!(
         store.review_snapshot(review_id(1)).unwrap().unwrap(),
         expected.1
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Full legacy event log and rebuild assertions form one migration scenario.
+fn schema_eight_preserves_historical_modes_as_unknown_and_keeps_gitlink_commits() {
+    use nits_protocol::{
+        BlobEntry, BlobMode, ChangeKind, CommentContext, SubmoduleChange, ViewedContent,
+    };
+    use redb::{ReadableTable, TableDefinition};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("schema-eight.redb");
+    let old = BlobEntry {
+        oid: blob(2),
+        mode: BlobMode::Unknown,
+    };
+    let new = BlobEntry {
+        oid: blob(3),
+        mode: BlobMode::Unknown,
+    };
+    let commit = nits_protocol::CommitOid::from_bytes([7; 20]);
+    let expected = {
+        let store = Store::open(&path).unwrap();
+        store
+            .append(new_event(EventBody::WorkspaceCreated {
+                workspace: workspace(),
+            }))
+            .unwrap();
+        store
+            .append(new_event(EventBody::ReviewCreated { review: review(1) }))
+            .unwrap();
+        for (index, change) in [
+            ChangeKind::Added { new },
+            ChangeKind::Deleted { old },
+            ChangeKind::Modified { old, new },
+            ChangeKind::Renamed {
+                from: RepoPath::new("old.txt").unwrap(),
+                old,
+                new,
+            },
+            ChangeKind::Submodule {
+                change: SubmoduleChange::Added { new: commit },
+            },
+            ChangeKind::Submodule {
+                change: SubmoduleChange::BlobToSubmodule { old, new: commit },
+            },
+            ChangeKind::Submodule {
+                change: SubmoduleChange::SubmoduleToBlob { old: commit, new },
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = u128::try_from(index).unwrap() + 1;
+            let mut comment = comment(1, id, id, 3);
+            comment.context = Some(CommentContext::Diff { change });
+            store
+                .append(new_event(EventBody::CommentCreated { comment }))
+                .unwrap();
+        }
+        for (name, content) in [
+            ("file", ViewedContent::Blob { entry: new }),
+            ("removed", ViewedContent::Missing),
+            ("dependency", ViewedContent::Submodule { commit }),
+        ] {
+            store
+                .append(new_event(EventBody::FileViewed {
+                    review_id: review_id(1),
+                    repo_id: repo_id(),
+                    path: RepoPath::new(name).unwrap(),
+                    viewer: Human {
+                        name: "ada".into(),
+                        machine: "box".into(),
+                    },
+                    content,
+                }))
+                .unwrap();
+        }
+        (
+            store.events_after(None).unwrap(),
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+        )
+    };
+    {
+        let db = redb::Database::open(&path).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut events = txn
+                .open_table(TableDefinition::<u64, &[u8]>::new("events"))
+                .unwrap();
+            let rows: Vec<_> = events
+                .iter()
+                .unwrap()
+                .map(|row| {
+                    let (key, bytes) = row.unwrap();
+                    let mut raw: serde_json::Value = serde_json::from_slice(bytes.value()).unwrap();
+                    raw["schema"] = 8.into();
+                    if let Some(content) = raw.pointer_mut("/event/body/content")
+                        && content["type"] == "Blob"
+                    {
+                        let oid = content["entry"]["oid"].take();
+                        *content = serde_json::json!({"type": "Blob", "oid": oid});
+                    }
+                    if let Some(change) = raw.pointer_mut("/event/body/comment/context/change") {
+                        let change = if change["type"] == "Submodule" {
+                            &mut change["change"]
+                        } else {
+                            change
+                        };
+                        for side in ["old", "new"] {
+                            if change[side].is_object() {
+                                change[side] = change[side]["oid"].take();
+                            }
+                        }
+                    }
+                    (key.value(), serde_json::to_vec(&raw).unwrap())
+                })
+                .collect();
+            for (key, bytes) in rows {
+                events.insert(key, bytes.as_slice()).unwrap();
+            }
+        }
+        txn.commit().unwrap();
+    }
+    stamp_schema(&path, 8);
+    for _ in 0..2 {
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SchemaVersion::CURRENT);
+        assert_eq!(store.events_after(None).unwrap(), expected.0);
+        assert_eq!(
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+            expected.1
+        );
+        store.rebuild_views().unwrap();
+        assert_eq!(
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+            expected.1
+        );
+    }
+    assert_ne!(
+        ViewedContent::Blob { entry: new },
+        ViewedContent::Blob {
+            entry: BlobEntry {
+                mode: BlobMode::Regular,
+                ..new
+            }
+        },
+        "historical marks cannot assert that today's mode was reviewed"
     );
 }

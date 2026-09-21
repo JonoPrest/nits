@@ -134,8 +134,14 @@ fn change(p: &str) -> FileChange {
         repo_id: repo_id(),
         path: path(p),
         kind: ChangeKind::Modified {
-            old: blob_oid(10),
-            new: blob_oid(11),
+            old: nits_protocol::BlobEntry {
+                oid: blob_oid(10),
+                mode: nits_protocol::BlobMode::Regular,
+            },
+            new: nits_protocol::BlobEntry {
+                oid: blob_oid(11),
+                mode: nits_protocol::BlobMode::Regular,
+            },
         },
     }
 }
@@ -1014,6 +1020,72 @@ fn disk_tier_load_before_send_and_dedupes_concurrent_misses() {
         .collect();
     assert_eq!(chunk_reqs.len(), core.cache_config().max_in_flight);
     assert_eq!(core.content_queued(), 1);
+}
+
+#[test]
+fn old_format_and_wrong_mode_disk_headers_are_removed_and_fetched_again() {
+    for legacy_format in [false, true] {
+        let mut core = subscribed(remote(Bytes::mib(1), Bytes::mib(1)));
+        let effects = core
+            .handle(Input::User(Action::OpenReview {
+                review_id: review_id(),
+            }))
+            .unwrap();
+        let (id, _) = requests(&effects)[0].clone();
+        let effects = core
+            .handle(Input::Server(ServerMsg::Response {
+                id,
+                response: Response::ReviewSnapshot {
+                    snapshot: snapshot(1, 2),
+                },
+            }))
+            .unwrap();
+        let files_id = requests(&effects)
+            .into_iter()
+            .find(|(_, r)| matches!(r, Request::ListFiles { .. }))
+            .unwrap()
+            .0;
+        let mut file = change("a.rs");
+        let ChangeKind::Modified { new, .. } = &mut file.kind else {
+            panic!("modified")
+        };
+        new.mode = nits_protocol::BlobMode::Executable;
+        let effects = core
+            .handle(Input::Server(ServerMsg::Response {
+                id: files_id,
+                response: Response::Files {
+                    files: vec![file],
+                    resolved: resolved(1, 2).into_iter().collect(),
+                },
+            }))
+            .unwrap();
+        let key = loads(&effects)
+            .into_iter()
+            .find(|key| key.contains("Header"))
+            .unwrap();
+        let stale = CacheValue::Header {
+            header: header("a.rs", 100, 1),
+        };
+        let bytes = if legacy_format {
+            let mut json: serde_json::Value = serde_json::from_slice(&stale.encode()).unwrap();
+            let change = json.pointer_mut("/header/target/change").unwrap();
+            for side in ["old", "new"] {
+                change[side] = change[side]["oid"].take();
+            }
+            serde_json::to_vec(&json).unwrap()
+        } else {
+            stale.encode()
+        };
+        let effects = core
+            .handle(Input::Stored {
+                key: key.clone(),
+                value: Some(bytes),
+            })
+            .unwrap();
+        assert_eq!(removes(&effects), vec![key]);
+        assert!(requests(&effects).iter().any(|(_, request)| matches!(request, Request::FileRender { path, .. } if path.as_str() == "a.rs")));
+        assert!(!core.cache().contains(&header_key("a.rs")));
+    }
 }
 
 #[test]
@@ -2343,8 +2415,14 @@ fn jump_to_original_diff_renders_the_recorded_change_read_only() {
     // A comment made on an older diff of a.rs: its context names blobs that
     // are not the review's current change.
     let old_change = ChangeKind::Modified {
-        old: blob_oid(3),
-        new: blob_oid(4),
+        old: nits_protocol::BlobEntry {
+            oid: blob_oid(3),
+            mode: nits_protocol::BlobMode::Regular,
+        },
+        new: nits_protocol::BlobEntry {
+            oid: blob_oid(4),
+            mode: nits_protocol::BlobMode::Regular,
+        },
     };
     let mut comment = comment_at(
         1,
@@ -2482,8 +2560,14 @@ fn historical_diff(p: &str) -> (ClientCore, ChangeKind) {
     let mut core = subscribed(local());
     open_streamed(&mut core);
     let change = ChangeKind::Modified {
-        old: blob_oid(3),
-        new: blob_oid(4),
+        old: nits_protocol::BlobEntry {
+            oid: blob_oid(3),
+            mode: nits_protocol::BlobMode::Regular,
+        },
+        new: nits_protocol::BlobEntry {
+            oid: blob_oid(4),
+            mode: nits_protocol::BlobMode::Regular,
+        },
     };
     let anchor = lines_anchor(p, Side::Head, 4, 2, 2);
     let mut comment = comment_at(
@@ -3068,7 +3152,10 @@ fn browse_tab_shows_a_picked_ref_and_opens_blobs() {
         Request::BlobRender {
             repo_id: repo_id(),
             path: path("docs/guide.md"),
-            blob_oid: blob_oid(1),
+            entry: nits_protocol::BlobEntry {
+                oid: blob_oid(1),
+                mode: nits_protocol::BlobMode::Regular
+            },
             first_chunk: ChunkIndex::FIRST,
         }
     );
@@ -3161,7 +3248,10 @@ fn browse_ready(reference: RefSpec) -> ClientCore {
         Request::BlobRender {
             repo_id: repo_id(),
             path: path("unchanged.rs"),
-            blob_oid: blob_oid(1),
+            entry: nits_protocol::BlobEntry {
+                oid: blob_oid(1),
+                mode: nits_protocol::BlobMode::Regular
+            },
             first_chunk: ChunkIndex::FIRST
         }
     );
@@ -3170,7 +3260,12 @@ fn browse_ready(reference: RefSpec) -> ClientCore {
         id,
         StreamItem::Header {
             header: FileRenderHeader {
-                target: RenderTarget::Blob { oid: blob_oid(1) },
+                target: RenderTarget::Blob {
+                    entry: nits_protocol::BlobEntry {
+                        oid: blob_oid(1),
+                        mode: nits_protocol::BlobMode::Regular,
+                    },
+                },
                 ..header("unchanged.rs", 100, 1)
             },
         },
@@ -3339,7 +3434,10 @@ fn browse_single_lines_use_visible_blob_and_capture_every_ref_kind() {
         assert_eq!(
             open_render(&core).target,
             RenderTarget::Blob {
-                oid: self::blob_oid(1)
+                entry: nits_protocol::BlobEntry {
+                    oid: self::blob_oid(1),
+                    mode: nits_protocol::BlobMode::Unknown
+                }
             }
         );
         assert_eq!(
@@ -3487,10 +3585,15 @@ fn default_browse_opens_changed_files_as_plain_blobs_with_blob_render_options() 
         .unwrap();
     assert_eq!(
         open_render(&core).target,
-        RenderTarget::Blob { oid: blob_oid(1) }
+        RenderTarget::Blob {
+            entry: nits_protocol::BlobEntry {
+                oid: blob_oid(1),
+                mode: nits_protocol::BlobMode::Regular
+            }
+        }
     );
     assert_eq!(open_render(&core).opts, RenderOpts::default());
-    assert_eq!(requests(&effects).iter().filter(|(_, request)| matches!(request, Request::BlobRender { blob_oid: oid, .. } if *oid == blob_oid(1))).count(), 1);
+    assert_eq!(requests(&effects).iter().filter(|(_, request)| matches!(request, Request::BlobRender { entry, .. } if entry.oid == blob_oid(1))).count(), 1);
     // A newly selected ref is not allowed to fall back to a same-path review diff.
     let effects = core
         .handle(Input::User(Action::SetBrowseRef {
@@ -3635,7 +3738,12 @@ fn browse_file_comment_shortcuts_capture_one_source_for_anchor_and_context() {
                     id,
                     StreamItem::Header {
                         header: FileRenderHeader {
-                            target: RenderTarget::Blob { oid: blob_oid(1) },
+                            target: RenderTarget::Blob {
+                                entry: nits_protocol::BlobEntry {
+                                    oid: blob_oid(1),
+                                    mode: nits_protocol::BlobMode::Regular,
+                                },
+                            },
                             ..header(name, 100, 1)
                         },
                     },
@@ -3708,7 +3816,12 @@ fn browse_file_comment_shortcuts_capture_one_source_for_anchor_and_context() {
                 .unwrap();
             assert_eq!(
                 open_render(&core).target,
-                RenderTarget::Blob { oid: blob_oid(1) }
+                RenderTarget::Blob {
+                    entry: nits_protocol::BlobEntry {
+                        oid: blob_oid(1),
+                        mode: nits_protocol::BlobMode::Unknown
+                    }
+                }
             );
             // The mouse action on the reopened original keeps that same context,
             // even while the newly picked tree has not arrived.
@@ -3871,7 +3984,12 @@ fn superseded_browse_headers_cannot_change_review_files_totals_or_tree() {
                 id,
                 StreamItem::Header {
                     header: FileRenderHeader {
-                        target: RenderTarget::Blob { oid: blob_oid(1) },
+                        target: RenderTarget::Blob {
+                            entry: nits_protocol::BlobEntry {
+                                oid: blob_oid(1),
+                                mode: nits_protocol::BlobMode::Regular,
+                            },
+                        },
                         ..header(name, 100, 1)
                     },
                 },
@@ -4045,7 +4163,10 @@ fn portable_reply_link_preserves_deferred_browse_source_and_inflight_review_requ
             Request::BlobRender {
                 repo_id: repo_id(),
                 path: path("unchanged.rs"),
-                blob_oid: blob_oid(1),
+                entry: nits_protocol::BlobEntry {
+                    oid: blob_oid(1),
+                    mode: nits_protocol::BlobMode::Unknown
+                },
                 first_chunk: ChunkIndex::FIRST
             }
         );
@@ -4055,7 +4176,12 @@ fn portable_reply_link_preserves_deferred_browse_source_and_inflight_review_requ
             render_id,
             StreamItem::Header {
                 header: FileRenderHeader {
-                    target: RenderTarget::Blob { oid: blob_oid(1) },
+                    target: RenderTarget::Blob {
+                        entry: nits_protocol::BlobEntry {
+                            oid: blob_oid(1),
+                            mode: nits_protocol::BlobMode::Unknown,
+                        },
+                    },
                     ..header("unchanged.rs", 100, 1)
                 },
             },

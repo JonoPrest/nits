@@ -948,6 +948,8 @@ pub struct FileText {
     pub path: RepoPath,
     pub side: Side,
     pub blob_oid: BlobOid,
+    /// Git entry mode from the selected tree (not full filesystem permissions).
+    pub mode: nits_protocol::BlobMode,
     pub lang: Option<String>,
     pub content: RenderContent,
     /// Source-line metadata; null for binary files. Render content describes the full blob.

@@ -16,6 +16,9 @@ pub fn render(header: &FileRenderHeader, chunks: &[RenderChunk]) -> String {
         return submodule(change);
     }
     let mut out = String::new();
+    if let Some(summary) = metadata(&header.target) {
+        let _ = writeln!(out, "{summary}");
+    }
     if matches!(header.content, RenderContent::Binary) {
         out.push_str("(binary file)\n");
         return out;
@@ -91,6 +94,41 @@ fn render_blob_selected(
     out
 }
 
+/// Tracked Git mode; regular file modes are not arbitrary filesystem permissions.
+#[must_use]
+pub fn mode(mode: nits_protocol::BlobMode) -> &'static str {
+    use nits_protocol::BlobMode;
+    match mode {
+        BlobMode::Regular => "100644",
+        BlobMode::Executable => "100755 (executable)",
+        BlobMode::Symlink => "120000 (symlink)",
+        BlobMode::Unknown => "unknown Git mode",
+    }
+}
+
+/// Metadata remains visible even when a diff contains no changed source lines.
+#[must_use]
+pub fn metadata(target: &nits_protocol::RenderTarget) -> Option<String> {
+    use nits_protocol::{BlobMode, ChangeKind, RenderTarget};
+    match target {
+        RenderTarget::Blob { entry } => Some(mode(entry.mode).into()),
+        RenderTarget::Diff { change } => match change {
+            ChangeKind::Added { new } => Some(format!("Added {}", mode(new.mode))),
+            ChangeKind::Deleted { old } => Some(format!("Removed {}", mode(old.mode))),
+            ChangeKind::Modified { old, new } | ChangeKind::Renamed { old, new, .. } => {
+                if old.mode != new.mode {
+                    Some(format!("{} → {}", mode(old.mode), mode(new.mode)))
+                } else if old.mode == BlobMode::Unknown {
+                    Some("Git mode unknown (historical)".into())
+                } else {
+                    None
+                }
+            }
+            ChangeKind::Submodule { .. } => None,
+        },
+    }
+}
+
 fn no(c: &Cell) -> String {
     c.line_no.get().to_string()
 }
@@ -113,10 +151,18 @@ pub fn submodule(change: &nits_protocol::SubmoduleChange) -> String {
             format!("Submodule renamed from {from}\nold commit: {old}\nnew commit: {new}\n")
         }
         SubmoduleChange::BlobToSubmodule { old, new } => {
-            format!("Blob replaced by submodule\nold blob: {old}\nnew commit: {new}\n")
+            format!(
+                "Blob replaced by submodule\nold blob: {} ({})\nnew commit: {new}\n",
+                old.oid,
+                mode(old.mode)
+            )
         }
         SubmoduleChange::SubmoduleToBlob { old, new } => {
-            format!("Submodule replaced by blob\nold commit: {old}\nnew blob: {new}\n")
+            format!(
+                "Submodule replaced by blob\nold commit: {old}\nnew blob: {} ({})\n",
+                new.oid,
+                mode(new.mode)
+            )
         }
     }
 }
@@ -128,6 +174,79 @@ mod tests {
     use nits_review_core::render::{Highlighter, render_blob as blob};
 
     #[test]
+    fn mode_and_type_metadata_survives_zero_hunks_binary_and_unknown_history() {
+        use nits_protocol::{BlobEntry, BlobMode, ChangeKind};
+        let entry = |mode| BlobEntry {
+            oid: BlobOid::from_bytes([1; 20]),
+            mode,
+        };
+        for (old, new, expected) in [
+            (
+                BlobMode::Regular,
+                BlobMode::Executable,
+                "100644 → 100755 (executable)",
+            ),
+            (
+                BlobMode::Executable,
+                BlobMode::Regular,
+                "100755 (executable) → 100644",
+            ),
+            (
+                BlobMode::Regular,
+                BlobMode::Symlink,
+                "100644 → 120000 (symlink)",
+            ),
+            (
+                BlobMode::Symlink,
+                BlobMode::Regular,
+                "120000 (symlink) → 100644",
+            ),
+            (
+                BlobMode::Unknown,
+                BlobMode::Unknown,
+                "Git mode unknown (historical)",
+            ),
+        ] {
+            let target = RenderTarget::Diff {
+                change: ChangeKind::Modified {
+                    old: entry(old),
+                    new: entry(new),
+                },
+            };
+            assert_eq!(metadata(&target).as_deref(), Some(expected));
+            for content in [
+                blob(&Highlighter::new(), b"", None).content,
+                RenderContent::Binary,
+            ] {
+                let header = FileRenderHeader {
+                    repo_id: RepoId::from_parts(1, 1),
+                    path: RepoPath::new("entry").unwrap(),
+                    target: target.clone(),
+                    opts: RenderOpts::default(),
+                    lang: None,
+                    content,
+                };
+                let text = render(&header, &[]);
+                assert!(text.starts_with(&format!("{expected}\n")));
+                if matches!(header.content, RenderContent::Binary) {
+                    assert!(text.contains("(binary file)"));
+                } else {
+                    assert_eq!(text, format!("{expected}\n"));
+                }
+            }
+        }
+        for mode in [BlobMode::Regular, BlobMode::Executable, BlobMode::Symlink] {
+            let target = RenderTarget::Diff {
+                change: ChangeKind::Modified {
+                    old: entry(mode),
+                    new: entry(mode),
+                },
+            };
+            assert!(metadata(&target).is_none());
+        }
+    }
+
+    #[test]
     fn bounded_blob_text_matches_full_text_with_absolute_line_numbers() {
         let source = "source\n".repeat(1015);
         let rendered = blob(&Highlighter::new(), source.as_bytes(), None);
@@ -136,9 +255,12 @@ mod tests {
             repo_id: RepoId::from_parts(1, 1),
             path: RepoPath::new("source.txt").unwrap(),
             target: RenderTarget::Blob {
-                oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    .parse::<BlobOid>()
-                    .unwrap(),
+                entry: nits_protocol::BlobEntry {
+                    oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .parse::<BlobOid>()
+                        .unwrap(),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
             },
             opts: RenderOpts::default(),
             lang: None,

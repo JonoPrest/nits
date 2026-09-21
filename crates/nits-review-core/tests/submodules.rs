@@ -172,7 +172,10 @@ fn gitlink_add_update_remove_and_type_transitions_are_typed_and_render_without_b
             h.blob,
             h.to_link,
             SubmoduleChange::BlobToSubmodule {
-                old: h.blob_oid,
+                old: nits_protocol::BlobEntry {
+                    oid: h.blob_oid,
+                    mode: nits_protocol::BlobMode::Regular,
+                },
                 new: h.new,
             },
         ),
@@ -181,7 +184,10 @@ fn gitlink_add_update_remove_and_type_transitions_are_typed_and_render_without_b
             h.to_blob,
             SubmoduleChange::SubmoduleToBlob {
                 old: h.new,
-                new: h.blob_oid,
+                new: nits_protocol::BlobEntry {
+                    oid: h.blob_oid,
+                    mode: nits_protocol::BlobMode::Regular,
+                },
             },
         ),
     ] {

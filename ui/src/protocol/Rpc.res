@@ -311,7 +311,7 @@ module Request = {
     BlobRender({
         @as("repo_id") repoId: repoId,
         path: string,
-        @as("blob_oid") blobOid: blobOid,
+        entry: Domain.BlobEntry.t,
         @as("first_chunk") firstChunk: Render.chunkIndex,
       })
     | @as("RenderChunk")
