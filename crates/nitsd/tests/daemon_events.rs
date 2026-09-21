@@ -182,9 +182,11 @@ async fn unexpected_writer_panic_stops_listeners_and_status_cannot_report_runnin
     .expect("writer failure must stop both daemon listeners");
     assert!(daemon.shutdown().is_cancelled());
     assert!(!socket.exists());
-    for context in &contexts {
-        assert!(matches!(status(context).await, Status::Stopped));
-    }
+    assert!(matches!(
+        status(&contexts[0]).await,
+        Status::Transitioning { .. }
+    ));
+    assert!(matches!(status(&contexts[1]).await, Status::Stopped));
     assert!(matches!(
         daemon
             .write(|core| core.create_workspace(
@@ -196,4 +198,8 @@ async fn unexpected_writer_panic_stops_listeners_and_status_cannot_report_runnin
         Err(DaemonError::Shutdown)
     ));
     assert!(daemon.core().events_after(None).unwrap().is_empty());
+    drop(daemon);
+    for context in &contexts {
+        assert!(matches!(status(context).await, Status::Stopped));
+    }
 }

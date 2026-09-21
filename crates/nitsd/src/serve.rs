@@ -51,12 +51,14 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
         idle_exit,
         ws,
     } = opts;
-    let daemon = Daemon::open(
+    let socket = crate::ownership::socket_target(&socket).context("resolving socket alias")?;
+    let daemon = Daemon::open_at_socket(
         &DataDir::new(&data_dir),
         BuildInfo {
             name: "nitsd".into(),
             version: env!("CARGO_PKG_VERSION").into(),
         },
+        &socket,
     )
     .with_context(|| format!("opening data dir {}", data_dir.display()))?;
 
@@ -136,6 +138,9 @@ impl StdioOutcome {
             Self::Transitioning {
                 phase: crate::ownership::Phase::Stopping,
             } => 6,
+            Self::Transitioning {
+                phase: crate::ownership::Phase::Unknown,
+            } => 7,
         }
     }
 
@@ -151,6 +156,9 @@ impl StdioOutcome {
             }),
             6 => Some(Self::Transitioning {
                 phase: crate::ownership::Phase::Stopping,
+            }),
+            7 => Some(Self::Transitioning {
+                phase: crate::ownership::Phase::Unknown,
             }),
             _ => None,
         }

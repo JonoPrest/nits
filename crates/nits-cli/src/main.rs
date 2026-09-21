@@ -1962,7 +1962,9 @@ fn daemon_status_text(s: &Status) -> String {
         Status::Stopped => "stopped".into(),
         Status::Transitioning { phase } => match phase {
             nitsd::ownership::Phase::Starting => "starting (store still owned)".into(),
-            nitsd::ownership::Phase::Serving => "unavailable (store still owned)".into(),
+            nitsd::ownership::Phase::Serving | nitsd::ownership::Phase::Unknown => {
+                "unavailable (store still owned)".into()
+            }
             nitsd::ownership::Phase::Stopping => "stopping (store still owned)".into(),
         },
         Status::Unreachable { reason } => format!("unreachable: {reason}"),

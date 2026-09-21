@@ -29,6 +29,8 @@ type WriteJob = Box<dyn FnOnce(&Core) + Send>;
 struct OwnedCore {
     core: Core,
     lease: crate::ownership::Lease,
+    // Retained with Core even after the listener and socket file disappear.
+    _socket_lease: Option<crate::ownership::Lease>,
 }
 
 impl std::ops::Deref for OwnedCore {
@@ -118,12 +120,33 @@ impl IntoRpc for CoreError {
 impl Daemon {
     /// Open the data dir and start the writer thread.
     pub fn open(data_dir: &DataDir, build: BuildInfo) -> Result<Arc<Self>, DaemonError> {
+        Self::open_owned(data_dir, build, None)
+    }
+
+    pub(crate) fn open_at_socket(
+        data_dir: &DataDir,
+        build: BuildInfo,
+        socket: &std::path::Path,
+    ) -> Result<Arc<Self>, DaemonError> {
+        let socket_lease = crate::ownership::Lease::for_socket(socket).map_err(CoreError::Io)?;
+        Self::open_owned(data_dir, build, Some(socket_lease))
+    }
+
+    fn open_owned(
+        data_dir: &DataDir,
+        build: BuildInfo,
+        socket_lease: Option<crate::ownership::Lease>,
+    ) -> Result<Arc<Self>, DaemonError> {
         let lease = crate::ownership::Lease::acquire(&data_dir.root).map_err(CoreError::Io)?;
         let core = Core::open(data_dir)?;
         lease
             .set_phase(crate::ownership::Phase::Starting)
             .map_err(CoreError::Io)?;
-        let core = Arc::new(OwnedCore { core, lease });
+        let core = Arc::new(OwnedCore {
+            core,
+            lease,
+            _socket_lease: socket_lease,
+        });
         let (writer, jobs) = std::sync::mpsc::channel::<WriteJob>();
         let writer_core = Arc::clone(&core);
         let shutdown = tokio_util::sync::CancellationToken::new();

@@ -126,7 +126,10 @@ pub enum Availability {
 }
 
 pub async fn availability(spec: &DaemonSpec) -> std::io::Result<Availability> {
-    let owner = ownership::probe(&spec.data_dir)?;
+    let owner = match ownership::probe(&spec.data_dir)? {
+        Ownership::Free => ownership::probe_socket(&spec.socket)?,
+        occupied @ Ownership::Held { .. } => occupied,
+    };
     if matches!(
         owner,
         Ownership::Held {

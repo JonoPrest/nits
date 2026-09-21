@@ -818,7 +818,14 @@ mod tests {
             let context = scripted_ssh(dir.path(), &format!("exit {code}"));
             assert_eq!(status(&context).await, expected, "exit {code}");
         }
-        for code in [1, 2, 7, 255] {
+        let context = scripted_ssh(dir.path(), "exit 7");
+        assert_eq!(
+            status(&context).await,
+            Status::Transitioning {
+                phase: Phase::Unknown
+            }
+        );
+        for code in [1, 2, 8, 255] {
             let context = scripted_ssh(dir.path(), &format!("exit {code}"));
             assert!(
                 matches!(status(&context).await, Status::Unreachable { .. }),
