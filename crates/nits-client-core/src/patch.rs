@@ -1,7 +1,8 @@
 //! Section patches (plan 4.2/4.3): what a host pushes to its UI after an
 //! `Effect::Render`. One patch per [`ViewSection`] carrying only that
-//! section's part of the [`ViewModel`], so an IPC message is bounded by the
-//! viewport (diff rows) or a list, never by the whole model. The UI applies
+//! section's part of the [`ViewModel`]. Viewports bound row counts, not bytes:
+//! [`crate::ViewEncoder`] bounds actual IPC envelopes, including large rows,
+//! previews, and attach snapshots. The UI atomically reconstructs batches and applies
 //! patches to its own copy of the model; `review` (the raw open-review
 //! state) is core-internal and never pushed — everything the UI shows is
 //! derived into the other sections.

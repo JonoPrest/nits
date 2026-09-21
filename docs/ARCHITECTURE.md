@@ -469,6 +469,25 @@ The UI is a renderer over `ViewModel` and a source of `Action`s. It never talks 
 
 `Core.res` defines `dispatch: Action.t => unit` and `subscribe: (ViewModel.t => unit) => unsubscribe`. Two implementations are chosen at startup: `CoreTauri.res` (`invoke`/`listen`) and `CoreWs.res` (JSON commands and patch batches over a browser WebSocket).
 
+Native hosts frame each logical patch batch as typed `ViewFrame` messages.
+Every serialized frame stays below 64 KiB, with additional room reserved for
+Tauri's event wrapper. A small batch travels complete; a large batch is split
+at UTF-8 boundaries with a session revision, snapshot/delta kind, fragment
+position, and exact logical byte count. This bound covers stacked prefetches,
+long source rows, escaping, and full attach snapshots without truncating text.
+The native queue retains whole groups, so one batch with more than 256
+fragments cannot overflow its own queue. WebSocket and Tauri adapters emit
+one frame per message/event.
+
+The shared UI delivery decoder validates order and byte counts, reconstructs
+and parses the complete batch, then notifies observers once. A snapshot
+replaces all sections; a delta requires the previous revision. Missing,
+duplicate or mismatched fragments discard the incomplete batch and request a
+fresh snapshot. Deltas are ignored until that snapshot arrives. A replacement
+socket resets the assembler, and creation recovery sees only complete model
+updates. This framing belongs to the bundled host/UI boundary and does not
+change the daemon RPC or durable store schemas.
+
 The browser bridge prepares process resources once, then gives every
 WebSocket its own `ClientCore`, typed client identity/id seed, host task and
 daemon connection. Navigation, focus, cursor and key-verdict state therefore

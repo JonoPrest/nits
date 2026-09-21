@@ -1,7 +1,7 @@
 // Browser adapter: the same contract as CoreTauri, over a WebSocket to
 // `nits-web` (crates/nits-client-web). Commands go out as
 // `{"cmd":"dispatch","action":…}` etc.; patch batches come back as JSON
-// arrays. Sends queue until the socket opens; `attach` catches the client
+// delivery frames. Sends queue until the socket opens; `attach` catches the client
 // up, and a dropped connection retries with a fresh attach.
 
 module Ws = {
@@ -20,6 +20,7 @@ let retryMs = 1000
 
 let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.t => {
   let store = Core.Store.make()
+  let decoder = ViewDelivery.make()
   let socket: ref<option<Ws.t>> = ref(None)
   let open_ = ref(false)
   let queue: ref<array<string>> = ref([])
@@ -41,6 +42,7 @@ let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.
   let rec connect = () => {
     generation := generation.contents + 1
     let mine = generation.contents
+    ViewDelivery.reset(decoder)
     let ws = Ws.make(url)
     socket := Some(ws)
     open_ := false
@@ -60,53 +62,50 @@ let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.
       }
     })
     Ws.onmessage(ws, ev => {
-      if mine == generation.contents {
-        switch try Ok(JSON.parseOrThrow(ev["data"])) catch {
-        | exn => Error(Core.message(exn))
-        } {
-        | Ok(json) =>
-          switch Core.patchesOfJson(json) {
-          | Ok(patches) =>
-            Core.Store.apply(store, patches)
-            if recovering.contents {
-              switch (recovery.snapshot, store.model.home.creating) {
-              | (Some(saved), Some(creation)) if saved.creation.reviewId == creation.reviewId =>
-                recovering := false
-                restoreSent := false
-                CreationRecovery.observe(recovery, Some(creation))
-              | (Some(saved), _) =>
-                switch store.model.connection {
-                | Subscribed(_) =>
-                  if !restoreSent.contents {
-                    if saved.creation.context == store.model.daemonContext {
-                      restoreSent := true
-                      command([
-                        ("cmd", JSON.Encode.string("dispatch")),
-                        (
-                          "action",
-                          Core.actionToJson(
-                            RestoreReviewCreation({creation: saved.creation, resume: saved.resume}),
-                          ),
+      if mine == generation.contents && open_.contents {
+        switch ViewDelivery.acceptText(decoder, ev["data"]) {
+        | Applied({kind, patches}) =>
+          ViewDelivery.apply(store, kind, patches)
+          if recovering.contents {
+            switch (recovery.snapshot, store.model.home.creating) {
+            | (Some(saved), Some(creation)) if saved.creation.reviewId == creation.reviewId =>
+              recovering := false
+              restoreSent := false
+              CreationRecovery.observe(recovery, Some(creation))
+            | (Some(saved), _) =>
+              switch store.model.connection {
+              | Subscribed(_) =>
+                if !restoreSent.contents {
+                  if saved.creation.context == store.model.daemonContext {
+                    restoreSent := true
+                    command([
+                      ("cmd", JSON.Encode.string("dispatch")),
+                      (
+                        "action",
+                        Core.actionToJson(
+                          RestoreReviewCreation({creation: saved.creation, resume: saved.resume}),
                         ),
-                      ])
-                    } else {
-                      onError(
-                        "The retained review belongs to a different daemon context and was not restored.",
-                      )
-                      CreationRecovery.observe(recovery, None)
-                      recovering := false
-                    }
+                      ),
+                    ])
+                  } else {
+                    onError(
+                      "The retained review belongs to a different daemon context and was not restored.",
+                    )
+                    CreationRecovery.observe(recovery, None)
+                    recovering := false
                   }
-                | Disconnected(_) | Connecting(_) | Rejected(_) => ()
                 }
-              | (None, _) => recovering := false
+              | Disconnected(_) | Connecting(_) | Rejected(_) => ()
               }
-            } else {
-              CreationRecovery.observe(recovery, store.model.home.creating)
+            | (None, _) => recovering := false
             }
-          | Error(e) => onError("view message: " ++ e)
+          } else {
+            CreationRecovery.observe(recovery, store.model.home.creating)
           }
-        | Error(e) => onError("view message: " ++ e)
+        | Buffered => ()
+        | Resync(reason) =>
+          onError("view message: " ++ reason)
+          attach()
         }
       }
     })
@@ -120,6 +119,7 @@ let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.
         recovering := recovery.snapshot != None
         restoreSent := false
         keyPrefix := ""
+        ViewDelivery.reset(decoder)
         Core.Store.reset(store)
         setTimeout(connect, retryMs)
       }

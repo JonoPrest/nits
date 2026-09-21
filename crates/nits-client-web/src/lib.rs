@@ -9,7 +9,7 @@
 //!
 //! - in: `{"cmd":"dispatch","action":…}` | `{"cmd":"key","chord":…}` |
 //!   `{"cmd":"attach"}`
-//! - out: an array of `ViewPatch`
+//! - out: a bounded `ViewFrame`; fragment groups reconstruct one atomic patch batch
 //!
 //! `Attach` re-emits every section of that socket's core. The prepared KV
 //! store is the only shared state: preferences and content-addressed disk
@@ -24,7 +24,7 @@ use std::time::Duration;
 use futures_util::{SinkExt as _, StreamExt as _};
 use include_dir::{Dir, include_dir};
 use nits_client_core::protocol::{Author, BuildInfo, ClientId};
-use nits_client_core::{Action, CacheConfig, IdSeed, KeyChord};
+use nits_client_core::{Action, CacheConfig, IdSeed, KeyChord, ViewDelivery};
 use nits_client_host::{
     Handle, HostError, HostFactory, HostSession, HostSettings, Identity, KvConfig,
 };
@@ -365,17 +365,12 @@ async fn route(
         // A bounded per-session queue keeps a slow browser from growing the
         // host's output without limit. It has exactly one receiver and never
         // carries another session's patches.
-        let (patches_tx, patches) = broadcast::channel::<String>(256);
+        let (patches_tx, patches) = broadcast::channel::<Arc<ViewDelivery>>(256);
         let fan_out = patches_tx.clone();
         let fan_shutdown = session_shutdown.clone();
         let fan = tokio::spawn(async move {
             while let Some(batch) = host_patches.recv().await {
-                match serde_json::to_string(&batch) {
-                    Ok(text) => {
-                        let _ = fan_out.send(text);
-                    }
-                    Err(error) => tracing::error!(%error, "serialize patches"),
-                }
+                let _ = fan_out.send(Arc::new(batch));
             }
             fan_shutdown.cancel();
         });
@@ -394,19 +389,35 @@ async fn route(
 async fn client<S>(
     ws: tokio_tungstenite::WebSocketStream<S>,
     handle: Handle,
-    mut patches: broadcast::Receiver<String>,
+    mut patches: broadcast::Receiver<Arc<ViewDelivery>>,
     shutdown: CancellationToken,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let (mut tx, mut rx) = ws.split();
-    loop {
+    'session: loop {
         tokio::select! {
             () = shutdown.cancelled() => break,
             batch = patches.recv() => match batch {
-                Ok(text) => {
-                    if tx.send(Message::Text(text.into())).await.is_err() {
-                        break;
+                Ok(batch) => {
+                    // Queue whole logical groups; emit one bounded message at a
+                    // time, including groups larger than the queue's capacity.
+                    for frame in batch.frames() {
+                        let text = match serde_json::to_string(frame) {
+                            Ok(text) => text,
+                            Err(error) => {
+                                tracing::error!(%error, "serialize view frame");
+                                break 'session;
+                            }
+                        };
+                        tokio::select! {
+                            () = shutdown.cancelled() => break 'session,
+                            sent = tx.send(Message::Text(text.into())) => {
+                                if sent.is_err() {
+                                    break 'session;
+                                }
+                            }
+                        }
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -498,5 +509,75 @@ mod tests {
         sessions.next.store(u64::MAX, Ordering::Relaxed);
 
         assert!(matches!(sessions.next(), Err(SessionError::Exhausted)));
+    }
+
+    // The delivery crosses the actual writer and WebSocket framing, with a
+    // deliberately tiny socket buffer. A group larger than the queue capacity
+    // must finish without triggering a self-induced reattach loop.
+    #[tokio::test]
+    async fn large_delivery_groups_cross_the_socket_and_cancel_under_backpressure() {
+        use nits_client_core::{ConnectionView, ViewBatchKind, ViewEncoder, ViewPatch};
+        use nits_protocol::RpcError;
+
+        let sessions = Sessions::new(web_config(
+            DaemonEndpoint::WebSocket {
+                url: "ws://127.0.0.1:1".into(),
+            },
+            BuildInfo {
+                name: "web-test".into(),
+                version: "0".into(),
+            },
+            Author::Human {
+                name: "ada".into(),
+                machine: "test".into(),
+            },
+            IdSeed(0),
+            KvConfig::Memory,
+        ))
+        .unwrap();
+        let shutdown = CancellationToken::new();
+        let (handle, _host_output) = sessions
+            .host
+            .spawn(sessions.next().unwrap(), shutdown.clone());
+        let (server, browser) = tokio::io::duplex(4096);
+        let server =
+            tokio_tungstenite::WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        let mut browser =
+            tokio_tungstenite::WebSocketStream::from_raw_socket(browser, Role::Client, None).await;
+        let (tx, rx) = broadcast::channel(256);
+        let writer = tokio::spawn(client(server, handle, rx, shutdown.clone()));
+        let original = vec![ViewPatch::Connection {
+            connection: ConnectionView::Subscribed,
+            last_error: Some(RpcError::Internal {
+                message: "source".repeat(3_000_000),
+            }),
+        }];
+        let batch = Arc::new(
+            ViewEncoder::default()
+                .encode(ViewBatchKind::Snapshot, original)
+                .unwrap(),
+        );
+        assert!(batch.frames().len() > 256);
+        tx.send(Arc::clone(&batch)).unwrap();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            for expected in batch.frames() {
+                let received = browser.next().await.unwrap().unwrap().into_text().unwrap();
+                assert!(received.len() < nits_client_core::VIEW_MESSAGE_LIMIT);
+                let decoded: nits_client_core::ViewFrame = serde_json::from_str(&received).unwrap();
+                assert_eq!(&decoded, expected);
+            }
+        })
+        .await
+        .expect("fragment group did not finish");
+
+        // Start another group, consume its first frame to prove the writer is
+        // active, then stop reading with subsequent frames still buffered.
+        tx.send(batch).unwrap();
+        browser.next().await.unwrap().unwrap();
+        shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(2), writer)
+            .await
+            .expect("backpressured writer ignored shutdown")
+            .unwrap();
     }
 }
