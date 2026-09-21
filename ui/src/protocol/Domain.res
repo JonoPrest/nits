@@ -85,7 +85,12 @@ module ResolvedSource = {
   @schema @tag("type")
   type t =
     | @as("Commit") Commit({oid: commitOid})
-    | @as("WorkingTree") WorkingTree({dirty: array<string>, branch: @s.null option<string>, head: @s.null option<string>})
+    | @as("WorkingTree")
+    WorkingTree({
+        dirty: array<string>,
+        branch: @s.null option<string>,
+        head: @s.null option<string>,
+      })
 }
 
 module ResolvedRef = {
