@@ -2494,8 +2494,8 @@ async fn add_comment_rejects_invalid_anchor_shapes_without_appending_events() {
         json!({"path":"a.rs","start_line":-1}),
         json!({"path":"a.rs","start_line":1.5}),
         json!({"path":"a.rs","start_line":"1"}),
-        json!({"path":"a.rs","start_line":4294967296u64}),
-        json!({"path":"a.rs","start_line":1,"end_line":4294967296u64}),
+        json!({"path":"a.rs","start_line":4_294_967_296_u64}),
+        json!({"path":"a.rs","start_line":1,"end_line":4_294_967_296_u64}),
         json!({"path":"a.rs","start_line":3}),
         json!({"path":"a.rs","start_line":1,"end_line":3}),
         json!({"path":"../outside.rs"}),
@@ -2550,6 +2550,14 @@ async fn add_comment_preserves_review_file_and_line_anchor_scopes() {
         .trim()
         .parse()
         .unwrap();
+    let line_anchor = |side, blob_oid, start, end| Anchor::Lines {
+        repo_id,
+        path: path.clone(),
+        side,
+        blob_oid,
+        lines: LineRange::new(LineNo::new(start).unwrap(), LineNo::new(end).unwrap()).unwrap(),
+        context_hash: nits_protocol::ContextHash::new(0),
+    };
     for (mut args, expected) in [
         (json!({}), Anchor::Review),
         (
@@ -2574,36 +2582,15 @@ async fn add_comment_preserves_review_file_and_line_anchor_scopes() {
         ),
         (
             json!({"path":"a.rs","start_line":1}),
-            Anchor::Lines {
-                repo_id,
-                path: path.clone(),
-                side: Side::Head,
-                blob_oid: head,
-                lines: LineRange::single(LineNo::FIRST),
-                context_hash: nits_protocol::ContextHash::new(0),
-            },
+            line_anchor(Side::Head, head, 1, 1),
         ),
         (
             json!({"path":"a.rs","start_line":2,"end_line":null}),
-            Anchor::Lines {
-                repo_id,
-                path: path.clone(),
-                side: Side::Head,
-                blob_oid: head,
-                lines: LineRange::single(LineNo::new(2).unwrap()),
-                context_hash: nits_protocol::ContextHash::new(0),
-            },
+            line_anchor(Side::Head, head, 2, 2),
         ),
         (
             json!({"path":"a.rs","side":"Base","start_line":1,"end_line":2}),
-            Anchor::Lines {
-                repo_id,
-                path: path.clone(),
-                side: Side::Base,
-                blob_oid: base,
-                lines: LineRange::new(LineNo::FIRST, LineNo::new(2).unwrap()).unwrap(),
-                context_hash: nits_protocol::ContextHash::new(0),
-            },
+            line_anchor(Side::Base, base, 1, 2),
         ),
     ] {
         args["review_id"] = json!(review_id);
