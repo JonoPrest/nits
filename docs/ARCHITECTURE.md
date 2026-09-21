@@ -483,7 +483,8 @@ The shared UI delivery decoder validates order and byte counts, reconstructs
 and parses the complete batch, then notifies observers once. A snapshot
 replaces all sections; a delta requires the previous revision. Missing,
 duplicate or mismatched fragments discard the incomplete batch and request a
-fresh snapshot. Deltas are ignored until that snapshot arrives. A replacement
+fresh snapshot newer than the last accepted or assembling revision. Stale
+snapshots and deltas are ignored until it arrives. A replacement
 socket resets the assembler, and creation recovery sees only complete model
 updates. This framing belongs to the bundled host/UI boundary and does not
 change the daemon RPC or durable store schemas.

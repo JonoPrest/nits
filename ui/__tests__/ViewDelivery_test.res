@@ -173,3 +173,33 @@ test("over-budget envelopes and malformed wire data fail once per resync", () =>
   expect(ViewDelivery.acceptText(decoder, "invalid JSON"))->toEqual(ViewDelivery.Buffered)
   expect(send(decoder, complete(~revision=4., patches()))->isApplied)->toBeTruthy
 })
+
+test("resync retains its revision floor for stale complete and fragmented snapshots", () => {
+  let decoder = ViewDelivery.make()
+  let original = patches()
+  expect(send(decoder, complete(~revision=10., original))->isApplied)->toBeTruthy
+  expect(send(decoder, complete(~revision=10., original))->isResync)->toBeTruthy
+  expect(send(decoder, complete(~revision=9., original)))->toEqual(ViewDelivery.Buffered)
+  expect(send(decoder, complete(~revision=10., original)))->toEqual(ViewDelivery.Buffered)
+  fragmented(~revision=9., ~size=80, original)->Array.forEach(frame =>
+    expect(send(decoder, frame))->toEqual(ViewDelivery.Buffered)
+  )
+  expect(send(decoder, complete(~revision=11., original))->isApplied)->toBeTruthy
+
+  // Losing a newer in-progress snapshot must not permit an older snapshot to
+  // replace the model. Its start established the next batch's identity.
+  let newer = fragmented(~revision=20., ~size=80, original)
+  expect(send(decoder, newer->Array.getUnsafe(0)))->toEqual(ViewDelivery.Buffered)
+  expect(send(decoder, newer->Array.getUnsafe(2))->isResync)->toBeTruthy
+  expect(send(decoder, complete(~revision=19., original)))->toEqual(ViewDelivery.Buffered)
+  newer->Array.forEach(frame => expect(send(decoder, frame))->toEqual(ViewDelivery.Buffered))
+  let fresh = fragmented(~revision=21., ~size=80, original)
+  fresh->Array.forEachWithIndex((frame, index) => {
+    let result = send(decoder, frame)
+    expect(isApplied(result))->toBe(index == fresh->Array.length - 1)
+    expect(isResync(result))->toBe(false)
+  })
+  // A replacement host really does start a fresh revision sequence.
+  ViewDelivery.reset(decoder)
+  expect(send(decoder, complete(~revision=1., original))->isApplied)->toBeTruthy
+})
