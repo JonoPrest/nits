@@ -122,15 +122,7 @@ async fn unix_and_websocket_notices_bypass_filters_and_interrupt_waits_before_st
     unix_task.await.unwrap();
     ws_task.await.unwrap();
     drop(daemon);
-    // Listener completion does not join the dedicated writer thread. Wait on
-    // actual ownership, as the replacement coordinator does, before reopening.
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while nitsd::ownership::probe(dir.path()).unwrap() != nitsd::ownership::Ownership::Free {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_for_store_release(dir.path()).await;
     nits_review_core::Core::open(&DataDir::new(dir.path())).unwrap();
 }
 
@@ -163,4 +155,16 @@ async fn assert_retirement_handshakes(
         old,
         ClientError::Rejected(RpcError::UnsupportedProtocol { .. })
     ));
+}
+
+async fn wait_for_store_release(path: &std::path::Path) {
+    // Listener completion does not join the dedicated writer thread. Wait on
+    // actual ownership, as the replacement coordinator does, before reopening.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while nitsd::ownership::probe(path).unwrap() != nitsd::ownership::Ownership::Free {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
 }

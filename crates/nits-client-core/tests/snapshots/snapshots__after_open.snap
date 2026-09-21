@@ -980,6 +980,16 @@ expression: core.view()
       "label": "back"
     },
     {
+      "keys": "g D",
+      "command": "InspectDaemon",
+      "label": "daemon status"
+    },
+    {
+      "keys": "g U",
+      "command": "UpgradeDaemon",
+      "label": "activate installed version"
+    },
+    {
       "keys": "ctrl+shift+c",
       "command": "Connect",
       "label": "connect"
@@ -1397,6 +1407,16 @@ expression: core.view()
       "label": "back"
     },
     {
+      "keys": "g D",
+      "command": "InspectDaemon",
+      "label": "daemon status"
+    },
+    {
+      "keys": "g U",
+      "command": "UpgradeDaemon",
+      "label": "activate installed version"
+    },
+    {
       "keys": "ctrl+shift+c",
       "command": "Connect",
       "label": "connect"
@@ -1591,6 +1611,10 @@ expression: core.view()
     "type": "Subscribed"
   },
   "last_error": null,
+  "daemon_management": {
+    "type": "Idle"
+  },
+  "uncertain_mutations": [],
   "workspaces": [],
   "reviews": [
     {
