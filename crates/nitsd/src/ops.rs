@@ -488,7 +488,7 @@ impl Ops {
         Ok((review_id, event))
     }
 
-    /// Anchor for `path` on `side`; `Lines` when `start` is given, else `File`.
+    /// Anchor for `path` on `side`; `Lines` when a validated range is given, else `File`.
     /// The context hash is left for the daemon to compute.
     pub async fn anchor(
         &self,
@@ -496,7 +496,7 @@ impl Ops {
         repo_id: Option<RepoId>,
         path: &RepoPath,
         side: Side,
-        lines: Option<(u32, Option<u32>)>,
+        lines: Option<LineRange>,
     ) -> Result<Anchor, OpsError> {
         let (repo_id, blob_oid) = self.blob(review_id, repo_id, path, side).await?;
         Ok(match lines {
@@ -505,12 +505,12 @@ impl Ops {
                 path: path.clone(),
                 blob_oid,
             },
-            Some((start, end)) => Anchor::Lines {
+            Some(lines) => Anchor::Lines {
                 repo_id,
                 path: path.clone(),
                 side,
                 blob_oid,
-                lines: line_range(start, end)?,
+                lines,
                 context_hash: ContextHash::new(0),
             },
         })
