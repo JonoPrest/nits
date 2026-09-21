@@ -154,12 +154,13 @@ async fn stopped_daemon_does_not_wedge_stdio_and_same_mcp_recovers_after_restart
     assert!(bounded(daemon.wait()).await.unwrap().success());
     assert!(bounded(client.next_unsolicited()).await.is_none());
 
-    // Queue ping behind the formerly wedged call on the actual stdio loop.
+    // The stable host can answer ping before the worker's outage response.
+    // Both requests must complete, without imposing cross-request ordering.
     mcp.send(list(3)).await;
     mcp.send(json!({ "jsonrpc": "2.0", "id": 4, "method": "ping" }))
         .await;
-    let lost = mcp.receive().await;
-    assert_eq!(lost["id"], 3);
+    let replies = [mcp.receive().await, mcp.receive().await];
+    let lost = replies.iter().find(|reply| reply["id"] == 3).unwrap();
     assert_eq!(lost["result"]["isError"], true, "{lost}");
     let message = lost["result"]["content"][0]["text"].as_str().unwrap();
     assert!(
@@ -167,8 +168,7 @@ async fn stopped_daemon_does_not_wedge_stdio_and_same_mcp_recovers_after_restart
             || message.contains("call the tool again"),
         "{message}"
     );
-    let ping = mcp.receive().await;
-    assert_eq!(ping["id"], 4);
+    let ping = replies.iter().find(|reply| reply["id"] == 4).unwrap();
     assert_eq!(ping["result"], json!({}));
     // Repeated outage calls also finish, leaving the session initialized.
     mcp.send(list(5)).await;

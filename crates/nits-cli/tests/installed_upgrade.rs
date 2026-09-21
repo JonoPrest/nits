@@ -350,3 +350,163 @@ fn stream_identity() -> nitsd::client::Identity {
         },
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lost_initial_now_cursor_is_an_explicit_failure_without_silent_resubscription() {
+    use nits_protocol::{ClientMsg, Envelope, ReplayPosition, Request, ServerMsg, Since};
+    use std::sync::Arc;
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("initial.sock");
+    let listener = Arc::new(tokio::net::UnixListener::bind(&socket).unwrap());
+    let peer = tokio::spawn({
+        let listener = Arc::clone(&listener);
+        async move {
+            let (mut stream, hello) = loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                if let Some(hello) = nitsd::codec::read_msg::<_, ClientMsg>(&mut stream)
+                    .await
+                    .unwrap()
+                {
+                    break (stream, hello);
+                }
+            };
+            assert!(matches!(hello.msg, ClientMsg::Hello { .. }));
+            nitsd::codec::write_msg(
+                &mut stream,
+                &Envelope {
+                    v: hello.v,
+                    msg: ServerMsg::Welcome {
+                        protocol: hello.v,
+                        daemon: stream_identity().client,
+                        schema: nits_protocol::SchemaVersion::CURRENT,
+                        upgrade: None,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            let request = nitsd::codec::read_msg::<_, ClientMsg>(&mut stream)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                request.msg,
+                ClientMsg::Request {
+                    request: Request::ReplayEvents {
+                        position: ReplayPosition::Start { since: Since::Now },
+                        ..
+                    },
+                    ..
+                }
+            ));
+            // The daemon may have captured any highwater here. Losing this
+            // first response cannot safely be repaired by choosing Now again.
+        }
+    });
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_nits"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("NITS_") {
+            command.env_remove(key);
+        }
+    }
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        command
+            .env("XDG_CONFIG_HOME", dir.path().join("config"))
+            .args([
+                "--data-dir",
+                dir.path().to_str().unwrap(),
+                "--socket",
+                socket.to_str().unwrap(),
+                "--start-policy",
+                "require-running",
+                "--json",
+                "events",
+                "--follow",
+            ])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    peer.await.unwrap();
+    assert!(!result.status.success());
+    assert!(result.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("lost its initial cursor before acknowledgement")
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), listener.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn failed_migration_keeps_the_original_schema_and_historical_bytes_for_recovery() {
+    use redb::ReadableDatabase as _;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.redb");
+    drop(nits_review_core::store::Store::open(&path).unwrap());
+    let malformed = b"historical event cannot be decoded".as_slice();
+    {
+        let db = redb::Database::open(&path).unwrap();
+        let transaction = db.begin_write().unwrap();
+        transaction
+            .open_table(redb::TableDefinition::<&str, u64>::new("meta"))
+            .unwrap()
+            .insert("schema_version", 1)
+            .unwrap();
+        transaction
+            .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
+            .unwrap()
+            .insert(1, malformed)
+            .unwrap();
+        transaction.commit().unwrap();
+    }
+    let id = nits_protocol::UpgradeId::from_parts(1, 7);
+    let result = replacement_start(dir.path(), &dir.path().join("daemon.sock"), id);
+    assert!(!result.status.success());
+    let failure: nits_protocol::UpgradeFailure = serde_json::from_slice(
+        &std::fs::read(dir.path().join(format!("upgrade-start-{id}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        failure.stage,
+        nits_protocol::UpgradeStage::StartingReplacement
+    );
+    assert_eq!(
+        failure.kind,
+        nits_protocol::UpgradeFailureKind::MigrationFailed
+    );
+    assert!(
+        failure.message.contains("migration 1->2 failed"),
+        "{failure:?}"
+    );
+    assert!(!dir.path().join("daemon.sock").exists());
+    let db = redb::Database::open(&path).unwrap();
+    let transaction = db.begin_read().unwrap();
+    assert_eq!(
+        transaction
+            .open_table(redb::TableDefinition::<&str, u64>::new("meta"))
+            .unwrap()
+            .get("schema_version")
+            .unwrap()
+            .unwrap()
+            .value(),
+        1
+    );
+    assert_eq!(
+        transaction
+            .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
+            .unwrap()
+            .get(1)
+            .unwrap()
+            .unwrap()
+            .value(),
+        malformed
+    );
+}
