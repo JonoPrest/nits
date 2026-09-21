@@ -27,6 +27,8 @@ enum ReplacePoint {
 #[derive(Debug)]
 struct Staging {
     path: std::path::PathBuf,
+    parent: File,
+    name: OsString,
     dir: File,
 }
 
@@ -39,20 +41,32 @@ impl Staging {
         bytes: &[u8],
         mode: &Metadata,
     ) -> Result<Self, CoreError> {
+        let metadata_dir = File::open(metadata)?;
         let temporary = tempfile::Builder::new()
             .prefix("nits-suggestion-")
             .tempdir_in(metadata)?;
-        let dir = File::open(temporary.path())?;
+        let name = temporary
+            .path()
+            .file_name()
+            .ok_or_else(|| refused(path, "expected a staging directory name"))?
+            .to_os_string();
+        let dir = directory_at(&metadata_dir, &name)?;
         if dir.metadata()?.dev() != parent.metadata()?.dev() {
             return Err(refused(
                 path,
                 "Git metadata and target are on different filesystems; safe replacement is unavailable",
             ));
         }
-        let mut proposed = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(temporary.path().join("proposed"))?;
+        let create = |name: &str| -> std::io::Result<File> {
+            Ok(openat(
+                &dir,
+                name,
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )?
+            .into())
+        };
+        let mut proposed = create("proposed")?;
         proposed.write_all(bytes)?;
         proposed.set_permissions(mode.permissions())?;
         proposed.sync_all()?;
@@ -65,7 +79,7 @@ impl Staging {
             )
         })?;
         move_if_absent(&dir, "prepared".as_ref(), &dir, "proposed".as_ref())?;
-        let mut recovery = File::create(temporary.path().join("RECOVERY.txt"))?;
+        let mut recovery = create("RECOVERY.txt")?;
         writeln!(
             recovery,
             "Interrupted Nits suggestion replacement.\nCheckout: {}\nRelative path: {path}\n\noriginal contains the claimed file, if the replacement reached that stage.\nproposed contains the suggested bytes until installation.\nDo not overwrite a newer checkout file. Restore original only after inspecting\nthe checkout and this directory; a successful application cleans this directory.\nNo files here are automatically deleted while original is present.",
@@ -73,9 +87,11 @@ impl Staging {
         )?;
         recovery.sync_all()?;
         dir.sync_all()?;
-        File::open(metadata)?.sync_all()?;
+        metadata_dir.sync_all()?;
         Ok(Self {
             path: temporary.keep(),
+            parent: metadata_dir,
+            name,
             dir,
         })
     }
@@ -84,7 +100,7 @@ impl Staging {
         refused(
             path,
             format!(
-                "{reason}; original/proposed files are preserved for recovery at {}",
+                "{reason}; original/proposed files are preserved for recovery at {} (inside the moved Git metadata if the checkout was renamed)",
                 self.path.display()
             ),
         )
@@ -95,9 +111,17 @@ impl Drop for Staging {
     fn drop(&mut self) {
         // A crash or failed rollback leaves a discoverable original. Never let
         // a generic temporary-directory destructor silently erase that data.
-        if matches!(std::fs::symlink_metadata(self.path.join("original")), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
-        {
-            let _ = std::fs::remove_dir_all(&self.path);
+        if matches!(
+            rustix::fs::statat(&self.dir, "original", rustix::fs::AtFlags::SYMLINK_NOFOLLOW),
+            Err(rustix::io::Errno::NOENT)
+        ) {
+            // The checkout itself can move. Clean only our known entries via
+            // retained descriptors, never recursively through its old path.
+            for name in ["proposed", "prepared", "RECOVERY.txt"] {
+                let _ = rustix::fs::unlinkat(&self.dir, name, rustix::fs::AtFlags::empty());
+            }
+            let _ = rustix::fs::unlinkat(&self.parent, &self.name, rustix::fs::AtFlags::REMOVEDIR);
+            let _ = self.parent.sync_all();
         }
     }
 }
@@ -508,6 +532,64 @@ mod tests {
             std::fs::read(stages[0].join("proposed")).unwrap(),
             b"patched\n"
         );
+    }
+
+    #[test]
+    fn checkout_replacement_preserves_recovery_and_never_cleans_the_new_checkout() {
+        for point in [
+            ReplacePoint::BeforeClaim,
+            ReplacePoint::BeforeInstall,
+            ReplacePoint::Installed,
+        ] {
+            for linked in [false, true] {
+                let fixture = Fixture::new();
+                let mut file = fixture.open();
+                let moved = fixture._dir.path().join("moved-checkout");
+                let replacement = fixture._dir.path().join("replacement-checkout");
+                let mut stage_name = OsString::new();
+                let result = file.replace_with(&fixture.metadata, b"base\n", b"patched\n", |at| {
+                    if at == point {
+                        stage_name = fixture.stages()[0].file_name().unwrap().to_os_string();
+                        std::fs::rename(&fixture.root, &moved).unwrap();
+                        std::fs::create_dir_all(replacement.join("dir")).unwrap();
+                        std::fs::write(replacement.join("dir/file"), b"newer\n").unwrap();
+                        let new_stage = replacement.join(".git").join(&stage_name);
+                        std::fs::create_dir_all(&new_stage).unwrap();
+                        std::fs::write(new_stage.join("RECOVERY.txt"), b"unrelated\n").unwrap();
+                        if linked {
+                            symlink(&replacement, &fixture.root).unwrap();
+                        } else {
+                            std::fs::rename(&replacement, &fixture.root).unwrap();
+                        }
+                    }
+                });
+                assert_eq!(
+                    std::fs::read(fixture.root.join("dir/file")).unwrap(),
+                    b"newer\n"
+                );
+                assert_eq!(
+                    std::fs::read(fixture.metadata.join(&stage_name).join("RECOVERY.txt")).unwrap(),
+                    b"unrelated\n"
+                );
+                let stage = moved.join(".git").join(stage_name);
+                if point == ReplacePoint::Installed {
+                    result.unwrap();
+                    assert_eq!(std::fs::read(moved.join("dir/file")).unwrap(), b"patched\n");
+                    assert!(!stage.exists());
+                } else {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("inside the moved Git metadata")
+                    );
+                    assert_eq!(std::fs::read(stage.join("original")).unwrap(), b"base\n");
+                    assert_eq!(std::fs::read(stage.join("proposed")).unwrap(), b"patched\n");
+                    assert!(stage.join("RECOVERY.txt").exists());
+                    assert!(!moved.join("dir/file").exists());
+                }
+            }
+        }
     }
 
     #[test]
