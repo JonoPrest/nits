@@ -38,7 +38,12 @@ impl IndexBefore {
         assert_eq!(self.file.metadata().unwrap().ino(), self.metadata.ino());
         let now = std::fs::metadata(&self.path).unwrap();
         assert_eq!(now.dev(), self.metadata.dev());
-        assert_eq!(now.ino(), self.metadata.ino(), "replaced {:?}", self.path);
+        assert_eq!(
+            now.ino(),
+            self.metadata.ino(),
+            "replaced {}",
+            self.path.display()
+        );
         assert_eq!(now.modified().unwrap(), self.metadata.modified().unwrap());
         assert_eq!(std::fs::read(&self.path).unwrap(), self.bytes);
     }
