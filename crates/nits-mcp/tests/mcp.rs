@@ -2346,3 +2346,121 @@ async fn checkpoints_capture_h1_check_after_h2_and_inspect_delta_with_fresh_iden
 
 #[path = "scheduling/mod.rs"]
 mod scheduling;
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // Five real Git transitions exercise the same adapter contract.
+async fn submodule_changes_are_metadata_in_mcp_and_never_source_line_anchors() {
+    let h = start();
+    let old = h.repo.rev_parse("main").unwrap();
+    let new = h.repo.rev_parse("HEAD").unwrap();
+    h.repo.git(&["tag", "dependency-base"]).unwrap();
+    for (tag, oid) in [("dependency-added", &old), ("dependency-updated", &new)] {
+        h.repo
+            .git(&[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{oid},dep"),
+            ])
+            .unwrap();
+        h.repo.git(&["commit", "-qm", tag]).unwrap();
+        h.repo.git(&["tag", tag]).unwrap();
+    }
+    h.repo
+        .git(&["update-index", "--force-remove", "dep"])
+        .unwrap();
+    h.repo.git(&["commit", "-qm", "remove dependency"]).unwrap();
+    h.repo.git(&["tag", "dependency-deleted"]).unwrap();
+    h.repo.write_file("dep", b"source file\n").unwrap();
+    h.repo.git(&["add", "dep"]).unwrap();
+    h.repo.git(&["commit", "-qm", "add source"]).unwrap();
+    h.repo.git(&["tag", "dependency-blob"]).unwrap();
+    let blob = h
+        .repo
+        .git(&["rev-parse", "HEAD:dep"])
+        .unwrap()
+        .trim()
+        .to_owned();
+    let c = human(&h).await;
+    let (ws, rid) = seed(&h, &c).await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    for (base, head, kind, previous, next, text) in [
+        (
+            "dependency-base",
+            "dependency-added",
+            "Added",
+            None,
+            Some(&old),
+            "Submodule added",
+        ),
+        (
+            "dependency-added",
+            "dependency-updated",
+            "Updated",
+            Some(&old),
+            Some(&new),
+            "Submodule updated",
+        ),
+        (
+            "dependency-updated",
+            "dependency-deleted",
+            "Deleted",
+            Some(&new),
+            None,
+            "Submodule removed",
+        ),
+        (
+            "dependency-blob",
+            "dependency-updated",
+            "BlobToSubmodule",
+            Some(&blob),
+            Some(&new),
+            "Blob replaced by submodule",
+        ),
+        (
+            "dependency-updated",
+            "dependency-blob",
+            "SubmoduleToBlob",
+            Some(&new),
+            Some(&blob),
+            "Submodule replaced by blob",
+        ),
+    ] {
+        let created = call(&mut s, "create_review", json!({"workspace_id":ws, "title":kind, "targets":[{
+            "repo_id":rid, "base":{"type":"Tag", "name":base}, "head":{"type":"Tag", "name":head}
+        }]})).await;
+        let id = &created["review_id"];
+        let detail = call(&mut s, "get_review", json!({"review_id":id})).await;
+        assert_eq!(detail["files"].as_array().unwrap().len(), 1);
+        assert_eq!(detail["files"][0]["path"], "dep");
+        let change = &detail["files"][0]["kind"];
+        assert_eq!(change["type"], "Submodule");
+        assert_eq!(change["change"]["type"], kind);
+        let diff = call(&mut s, "get_diff", json!({"review_id":id, "path":"dep"})).await;
+        assert_eq!(&diff["change"], change);
+        let rendered = diff["text"].as_str().unwrap();
+        assert!(rendered.starts_with(text), "{rendered}");
+        for (field, oid) in [("old", previous), ("new", next)] {
+            if let Some(oid) = oid {
+                assert_eq!(change["change"][field], *oid);
+                assert!(rendered.contains(oid), "{rendered}");
+            }
+        }
+        let side = if matches!(kind, "Deleted" | "SubmoduleToBlob") {
+            "Base"
+        } else {
+            "Head"
+        };
+        let error = call_err(
+            &mut s,
+            "get_file",
+            json!({"review_id":id, "path":"dep", "side":side}),
+        )
+        .await;
+        assert!(error.contains("submodule"), "{error}");
+        let error = call_err(&mut s, "add_comment", json!({"review_id":id, "path":"dep", "side":side, "start_line":1, "body":"metadata has no source line"})).await;
+        assert!(error.contains("submodule"), "{error}");
+        let comments = call(&mut s, "list_comments", json!({"review_id":id})).await;
+        assert!(comments["comments"].as_array().unwrap().is_empty());
+    }
+}

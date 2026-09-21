@@ -2429,3 +2429,95 @@ fn review_subset_and_daemon_identity_survive_sidebar_toggle_and_return_home() {
         "returning home cancels an unfinished review navigation"
     );
 }
+
+#[test]
+fn submodule_metadata_counts_as_a_file_and_tracks_typed_viewed_identity() {
+    use nits_client_core::ViewedState;
+    use nits_protocol::{
+        BlobOid, ChangeKind, CommitOid, RenderContent, RenderTarget, SubmoduleChange,
+        ViewedContent, ViewedMark,
+    };
+    let review_id = ReviewId::from_parts(4, 4);
+    let pointer = CommitOid::from_bytes([8; 20]);
+    for (marked, expected) in [
+        (
+            ViewedContent::Submodule { commit: pointer },
+            ViewedState::Viewed,
+        ),
+        (
+            ViewedContent::Submodule {
+                commit: CommitOid::from_bytes([7; 20]),
+            },
+            ViewedState::ChangedSinceViewed,
+        ),
+        (
+            ViewedContent::Blob {
+                oid: BlobOid::from_bytes([8; 20]),
+            },
+            ViewedState::ChangedSinceViewed,
+        ),
+    ] {
+        let mut core = subscribed(1);
+        let effects = core
+            .handle(Input::User(Action::OpenReview { review_id }))
+            .unwrap();
+        let (request, _) = sent_request(&effects).unwrap();
+        let header = nits_protocol::FileRenderHeader {
+            target: RenderTarget::Diff {
+                change: ChangeKind::Submodule {
+                    change: SubmoduleChange::Updated {
+                        old: CommitOid::from_bytes([6; 20]),
+                        new: pointer,
+                    },
+                },
+            },
+            content: RenderContent::Submodule,
+            ..reference_header()
+        };
+        let file = FileRef {
+            repo_id: header.repo_id,
+            path: header.path.clone(),
+        };
+        let mut snap = snapshot(review_id, Seq::new(1));
+        snap.resolved = Some(resolved(1));
+        snap.viewed.push(ViewedMark {
+            review_id,
+            repo_id: header.repo_id,
+            path: header.path.clone(),
+            viewer: nits_protocol::Human {
+                name: "someone".into(),
+                machine: "host".into(),
+            },
+            content: marked,
+        });
+        for item in [
+            StreamItem::ReviewSnapshot { snapshot: snap },
+            StreamItem::Header { header },
+        ] {
+            core.handle(Input::Server(ServerMsg::StreamItem { id: request, item }))
+                .unwrap();
+        }
+        core.handle(Input::Server(ServerMsg::StreamEnd { id: request }))
+            .unwrap();
+        assert_eq!(core.view().progress.total, 1);
+        assert_eq!(core.view().diffs.len(), 1);
+        assert_eq!(core.view().diffs[0].viewed, expected);
+        assert!(core.view().diffs[0].rows.is_empty());
+        for action in [
+            Action::CommentFile { file: file.clone() },
+            Action::CommentLines {
+                file: file.clone(),
+                side: nits_protocol::Side::Head,
+                start_line: 1,
+                end_line: 1,
+            },
+        ] {
+            assert!(core.handle(Input::User(action)).is_err());
+            assert!(core.view().draft.is_none());
+        }
+        core.handle(Input::User(Action::MarkViewed { file }))
+            .unwrap();
+        assert_eq!(core.view().diffs[0].viewed, ViewedState::Viewed);
+        assert_eq!(core.view().progress.viewed, 1);
+    }
+}

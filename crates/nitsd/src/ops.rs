@@ -314,24 +314,27 @@ impl Ops {
             else {
                 return Err(OpsError::Shape);
             };
-            let oid = snapshot.entries.iter().find_map(|e| match &e.kind {
-                TreeEntryKind::File { oid, .. } | TreeEntryKind::Symlink { oid }
-                    if e.path == *path =>
-                {
-                    Some(*oid)
-                }
-                _ => None,
-            });
-            if let Some(oid) = oid {
+            let entry = snapshot.entries.iter().find(|entry| entry.path == *path);
+            if let Some(entry) = entry {
                 if found.is_some() {
                     return Err(OpsError::Invalid(format!(
                         "{path} exists in more than one repo; pass repo_id"
                     )));
                 }
-                found = Some((t.repo_id, oid));
+                found = Some((t.repo_id, entry.kind.clone()));
             }
         }
-        found.ok_or_else(|| OpsError::Invalid(format!("{path} not found on the {side:?} side")))
+        let (repo_id, kind) = found
+            .ok_or_else(|| OpsError::Invalid(format!("{path} not found on the {side:?} side")))?;
+        match kind {
+            TreeEntryKind::File { oid, .. } | TreeEntryKind::Symlink { oid } => Ok((repo_id, oid)),
+            TreeEntryKind::Submodule { .. } => Err(OpsError::Invalid(format!(
+                "{path} is a submodule, not a source blob; inspect its diff for commit identities"
+            ))),
+            TreeEntryKind::Dir { .. } => Err(OpsError::Invalid(format!(
+                "{path} is a directory, not a source blob"
+            ))),
+        }
     }
 
     /// Collect a streamed render (`FileRender` / `BlobRender`) in chunk order.

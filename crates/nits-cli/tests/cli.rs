@@ -2070,3 +2070,65 @@ fn branch_request_capture_and_current_checkpoint_delta_use_the_same_new_head() {
         "[]"
     );
 }
+
+#[test]
+fn submodule_only_reviews_list_and_render_commit_metadata() {
+    let h = start();
+    let old = h.repo.rev_parse("main").unwrap();
+    let new = h.repo.rev_parse("HEAD").unwrap();
+    for (tag, oid) in [("dependency-base", &old), ("dependency-head", &new)] {
+        h.repo
+            .git(&[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{oid},dep"),
+            ])
+            .unwrap();
+        h.repo.git(&["commit", "-qm", tag]).unwrap();
+        h.repo.git(&["tag", tag]).unwrap();
+    }
+    let ws = h.out(&["workspace", "add", "Dependencies"]);
+    h.out(&["workspace", "attach", &ws, h.repo.path().to_str().unwrap()]);
+    let review = h.out(&[
+        "review",
+        "create",
+        "--workspace",
+        &ws,
+        "--base",
+        "dependency-base",
+        "--head",
+        "dependency-head",
+    ]);
+    assert_eq!(h.out(&["files", &review]), "Submodule dep");
+    let expected = format!("Submodule updated\nold commit: {old}\nnew commit: {new}");
+    assert_eq!(h.out(&["diff", &review, "dep"]), expected);
+    let detail: serde_json::Value =
+        serde_json::from_str(&h.out(&["--json", "review", "show", &review])).unwrap();
+    assert_eq!(detail["files"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        detail["files"][0]["kind"],
+        serde_json::json!({"type":"Submodule", "change":{"type":"Updated", "old":old, "new":new}})
+    );
+    h.nits()
+        .args(["show", &review, "dep"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("submodule"));
+    h.nits()
+        .args([
+            "comment",
+            "add",
+            &review,
+            "--path",
+            "dep",
+            "--line",
+            "1",
+            "--body",
+            "not source text",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("submodule"));
+    assert!(h.out(&["comment", "list", &review]).is_empty());
+}

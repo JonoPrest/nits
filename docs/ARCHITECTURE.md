@@ -119,10 +119,18 @@ CommitInfo { oid, parents, author: Sig, committer: Sig, subject, body }
 Sig        { name, email, time: Timestamp, offset }
               returned by commits(review) for stepping; shown in full in the commit panel
 
-ViewedMark { review_id, repo_id, path, viewer: Human, blob_oid }
-              "viewed" is bound to the head blob seen; if the current head blob differs the
+ViewedContent = Missing | Blob { oid: BlobOid } | Submodule { commit: CommitOid }
+ViewedMark { review_id, repo_id, path, viewer: Human, content: ViewedContent }
+              "viewed" is bound to the typed head entry seen; if its current identity differs the
               file shows as changed-since-viewed and the mark is cleared in the UI.
               Human-only: agents cannot set it.
+
+SubmoduleChange = Added | Deleted | Updated | Renamed | BlobToSubmodule | SubmoduleToBlob
+              gitlinks retain CommitOid values, even when their commits are absent from
+              the superproject object database. ChangeKind::Submodule renders metadata
+              with old/new identities and no source rows. Blob transitions distinguish
+              blob and commit identities; previous blob comments become outdated when
+              their path becomes a gitlink.
 
 RenderOpts { ignore_whitespace: bool, context_lines }
               part of every render cache key; whitespace-ignored rows keep the real text,
@@ -320,7 +328,7 @@ Two independent versions, both typed in `nits-protocol::version`.
 - Deprecation path: a daemon may keep serving an old minor for a time and attach
   `Welcome.upgrade: UpgradeNotice { latest, message }`; clients surface it. Once dropped, the
   handshake is rejected with the supported list, so the error is specific and actionable.
-- Protocol 0.11 currently serves **only minor 0.11**: older minors are retired and
+- Protocol 0.13 currently serves **only minor 0.13**: older minors are retired and
   rejected during Hello, before any event or snapshot. The daemon has one serializer;
   the same-major compatibility predicate alone does not prove it can encode an old
   minor. Adding a supported minor requires its serializer. The stable shutdown-only
@@ -354,6 +362,10 @@ Two independent versions, both typed in `nits-protocol::version`.
   rewrites raw historical request events with `RequestedTargets::Unknown` and
   rebuilds views. Earlier envelope migrations also operate on raw JSON before
   current event decoding, preserving every supported starting schema.
+- Schema 8 gives viewed marks a typed blob, submodule commit, or missing identity.
+  The 7→8 migration maps historical `blob_oid` values to `Blob` or `Missing`,
+  preserving event provenance and rebuilding views. It cannot invent historical
+  gitlink identities, which previous versions did not record.
 - The daemon reports `schema` in `Welcome` for diagnostics only; clients never depend on it.
 
 ## 5. Client core (sans-I/O)

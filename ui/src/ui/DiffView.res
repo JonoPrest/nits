@@ -119,7 +119,7 @@ let make = (
   }
   let binary = switch diff.content {
   | Submodule(_) => <SubmoduleView target=diff.target />
-          | Binary(_) => <div className="diff-binary"> {React.string("binary file")} </div>
+  | Binary(_) => <div className="diff-binary"> {React.string("binary file")} </div>
   | Text(_) => React.null
   }
   <section className="diff-panel panel" role="grid" ariaLabel=title>
@@ -127,15 +127,15 @@ let make = (
       <span className="file-path mono"> {React.string(title)} </span>
       <UI.CopyPath path={diff.file.path} chrome dispatch />
       stats
-      {switch diff.target {
-      | Diff(_) =>
+      {switch (diff.target, diff.content) {
+      | (Diff(_), Text(_)) =>
         <UI.Button
           label="expand file"
           kind=Ghost
           title="show the whole file as context"
           onClick={() => dispatch(ExpandContext({file: diff.file, full: true}))}
         />
-      | Blob(_) => React.null
+      | (Blob(_), _) | (Diff(_), Binary(_) | Submodule(_)) => React.null
       }}
     </header>
     {diff.original
