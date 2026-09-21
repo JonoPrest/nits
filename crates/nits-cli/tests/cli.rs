@@ -2132,3 +2132,182 @@ fn submodule_only_reviews_list_and_render_commit_metadata() {
         .stderr(predicate::str::contains("submodule"));
     assert!(h.out(&["comment", "list", &review]).is_empty());
 }
+
+#[test]
+fn conflicting_event_scopes_never_dial_or_start_a_daemon() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("unused-data");
+    let marker = dir.path().join("daemon-started");
+    let launcher = dir.path().join("fake-nits");
+    std::fs::write(
+        &launcher,
+        r#"#!/bin/sh
+printf launched > "$NITS_LAUNCH_MARKER"
+exit 97
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let socket = dir.path().join("untouched.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let review = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    let workspace = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    for args in [
+        vec!["events", "--review", review, "--awaiting", "recipient"],
+        vec!["events", "--awaiting", "recipient", "--review", review],
+        vec!["--workspace", workspace, "events", "--review", review],
+        vec!["events", "--review", review, "--workspace", workspace],
+        vec![
+            "--workspace",
+            workspace,
+            "events",
+            "--awaiting",
+            "recipient",
+        ],
+        vec![
+            "events",
+            "--awaiting",
+            "recipient",
+            "--workspace",
+            workspace,
+        ],
+        vec![
+            "--workspace",
+            workspace,
+            "events",
+            "--review",
+            review,
+            "--awaiting",
+            "recipient",
+        ],
+        vec![
+            "events",
+            "--awaiting",
+            "recipient",
+            "--workspace",
+            workspace,
+            "--review",
+            review,
+        ],
+    ] {
+        for follow in [false, true] {
+            for existing_socket in [false, true] {
+                let mut command = configured_nits(&dir.path().join("absent-config.toml"));
+                command
+                    .env("NITS_BIN", &launcher)
+                    .env("NITS_LAUNCH_MARKER", &marker)
+                    .arg("--data-dir")
+                    .arg(&data)
+                    .args(["--start-policy", "start-if-needed"])
+                    .timeout(std::time::Duration::from_secs(3));
+                if existing_socket {
+                    command.arg("--socket").arg(&socket);
+                }
+                command.args(&args);
+                if follow {
+                    command.arg("--follow");
+                }
+                command
+                    .assert()
+                    .code(2)
+                    .stdout("")
+                    .stderr(predicate::str::contains(
+                        "scope flags cannot be used together",
+                    ))
+                    .stderr(predicate::str::contains("--review"))
+                    .stderr(predicate::str::contains("--workspace"))
+                    .stderr(predicate::str::contains("--awaiting"));
+                assert!(!data.exists(), "{args:?} created a data directory");
+                assert!(!marker.exists(), "{args:?} launched a daemon");
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock,
+                    "{args:?} dialed the socket"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn event_scopes_keep_review_workspace_recipient_and_all_filters() {
+    let h = start();
+    let workspace = h.out(&["workspace", "add", "selected-workspace"]);
+    h.out(&[
+        "workspace",
+        "attach",
+        &workspace,
+        h.repo.path().to_str().unwrap(),
+    ]);
+    let mut reviews = Vec::new();
+    for n in 1..=2 {
+        let review = h.out(&[
+            "--workspace",
+            &workspace,
+            "review",
+            "create",
+            "--base",
+            "main",
+            "--head",
+            "feature",
+        ]);
+        h.out(&[
+            "comment",
+            "add",
+            &review,
+            "--body",
+            &format!("comment-for-review-{n}"),
+        ]);
+        h.out(&[
+            "review",
+            "request",
+            &review,
+            &format!("recipient-{n}"),
+            "--note",
+            &format!("request-for-review-{n}"),
+        ]);
+        reviews.push(review);
+    }
+    h.out(&["workspace", "add", "unrelated-workspace"]);
+    let all = h.out(&["--json", "events", "--since", "0"]);
+    assert!(all.contains("unrelated-workspace"));
+    assert!(all.contains("comment-for-review-1") && all.contains("comment-for-review-2"));
+    let review = h.out(&["--json", "events", "--review", &reviews[0], "--since", "0"]);
+    assert!(review.contains("comment-for-review-1") && review.contains("request-for-review-1"));
+    assert!(!review.contains("comment-for-review-2") && !review.contains("unrelated-workspace"));
+    let awaiting = h.out(&[
+        "--json",
+        "events",
+        "--awaiting",
+        "recipient-1",
+        "--since",
+        "0",
+    ]);
+    assert!(awaiting.contains("request-for-review-1"));
+    assert!(!awaiting.contains("comment-for-review") && !awaiting.contains("request-for-review-2"));
+    for args in [
+        vec![
+            "--json",
+            "--workspace",
+            &workspace,
+            "events",
+            "--since",
+            "0",
+        ],
+        vec![
+            "--json",
+            "events",
+            "--workspace",
+            &workspace,
+            "--since",
+            "0",
+        ],
+    ] {
+        let events = h.out(&args);
+        assert!(events.contains("comment-for-review-1") && events.contains("comment-for-review-2"));
+        assert!(!events.contains("unrelated-workspace"));
+    }
+}
