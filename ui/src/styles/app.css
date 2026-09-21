@@ -480,7 +480,8 @@
     background: var(--color-panel);
   }
   .cell-threads {
-    @apply absolute right-1 text-xs;
+    /* This indicator is decoration; copied source must retain only its own text. */
+    @apply absolute right-1 text-xs select-none;
   }
   .tree-list li,
   .review-item,
