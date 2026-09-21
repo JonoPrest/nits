@@ -452,6 +452,9 @@ module Command = {
     | ToggleSidebar
     | Submit
     | CopyPath
+    | CopyCheckout
+    | NewReview
+    | GoHome
     | CopyReference
     | NextReply
     | PrevReply
@@ -539,10 +542,45 @@ module ViewDelta = {
   type t = {sections: array<Rpc.ViewSection.t>}
 }
 
+module HomeRowKind = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t =
+    | @as("Workspace") Workspace({})
+    | @as("Repository") Repository({@as("repo_id") repoId: repoId})
+    | @as("Review") Review({@as("review_id") reviewId: reviewId})
+  @@warning("+27")
+}
+module HomeRow = {
+  @schema
+  type t = {@as("workspace_id") workspaceId: workspaceId, kind: HomeRowKind.t}
+}
+module HomeView = {
+  @schema
+  type t = {
+    rows: array<HomeRow.t>,
+    @as("selected_workspace") selectedWorkspace: @s.null option<workspaceId>,
+    expanded: array<workspaceId>,
+    creating: @s.null option<workspaceId>,
+  }
+  let empty: t = {rows: [], selectedWorkspace: None, expanded: [], creating: None}
+}
+module DaemonContext = {
+  @schema @tag("type")
+  type t =
+    | @as("Named") Named({name: string})
+    | @as("Socket") Socket({path: string})
+    | @as("WebSocket") WebSocket({url: string})
+}
+
 module ViewModel = {
   @@warning("-27")
   @schema
   type t = {
+    home: HomeView.t,
+    @as("daemon_context") daemonContext: @s.null option<DaemonContext.t>,
+    @as("active_repo") activeRepo: @s.null option<repoId>,
+    @as("copy_checkout") copyCheckout: @s.null option<string>,
     prefs: ViewPrefs.t,
     tree: TreeView.t,
     progress: Progress.t,
@@ -595,6 +633,10 @@ module ViewModel = {
 
   /// The model before any patch arrives.
   let empty: t = {
+    home: HomeView.empty,
+    daemonContext: None,
+    activeRepo: None,
+    copyCheckout: None,
     prefs: {
       layout: Unified,
       ignoreWhitespace: false,
@@ -656,6 +698,9 @@ module ViewPatch = {
       })
     | @as("ReviewList")
     ReviewList({
+        home: HomeView.t,
+        @as("daemon_context") daemonContext: @s.null option<DaemonContext.t>,
+        @as("active_repo") activeRepo: @s.null option<repoId>,
         workspaces: array<Domain.Workspace.t>,
         reviews: array<Domain.Review.t>,
         @as("open_review") openReview: @s.null option<reviewId>,
@@ -691,6 +736,7 @@ module ViewPatch = {
         tab: Tab.t,
         scroll: @s.null option<ScrollIntent.t>,
         @as("copy_target") copyTarget: @s.null option<string>,
+        @as("copy_checkout") copyCheckout: @s.null option<string>,
         @as("copy_reference") copyReference: @s.null option<string>,
         @as("focused_comment") focusedComment: @s.null option<string>,
       })
@@ -721,8 +767,21 @@ module ViewPatch = {
   let apply = (model: ViewModel.t, patch: t): ViewModel.t =>
     switch patch {
     | Connection({connection, lastError}) => {...model, connection, lastError}
-    | ReviewList({workspaces, reviews, openReview, resolvedTargets, scope, browseRef}) => {
+    | ReviewList({
+        home,
+        daemonContext,
+        activeRepo,
+        workspaces,
+        reviews,
+        openReview,
+        resolvedTargets,
+        scope,
+        browseRef,
+      }) => {
         ...model,
+        home,
+        daemonContext,
+        activeRepo,
         workspaces,
         reviews,
         openReview,
@@ -743,12 +802,13 @@ module ViewPatch = {
     | CommitStepper({stepper}) => {...model, stepper}
     | RefSelector({refSelector}) => {...model, refSelector}
     | Progress({progress}) => {...model, progress}
-    | Focus({focus, tab, scroll, copyTarget, copyReference, focusedComment}) => {
+    | Focus({focus, tab, scroll, copyTarget, copyCheckout, copyReference, focusedComment}) => {
         ...model,
         focus,
         tab,
         scroll,
         copyTarget,
+        copyCheckout,
         copyReference,
         focusedComment,
       }

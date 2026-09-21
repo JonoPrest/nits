@@ -936,3 +936,48 @@
 
 /* The exact linked reply remains visible inside resolved conversations. */
 .reference-target { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+@layer components {
+  .workspace-home { @apply min-h-0 flex-1 overflow-auto p-6; }
+  .workspace-home > * + * { @apply mt-4; }
+  .workspace-home h1 { @apply text-xl font-semibold; }
+  .workspace-home h2 { @apply text-sm font-semibold; }
+  .workspace-home p { @apply text-sm text-muted; }
+  .workspace-detail-heading { @apply flex flex-wrap items-center gap-3; }
+  .workspace-repository-cards, .workspace-review-cards { @apply grid gap-3; }
+  .workspace-repository-card, .workspace-review-card { @apply flex min-w-0 flex-col items-start gap-2 rounded border border-border p-3 text-sm; }
+  .checkout-path, .workspace-setup { @apply max-w-full font-mono text-xs; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .workspace-inventory { @apply mx-2 mb-2 border-l border-border; }
+  .workspace-repo { @apply flex min-w-0 cursor-pointer flex-col items-start gap-1 p-2 text-xs; }
+  .workspace-repo-name { overflow-wrap: anywhere; }
+  .workspace-header { @apply flex-wrap; }
+  .workspace-header > .btn:first-child { @apply min-w-0 flex-1 text-left font-semibold; overflow-wrap: anywhere; }
+  .workspace-header > .badge { @apply shrink-0; }
+  .workspace-header[data-focused], .workspace-repo[data-focused], .workspace-repository-card[data-focused], .workspace-review-card[data-focused] { background: color-mix(in oklch, var(--color-focus) 20%, transparent); outline: 1px solid var(--color-focus); outline-offset: -1px; }
+  .workspace-group .review-item { @apply block; }
+  .review-target-summary { @apply mt-1 flex flex-col gap-1 text-xs text-muted; }
+  .review-target-summary-item { @apply flex flex-wrap gap-x-2; overflow-wrap: anywhere; }
+  .target-repo-name { @apply font-medium; }
+  .daemon-context { @apply block text-xs text-muted; overflow-wrap: anywhere; }
+  .review-header { @apply flex-wrap whitespace-normal; }
+  .review-identity { @apply flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs; }
+  .review-identity .btn { @apply max-w-full text-left font-semibold; overflow-wrap: anywhere; }
+  .active-repository { @apply min-w-0 text-muted; overflow-wrap: anywhere; }
+  .review-header-main { @apply flex-wrap overflow-visible; }
+  .review-header-main > * { @apply min-w-0 shrink; }
+  .review-header-target { @apply flex-wrap; overflow-wrap: anywhere; }
+}
+@media (max-width: 700px) {
+  .app-left { width: min(40vw, 18rem); }
+  .app-left-expanded { min-width: 0; max-width: 45vw; }
+  .app-home { flex-direction: column; }
+  .app-home .app-left { width: 100%; max-height: 40%; border-right: 0; border-bottom: 1px solid var(--color-border); }
+  .workspace-home { padding: 1rem; }
+  .review-header { gap: 0.5rem; }
+  .review-header-main { flex-basis: 100%; }
+  .review-header-toggles { flex-wrap: wrap; }
+}
+
+@layer components {
+  .app-home .app-left-tree > .panel > .panel-header { @apply sticky top-0 z-10; }
+}

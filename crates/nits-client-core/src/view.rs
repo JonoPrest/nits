@@ -328,6 +328,11 @@ pub struct ContentSearchView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ViewModel {
+    pub home: crate::HomeView,
+    pub daemon_context: Option<crate::DaemonContext>,
+    pub active_repo: Option<nits_protocol::RepoId>,
+    /// Absolute path on the selected daemon, never a repository-relative `RepoPath`.
+    pub copy_checkout: Option<String>,
     pub prefs: ViewPrefs,
     /// Explorer over the open review's head trees (§5.5); empty otherwise.
     pub tree: TreeView,

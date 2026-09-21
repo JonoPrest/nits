@@ -3,6 +3,15 @@ source: crates/nits-client-core/tests/snapshots.rs
 expression: core.view()
 ---
 {
+  "home": {
+    "rows": [],
+    "selected_workspace": null,
+    "expanded": [],
+    "creating": null
+  },
+  "daemon_context": null,
+  "active_repo": "00000000020000000000000002",
+  "copy_checkout": null,
   "prefs": {
     "layout": "Unified",
     "ignore_whitespace": false,
@@ -913,6 +922,11 @@ expression: core.view()
       "label": "disconnect"
     },
     {
+      "keys": "g W",
+      "command": "GoHome",
+      "label": "workspaces"
+    },
+    {
       "keys": "v",
       "command": "CheckRequested",
       "label": "record requested revision checked"
@@ -946,6 +960,16 @@ expression: core.view()
       "keys": "R",
       "command": "Refresh",
       "label": "refresh"
+    },
+    {
+      "keys": "y",
+      "command": "CopyCheckout",
+      "label": "copy checkout path"
+    },
+    {
+      "keys": "N",
+      "command": "NewReview",
+      "label": "new review"
     },
     {
       "keys": "v",
@@ -1273,6 +1297,11 @@ expression: core.view()
       "keys": "ctrl+shift+d",
       "command": "Disconnect",
       "label": "disconnect"
+    },
+    {
+      "keys": "g W",
+      "command": "GoHome",
+      "label": "workspaces"
     },
     {
       "keys": "j",

@@ -1,0 +1,4 @@
+{
+  "type": "WebSocket",
+  "url": "wss://reviews.example.com/daemon"
+}

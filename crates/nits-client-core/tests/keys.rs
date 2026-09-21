@@ -844,6 +844,61 @@ fn every_action_is_reachable_from_a_binding() {
     assert!(with_outdated.view().threads[index].outdated);
     states.push(with_outdated);
     states.push(base);
+    let mut home = ready();
+    home.handle(Input::User(Action::GoHome)).unwrap();
+    home.handle(Input::Server(ServerMsg::Event {
+        event: nits_protocol::Event {
+            seq: Seq::new(20),
+            ts: Timestamp::from_millis(0),
+            author: home.author().clone(),
+            client_id: ClientId::from_parts(9, 9),
+            client_seq: nits_protocol::ClientSeq::new(20),
+            body: nits_protocol::EventBody::WorkspaceCreated {
+                workspace: nits_protocol::Workspace {
+                    id: review().workspace_id,
+                    name: "Product".into(),
+                    repos: vec![nits_protocol::Repo {
+                        id: repo_id(),
+                        path: "/srv/atlas".into(),
+                        display_name: "Atlas".into(),
+                    }],
+                },
+            },
+        },
+    }))
+    .unwrap();
+    for cmd in Command::iter() {
+        if let Ok(action) = nits_client_core::resolve_command(&home, cmd) {
+            reached.insert(ActionKind::from(&action));
+        }
+    }
+    home.handle(Input::User(Action::ToggleWorkspace {
+        workspace_id: review().workspace_id,
+    }))
+    .unwrap();
+    home.handle(Input::User(Action::SetFocus {
+        focus: Focus::ReviewList { index: 1 },
+    }))
+    .unwrap();
+    for cmd in Command::iter() {
+        if let Ok(action) = nits_client_core::resolve_command(&home, cmd) {
+            reached.insert(ActionKind::from(&action));
+        }
+    }
+    for index in 0..home.view().home.rows.len() {
+        home.handle(Input::User(Action::SetFocus {
+            focus: Focus::ReviewList { index },
+        }))
+        .unwrap();
+        if let Ok(action) = nits_client_core::resolve_command(&home, Command::Open) {
+            reached.insert(ActionKind::from(&action));
+        }
+    }
+    home.handle(Input::User(Action::StartReview {
+        workspace_id: review().workspace_id,
+    }))
+    .unwrap();
+    states.push(home);
     for state in &mut states {
         state
             .handle(Input::User(Action::SetReferenceContext {
