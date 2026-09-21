@@ -1565,6 +1565,7 @@ mod tests {
 
     fn cell(n: u32) -> Cell {
         Cell {
+            ending: nits_protocol::LineEnding::Lf,
             line_no: LineNo::new(n).unwrap(),
             text: format!("l{n}"),
             spans: Vec::new(),

@@ -138,6 +138,7 @@ fn header(n: u8) -> FileRenderHeader {
 }
 fn stream_content(core: &mut ClientCore, id: RequestId, n: u8) {
     let cell = |text: String| Cell {
+        ending: nits_protocol::LineEnding::Lf,
         line_no: LineNo::new(1).unwrap(),
         text,
         spans: vec![],

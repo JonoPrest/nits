@@ -104,7 +104,13 @@ impl CacheKey {
     #[must_use]
     pub fn storage_key(&self) -> String {
         // A key is a closed set of plain fields; serialising it cannot fail.
-        serde_json::to_string(self).unwrap_or_default()
+        match self {
+            Self::Tree { .. } => serde_json::to_string(self).unwrap_or_default(),
+            Self::Header { .. } | Self::Chunk { .. } => {
+                serde_json::to_string(&(nits_protocol::RENDER_CACHE_GENERATION, self))
+                    .unwrap_or_default()
+            }
+        }
     }
 
     /// The render this key belongs to, for header and chunk keys.

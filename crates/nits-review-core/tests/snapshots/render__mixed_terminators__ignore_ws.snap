@@ -5,7 +5,7 @@ expression: r
 {
   "content": {
     "type": "Text",
-    "total_rows": 3,
+    "total_rows": 4,
     "chunk_rows": 500,
     "chunk_count": 1,
     "highlighted": false,
@@ -16,7 +16,7 @@ expression: r
   "rows": [
     {
       "type": "HunkHeader",
-      "text": "@@ -1,2 +1,2 @@"
+      "text": "@@ -1,3 +1,3 @@"
     },
     {
       "type": "Context",
@@ -30,7 +30,7 @@ expression: r
       "right": {
         "line_no": 1,
         "text": "one",
-        "ending": "Lf",
+        "ending": "CrLf",
         "spans": [],
         "changed": []
       }
@@ -40,14 +40,41 @@ expression: r
       "left": {
         "line_no": 2,
         "text": "two",
-        "ending": "Missing",
+        "ending": "Lf",
+        "spans": [],
+        "changed": [
+          {
+            "start": 0,
+            "end": 3
+          }
+        ]
+      },
+      "right": {
+        "line_no": 2,
+        "text": "changed",
+        "ending": "Lf",
+        "spans": [],
+        "changed": [
+          {
+            "start": 0,
+            "end": 7
+          }
+        ]
+      }
+    },
+    {
+      "type": "Context",
+      "left": {
+        "line_no": 3,
+        "text": "three",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       },
       "right": {
-        "line_no": 2,
-        "text": "two",
-        "ending": "Lf",
+        "line_no": 3,
+        "text": "three",
+        "ending": "Missing",
         "spans": [],
         "changed": []
       }

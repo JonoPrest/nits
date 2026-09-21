@@ -1,6 +1,7 @@
 {
   "left": {
     "changed": [],
+    "ending": "Lf",
     "line_no": 8,
     "spans": [
       {
@@ -15,6 +16,7 @@
   },
   "right": {
     "changed": [],
+    "ending": "Lf",
     "line_no": 8,
     "spans": [
       {

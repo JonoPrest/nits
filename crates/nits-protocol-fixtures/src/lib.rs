@@ -205,6 +205,7 @@ registry!(
     Event,
     EventBody,
     // render
+    LineEnding,
     SpanClass,
     Span,
     Cell,
@@ -647,6 +648,7 @@ fn tree_snapshot() -> Result<TreeSnapshot, FixtureError> {
 
 fn cell(n: u32, text: &str) -> Result<Cell, FixtureError> {
     Ok(Cell {
+        ending: nits_protocol::LineEnding::Lf,
         line_no: line(n)?,
         text: text.into(),
         spans: vec![Span {
@@ -1189,6 +1191,7 @@ enum_fixture!(
     ]
 );
 
+unit_enum_fixture!(LineEnding, "LineEnding");
 unit_enum_fixture!(SpanClass, "SpanClass");
 struct_fixture!(
     Span,

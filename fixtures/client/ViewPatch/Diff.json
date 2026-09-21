@@ -45,6 +45,7 @@
                 "start": 8
               }
             ],
+            "ending": "Lf",
             "line_no": 9,
             "spans": [
               {
@@ -64,6 +65,7 @@
                 "start": 8
               }
             ],
+            "ending": "Lf",
             "line_no": 9,
             "spans": [
               {
@@ -150,6 +152,7 @@
                   "start": 8
                 }
               ],
+              "ending": "Lf",
               "line_no": 9,
               "spans": [
                 {
@@ -169,6 +172,7 @@
                   "start": 8
                 }
               ],
+              "ending": "Lf",
               "line_no": 9,
               "spans": [
                 {

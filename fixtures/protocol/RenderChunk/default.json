@@ -8,6 +8,7 @@
     {
       "left": {
         "changed": [],
+        "ending": "Lf",
         "line_no": 8,
         "spans": [
           {
@@ -22,6 +23,7 @@
       },
       "right": {
         "changed": [],
+        "ending": "Lf",
         "line_no": 8,
         "spans": [
           {
@@ -44,6 +46,7 @@
             "start": 8
           }
         ],
+        "ending": "Lf",
         "line_no": 9,
         "spans": [
           {
@@ -63,6 +66,7 @@
             "start": 8
           }
         ],
+        "ending": "Lf",
         "line_no": 9,
         "spans": [
           {
@@ -80,6 +84,7 @@
     {
       "right": {
         "changed": [],
+        "ending": "Lf",
         "line_no": 10,
         "spans": [
           {

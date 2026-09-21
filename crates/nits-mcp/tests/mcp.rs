@@ -872,12 +872,14 @@ async fn bounded_files_keep_review_blobs_and_absolute_lines_across_chunks() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // Keep the real-session EOF/range matrix together.
 async fn file_ranges_define_eof_empty_and_binary_behavior() {
     let h = start_with_repo(RepoBuilder::new()
         .commit("base", files![
             "empty.txt" => "", "binary.dat" => b"binary\0content",
             "terminated.txt" => "one\ntwo\n", "unterminated.txt" => "one\ntwo",
-            "crlf.txt" => "one\r\ntwo\r\n", "blank.txt" => "\n", "last-blank.txt" => "one\n\n"
+            "crlf.txt" => "one\r\ntwo\r\n", "blank.txt" => "\n", "last-blank.txt" => "one\n\n",
+            "bare-cr.txt" => "one\rtwo", "mixed.txt" => "one\r\n\ntwo"
         ])
         .branch("feature").build().unwrap());
     let c = human(&h).await;
@@ -892,19 +894,43 @@ async fn file_ranges_define_eof_empty_and_binary_behavior() {
         }),
     )
     .await;
-    for (path, source) in [
-        ("empty.txt", ""),
-        ("terminated.txt", "one\ntwo\n"),
-        ("unterminated.txt", "one\ntwo"),
-        ("crlf.txt", "one\ntwo\n"),
-        ("blank.txt", "\n"),
-        ("last-blank.txt", "one\n\n"),
-    ] {
-        let source: Vec<_> = source
-            .lines()
-            .enumerate()
-            .map(|(i, line)| format!("{:>5}│{line}\n", i + 1))
-            .collect();
+    // One element per source line. An annotation stays with its source line,
+    // so inclusive range bounds never count it as another addressable line.
+    let cases: &[(&str, &[&str])] = &[
+        ("empty.txt", &[]),
+        ("terminated.txt", &["    1│one\n", "    2│two\n"]),
+        (
+            "unterminated.txt",
+            &[
+                "    1│one\n",
+                "    2│two\n            \\ No final newline\n",
+            ],
+        ),
+        (
+            "crlf.txt",
+            &[
+                "    1│one\n            \\ CRLF\n",
+                "    2│two\n            \\ CRLF\n",
+            ],
+        ),
+        ("blank.txt", &["    1│\n"]),
+        ("last-blank.txt", &["    1│one\n", "    2│\n"]),
+        (
+            "bare-cr.txt",
+            &[
+                "    1│one␍two\n            \\ No final newline\n            \\ CR in source text shown as ␍\n",
+            ],
+        ),
+        (
+            "mixed.txt",
+            &[
+                "    1│one\n            \\ CRLF\n",
+                "    2│\n",
+                "    3│two\n            \\ No final newline\n",
+            ],
+        ),
+    ];
+    for (path, source) in cases {
         let total = source.len();
         let args = json!({ "review_id": created["review_id"], "path": path });
         let full = call(&mut s, "get_file", args.clone()).await;
@@ -934,7 +960,7 @@ async fn file_ranges_define_eof_empty_and_binary_behavior() {
                 .iter()
                 .skip(start as usize - 1)
                 .take((end - start + 1) as usize)
-                .cloned()
+                .copied()
                 .collect::<Vec<_>>();
             assert_eq!(bounded["text"], selected.concat(), "{path} {start}..={end}");
             let range = if selected.is_empty() {

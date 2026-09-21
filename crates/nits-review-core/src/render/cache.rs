@@ -49,7 +49,10 @@ pub struct RenderKey<'a> {
 impl RenderKey<'_> {
     fn prefix(&self) -> Result<String, CacheError> {
         // JSON of a struct is deterministic for a fixed field order.
-        Ok(serde_json::to_string(self)?)
+        Ok(serde_json::to_string(&(
+            nits_protocol::RENDER_CACHE_GENERATION,
+            self,
+        ))?)
     }
 }
 
@@ -114,6 +117,83 @@ impl RenderCache {
 mod tests {
     use super::*;
     use nits_protocol::{BlobOid, ChangeKind};
+
+    #[test]
+    fn previous_generation_headers_and_chunks_cannot_hide_terminator_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = RenderCache::open(&dir.path().join("render.redb")).unwrap();
+        let target = RenderTarget::Diff {
+            change: ChangeKind::Modified {
+                old: nits_protocol::BlobEntry {
+                    oid: BlobOid::from_bytes([1; 20]),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
+                new: nits_protocol::BlobEntry {
+                    oid: BlobOid::from_bytes([2; 20]),
+                    mode: nits_protocol::BlobMode::Regular,
+                },
+            },
+        };
+        let opts = RenderOpts::default();
+        let key = RenderKey {
+            target: &target,
+            opts: &opts,
+            lang: None,
+        };
+        // Previously the same OIDs yielded a perfectly decodable zero-change
+        // header. Both that header and its old chunk must be cache misses.
+        let old = super::super::render_file(
+            &super::super::Highlighter::new(),
+            Some(b"same\n"),
+            Some(b"same\n"),
+            None,
+            &opts,
+        );
+        let legacy = serde_json::to_string(&key).unwrap();
+        let tx = cache.db.begin_write().unwrap();
+        {
+            let mut table = tx.open_table(RENDERS).unwrap();
+            table
+                .insert(
+                    format!("{legacy}/h").as_str(),
+                    serde_json::to_vec(&old.content).unwrap().as_slice(),
+                )
+                .unwrap();
+            table
+                .insert(
+                    format!("{legacy}/0").as_str(),
+                    serde_json::to_vec(&old.chunk(ChunkIndex::FIRST).unwrap())
+                        .unwrap()
+                        .as_slice(),
+                )
+                .unwrap();
+        }
+        tx.commit().unwrap();
+        assert!(cache.header(&key).unwrap().is_none());
+        assert!(cache.chunk(&key, ChunkIndex::FIRST).unwrap().is_none());
+        let rendered = super::super::render_file(
+            &super::super::Highlighter::new(),
+            Some(b"same"),
+            Some(b"same\n"),
+            None,
+            &opts,
+        );
+        cache.put(&key, &rendered).unwrap();
+        drop(cache);
+        let reopened = RenderCache::open(&dir.path().join("render.redb")).unwrap();
+        assert!(matches!(
+            reopened.header(&key).unwrap(),
+            Some(RenderContent::Text {
+                additions: 1,
+                deletions: 1,
+                ..
+            })
+        ));
+        assert_eq!(
+            reopened.chunk(&key, ChunkIndex::FIRST).unwrap(),
+            rendered.chunk(ChunkIndex::FIRST)
+        );
+    }
 
     #[test]
     fn mode_identity_separates_headers_chunks_and_legacy_cache_entries() {

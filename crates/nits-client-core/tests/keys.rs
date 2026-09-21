@@ -182,6 +182,7 @@ fn header(p: &str) -> FileRenderHeader {
 fn chunk(index: u32) -> RenderChunk {
     use nits_protocol::{Cell, LineNo};
     let cell = |n: u32| Cell {
+        ending: nits_protocol::LineEnding::Lf,
         line_no: LineNo::new(n).unwrap(),
         text: format!("l{n}"),
         spans: Vec::new(),
@@ -2011,6 +2012,7 @@ fn expanded_rows(extra: u32) -> Vec<Row> {
     let base: Vec<Row> = (0..3).flat_map(|c| chunk(c).rows).collect();
     let revealed = |i: u32| {
         let cell = Cell {
+            ending: nits_protocol::LineEnding::Lf,
             line_no: LineNo::new(1000 + i).unwrap(),
             text: format!("revealed {i}"),
             spans: Vec::new(),
@@ -2034,6 +2036,7 @@ fn expanded_rows_below(extra: u32) -> Vec<Row> {
     let base: Vec<Row> = (0..3).flat_map(|c| chunk(c).rows).collect();
     let revealed = |i: u32| {
         let cell = Cell {
+            ending: nits_protocol::LineEnding::Lf,
             line_no: LineNo::new(2000 + i).unwrap(),
             text: format!("revealed below {i}"),
             spans: Vec::new(),
@@ -2058,6 +2061,7 @@ fn expanded_rows_with_head_decoy(extra: u32) -> Vec<Row> {
     use nits_protocol::{Cell, LineNo};
     let mut rows = expanded_rows(extra);
     let right = Cell {
+        ending: nits_protocol::LineEnding::Lf,
         line_no: LineNo::new(171).unwrap(),
         text: "same head line, different row".to_owned(),
         spans: Vec::new(),
@@ -2374,6 +2378,7 @@ fn deliver_b_rs(core: &mut ClientCore, wanted: Vec<(nits_protocol::RequestId, u3
     use nits_protocol::{Cell, LineNo, Response};
     let row = |n: u32| {
         let cell = Cell {
+            ending: nits_protocol::LineEnding::Lf,
             line_no: LineNo::new(n).unwrap(),
             text: format!("l{n}"),
             spans: Vec::new(),

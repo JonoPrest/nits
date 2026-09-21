@@ -102,11 +102,36 @@ let sideClass = (side: Domain.Side.t): string =>
   | Head => "right"
   }
 
+let endingName = (ending: LineEnding.t) =>
+  switch ending {
+  | Lf => "LF"
+  | CrLf => "CRLF"
+  | Missing => "No final newline"
+  }
+
+// Bare CR is source content, not a line terminator. Its visible glyph comes
+// from CSS so selecting source retains the original character, not the glyph.
+let sourceText = text =>
+  text
+  ->String.split("\r")
+  ->Array.mapWithIndex((text, index) =>
+    <React.Fragment key={Int.toString(index)}>
+      {index > 0
+        ? <span className="cell-carriage-return" title="Carriage return (source content)">
+            {React.string("\r")}
+          </span>
+        : React.null}
+      {React.string(text)}
+    </React.Fragment>
+  )
+  ->React.array
+
 module CellView = {
   @react.component
   let make = (
     ~cell: Cell.t,
     ~side: Domain.Side.t,
+    ~endingLabel: option<string>=?,
     ~focused: bool=false,
     ~selected: bool=false,
     ~commented: bool=false,
@@ -160,7 +185,7 @@ module CellView = {
           | (None, true) => "cell-changed"
           | (None, false) => ""
           }
-          <span key={Int.toString(i)} className=cls> {React.string(p.text)} </span>
+          <span key={Int.toString(i)} className=cls> {sourceText(p.text)} </span>
         })
         ->React.array}
         {threads > 0
@@ -168,6 +193,10 @@ module CellView = {
               {React.string("💬")}
             </span>
           : React.null}
+        {switch endingLabel {
+        | Some(label) => <span className="cell-ending"> {React.string(label)} </span>
+        | None => React.null
+        }}
       </div>,
       [("data-side", Domain.Side.name(side))],
     )
@@ -227,10 +256,22 @@ let make = (
   | (WhitespaceOnly(_), _) => false
   }
   let onSide = (side: Domain.Side.t, target: Domain.Side.t) => side == target || oneCellBothSides
+  let endingLabel = (cell: Cell.t) =>
+    switch (row, layout) {
+    | (Context({left, right}), Unified) if left.ending != right.ending =>
+      Some("Line ending: " ++ endingName(left.ending) ++ " → " ++ endingName(right.ending))
+    | (Modified({left, right}), _) if left.ending != right.ending => Some(endingName(cell.ending))
+    | _ =>
+      switch cell.ending {
+      | Lf => None
+      | CrLf | Missing => Some(endingName(cell.ending))
+      }
+    }
   let cell = (~cell: Cell.t, ~side: Domain.Side.t) =>
     <CellView
       cell
       side
+      endingLabel=?{endingLabel(cell)}
       focused={focused && onSide(side, focusedSide)}
       selected={switch selectedSide {
       | Some(target) => onSide(side, target)

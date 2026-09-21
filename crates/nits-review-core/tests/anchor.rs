@@ -362,3 +362,17 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn terminator_only_edits_keep_line_ranges_and_live_anchors() {
+    for old in ["first\nlast", "first\nlast\n", "first\r\nlast\r\n"] {
+        for new in ["first\nlast", "first\nlast\n", "first\r\nlast\r\n"] {
+            if old == new {
+                continue;
+            }
+            let anchor = lines_anchor(old, 1, 2);
+            let result = run(&anchor, &CommentState::Live, &present(blob(2)), old, new);
+            assert_eq!(mapped_lines(&result), Some((1, 2)), "{old:?} -> {new:?}");
+        }
+    }
+}

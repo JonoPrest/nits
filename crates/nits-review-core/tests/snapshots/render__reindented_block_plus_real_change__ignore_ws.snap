@@ -34,12 +34,14 @@ expression: r
       "left": {
         "line_no": 3,
         "text": "  c",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       },
       "right": {
         "line_no": 3,
         "text": "    c",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       }
@@ -49,12 +51,14 @@ expression: r
       "left": {
         "line_no": 4,
         "text": "  d",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       },
       "right": {
         "line_no": 4,
         "text": "    d",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       }
@@ -64,12 +68,14 @@ expression: r
       "left": {
         "line_no": 5,
         "text": "e",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       },
       "right": {
         "line_no": 5,
         "text": "e",
+        "ending": "Lf",
         "spans": [],
         "changed": []
       }
@@ -79,6 +85,7 @@ expression: r
       "left": {
         "line_no": 6,
         "text": "f",
+        "ending": "Lf",
         "spans": [],
         "changed": [
           {
@@ -90,6 +97,7 @@ expression: r
       "right": {
         "line_no": 6,
         "text": "F",
+        "ending": "Lf",
         "spans": [],
         "changed": [
           {

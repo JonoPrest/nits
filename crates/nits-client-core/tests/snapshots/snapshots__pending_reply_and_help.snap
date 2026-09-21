@@ -129,12 +129,14 @@ expression: core.view()
           "left": {
             "line_no": 1,
             "text": "fn parse() {",
+            "ending": "Lf",
             "spans": [],
             "changed": []
           },
           "right": {
             "line_no": 1,
             "text": "fn parse() {",
+            "ending": "Lf",
             "spans": [],
             "changed": []
           }
@@ -149,6 +151,7 @@ expression: core.view()
           "left": {
             "line_no": 2,
             "text": "    old()",
+            "ending": "Lf",
             "spans": [],
             "changed": []
           }
@@ -163,6 +166,7 @@ expression: core.view()
           "right": {
             "line_no": 2,
             "text": "    new()",
+            "ending": "Lf",
             "spans": [],
             "changed": []
           }
@@ -183,6 +187,7 @@ expression: core.view()
           "right": {
             "line_no": 3,
             "text": "    newer()",
+            "ending": "Lf",
             "spans": [],
             "changed": []
           }
@@ -197,12 +202,14 @@ expression: core.view()
           "left": {
             "line_no": 3,
             "text": "}",
+            "ending": "Lf",
             "spans": [],
             "changed": []
           },
           "right": {
             "line_no": 4,
             "text": "}",
+            "ending": "Lf",
             "spans": [],
             "changed": []
           }
@@ -217,12 +224,14 @@ expression: core.view()
           "left": {
             "line_no": 4,
             "text": "",
+            "ending": "Lf",
             "spans": [],
             "changed": []
           },
           "right": {
             "line_no": 5,
             "text": "",
+            "ending": "Lf",
             "spans": [],
             "changed": []
           }
@@ -237,12 +246,14 @@ expression: core.view()
           "left": {
             "line_no": 5,
             "text": "// end",
+            "ending": "Lf",
             "spans": [],
             "changed": []
           },
           "right": {
             "line_no": 6,
             "text": "// end",
+            "ending": "Lf",
             "spans": [],
             "changed": []
           }
@@ -309,12 +320,14 @@ expression: core.view()
             "left": {
               "line_no": 1,
               "text": "fn parse() {",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             },
             "right": {
               "line_no": 1,
               "text": "fn parse() {",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -329,6 +342,7 @@ expression: core.view()
             "left": {
               "line_no": 2,
               "text": "    old()",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -343,6 +357,7 @@ expression: core.view()
             "right": {
               "line_no": 2,
               "text": "    new()",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -363,6 +378,7 @@ expression: core.view()
             "right": {
               "line_no": 3,
               "text": "    newer()",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -377,12 +393,14 @@ expression: core.view()
             "left": {
               "line_no": 3,
               "text": "}",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             },
             "right": {
               "line_no": 4,
               "text": "}",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -397,12 +415,14 @@ expression: core.view()
             "left": {
               "line_no": 4,
               "text": "",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             },
             "right": {
               "line_no": 5,
               "text": "",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -417,12 +437,14 @@ expression: core.view()
             "left": {
               "line_no": 5,
               "text": "// end",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             },
             "right": {
               "line_no": 6,
               "text": "// end",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -484,12 +506,14 @@ expression: core.view()
             "left": {
               "line_no": 1,
               "text": "fn parse() {",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             },
             "right": {
               "line_no": 1,
               "text": "fn parse() {",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -504,6 +528,7 @@ expression: core.view()
             "left": {
               "line_no": 2,
               "text": "    old()",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -518,6 +543,7 @@ expression: core.view()
             "right": {
               "line_no": 2,
               "text": "    new()",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -532,6 +558,7 @@ expression: core.view()
             "right": {
               "line_no": 3,
               "text": "    newer()",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -546,12 +573,14 @@ expression: core.view()
             "left": {
               "line_no": 3,
               "text": "}",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             },
             "right": {
               "line_no": 4,
               "text": "}",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -566,12 +595,14 @@ expression: core.view()
             "left": {
               "line_no": 4,
               "text": "",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             },
             "right": {
               "line_no": 5,
               "text": "",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }
@@ -586,12 +617,14 @@ expression: core.view()
             "left": {
               "line_no": 5,
               "text": "// end",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             },
             "right": {
               "line_no": 6,
               "text": "// end",
+              "ending": "Lf",
               "spans": [],
               "changed": []
             }

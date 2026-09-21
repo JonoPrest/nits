@@ -662,6 +662,7 @@ fn browse_comment_arrives_remotely_inline_and_converges() {
     let reference = RefSpec::Tag { name: "v1".into() };
     let mut sim = Sim::new(snapshot, vec![human("ada"), human("bob")]);
     let cell = Cell {
+        ending: nits_protocol::LineEnding::Lf,
         line_no: LineNo::new(1).unwrap(),
         text: "source".into(),
         spans: vec![],

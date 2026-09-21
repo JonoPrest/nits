@@ -1038,6 +1038,115 @@ fn disk_tier_load_before_send_and_dedupes_concurrent_misses() {
 }
 
 #[test]
+fn previous_render_generation_is_not_loaded_even_when_its_header_decodes() {
+    let mut kv = Kv::default();
+    let mut previous = header("a.rs", 1, 1);
+    let RenderContent::Text {
+        additions,
+        deletions,
+        ..
+    } = &mut previous.content
+    else {
+        panic!("text")
+    };
+    *additions = 0;
+    *deletions = 0;
+    kv.map.insert(
+        serde_json::to_string(&header_key("a.rs")).unwrap(),
+        CacheValue::Header { header: previous }.encode(),
+    );
+    kv.map.insert(
+        serde_json::to_string(&chunk_key("a.rs", 0)).unwrap(),
+        CacheValue::Chunk {
+            chunk: RenderChunk {
+                index: ChunkIndex::FIRST,
+                rows: vec![Row::Expander {
+                    hidden: 1,
+                    dir: nits_protocol::ExpandDir::Both,
+                    gap: nits_protocol::Gap::new(0),
+                }],
+            },
+        }
+        .encode(),
+    );
+    let mut core = subscribed(remote(Bytes::mib(1), Bytes::mib(1)));
+    let effects = core
+        .handle(Input::User(Action::OpenReview {
+            review_id: review_id(),
+        }))
+        .unwrap();
+    let (id, _) = requests(&effects)[0].clone();
+    let effects = core
+        .handle(Input::Server(ServerMsg::Response {
+            id,
+            response: Response::ReviewSnapshot {
+                snapshot: snapshot(1, 2),
+            },
+        }))
+        .unwrap();
+    let files_id = requests(&effects)
+        .into_iter()
+        .find(|(_, r)| matches!(r, Request::ListFiles { .. }))
+        .unwrap()
+        .0;
+    let effects = core
+        .handle(Input::Server(ServerMsg::Response {
+            id: files_id,
+            response: Response::Files {
+                files: vec![change("a.rs")],
+                resolved: resolved(1, 2).into_iter().collect(),
+            },
+        }))
+        .unwrap();
+    let effects = kv.drive(&mut core, effects);
+    let render_id = requests(&effects)
+        .into_iter()
+        .find(|(_, r)| matches!(r, Request::FileRender { .. }))
+        .expect("old valid header must not suppress daemon render")
+        .0;
+    assert!(!core.cache().contains(&header_key("a.rs")));
+    let effects = item(
+        &mut core,
+        render_id,
+        StreamItem::Header {
+            header: header("a.rs", 1, 1),
+        },
+    );
+    kv.drive(&mut core, effects);
+    assert!(
+        !core.cache().contains(&chunk_key("a.rs", 0)),
+        "old chunk is in the previous namespace too"
+    );
+    let cell = |ending| nits_protocol::Cell {
+        line_no: nits_protocol::LineNo::new(1).unwrap(),
+        text: "same".into(),
+        ending,
+        spans: vec![],
+        changed: vec![],
+    };
+    let current = RenderChunk {
+        index: ChunkIndex::FIRST,
+        rows: vec![Row::Modified {
+            left: cell(nits_protocol::LineEnding::Missing),
+            right: cell(nits_protocol::LineEnding::Lf),
+        }],
+    };
+    let effects = item(
+        &mut core,
+        render_id,
+        StreamItem::Chunk {
+            repo_id: repo_id(),
+            path: path("a.rs"),
+            chunk: current.clone(),
+        },
+    );
+    kv.drive(&mut core, effects);
+    let stored =
+        CacheValue::decode(kv.map.get(&chunk_key("a.rs", 0).storage_key()).unwrap()).unwrap();
+    assert_eq!(stored, CacheValue::Chunk { chunk: current });
+}
+
+#[test]
 fn old_format_and_wrong_mode_disk_headers_are_removed_and_fetched_again() {
     for legacy_format in [false, true] {
         let mut core = subscribed(remote(Bytes::mib(1), Bytes::mib(1)));
@@ -1827,6 +1936,7 @@ fn foreign_event(seq: u64, body: EventBody) -> ServerMsg {
 fn numbered_chunk(index: u32) -> RenderChunk {
     use nits_protocol::{Cell, LineNo};
     let cell = |n: u32| Cell {
+        ending: nits_protocol::LineEnding::Lf,
         line_no: LineNo::new(n).unwrap(),
         text: format!("line {n}"),
         spans: Vec::new(),
@@ -3298,6 +3408,7 @@ fn browse_ready(reference: RefSpec) -> ClientCore {
     let rows = (1..=100)
         .map(|n| {
             let cell = nits_protocol::Cell {
+                ending: nits_protocol::LineEnding::Lf,
                 line_no: nits_protocol::LineNo::new(n).unwrap(),
                 text: if n == 2 {
                     String::new()

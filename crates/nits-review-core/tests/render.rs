@@ -16,6 +16,118 @@ fn opts(ignore_ws: bool) -> RenderOpts {
     }
 }
 
+#[test]
+fn exact_terminator_changes_keep_source_coordinates_and_ignore_policy() {
+    use nits_protocol::LineEnding;
+    for old in [LineEnding::Lf, LineEnding::CrLf, LineEnding::Missing] {
+        for new in [LineEnding::Lf, LineEnding::CrLf, LineEnding::Missing] {
+            if old == new {
+                continue;
+            }
+            let before = format!("same{}", old.as_str());
+            let after = format!("same{}", new.as_str());
+            let rendered = render_file(
+                &HL,
+                Some(before.as_bytes()),
+                Some(after.as_bytes()),
+                None,
+                &opts(false),
+            );
+            assert!(matches!(
+                rendered.content,
+                RenderContent::Text {
+                    additions: 1,
+                    deletions: 1,
+                    ..
+                }
+            ));
+            let cells: Vec<_> = rendered
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    Row::Modified { left, right } => Some((left, right)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cells.len(), 1);
+            let (left, right) = cells[0];
+            assert_eq!((left.line_no.get(), right.line_no.get()), (1, 1));
+            assert_eq!((left.text.as_str(), right.text.as_str()), ("same", "same"));
+            assert_eq!((left.ending, right.ending), (old, new));
+            assert!(left.changed.is_empty() && right.changed.is_empty());
+            let ignored = render_file(
+                &HL,
+                Some(before.as_bytes()),
+                Some(after.as_bytes()),
+                None,
+                &opts(true),
+            );
+            assert_eq!(ignored.rows, vec![Row::WhitespaceOnly]);
+        }
+    }
+    let bare_cr = render_file(&HL, Some(b"same"), Some(b"same\r"), None, &opts(false));
+    assert!(bare_cr.rows.iter().any(|r| matches!(r,Row::Modified {right,..} if right.text == "same\r" && right.ending == LineEnding::Missing)));
+}
+
+#[test]
+fn endings_survive_expansion_browse_and_chunk_boundaries_without_extra_source_lines() {
+    use nits_protocol::LineEnding;
+    let before = format!("{}last", "context\r\n".repeat(502));
+    let after = format!("{before}\n");
+    let opts = RenderOpts {
+        context_lines: u32::MAX,
+        ..opts(false)
+    };
+    let rendered = render_file(
+        &HL,
+        Some(before.as_bytes()),
+        Some(after.as_bytes()),
+        None,
+        &opts,
+    );
+    let chunks: Vec<_> = rendered.chunks().collect();
+    assert!(chunks.len() > 1);
+    let mut source_lines = Vec::new();
+    for row in chunks.iter().flat_map(|c| &c.rows) {
+        match row {
+            Row::Context { left, right } => {
+                assert_eq!(left.ending, LineEnding::CrLf);
+                assert_eq!(right.ending, LineEnding::CrLf);
+                source_lines.push(right.line_no.get());
+            }
+            Row::Modified { left, right } => {
+                assert_eq!(
+                    (left.ending, right.ending),
+                    (LineEnding::Missing, LineEnding::Lf)
+                );
+                source_lines.push(right.line_no.get());
+            }
+            Row::HunkHeader { .. } => {}
+            _ => panic!("unexpected source row {row:?}"),
+        }
+    }
+    assert_eq!(source_lines, (1..=503).collect::<Vec<_>>());
+    for bytes in [
+        b"".as_slice(),
+        b"\n",
+        b"\r\n",
+        b"x\r",
+        before.as_bytes(),
+        after.as_bytes(),
+    ] {
+        let browse = render_blob(&HL, bytes, None);
+        let rebuilt: String = browse
+            .rows
+            .iter()
+            .map(|row| match row {
+                Row::Context { right, .. } => format!("{}{}", right.text, right.ending.as_str()),
+                _ => panic!("blob has only source rows"),
+            })
+            .collect();
+        assert_eq!(rebuilt.as_bytes(), bytes);
+    }
+}
+
 const RUST_OLD: &str = "\
 use std::fmt;
 
@@ -132,6 +244,30 @@ fn corpus() -> Vec<Case> {
             name: "crlf",
             old: Some(b"a\r\nb\r\nc\r\n"),
             new: Some(b"a\r\nB\r\nc\r\n"),
+            lang: None,
+        },
+        Case {
+            name: "removed_final_newline",
+            old: Some(b"same\n"),
+            new: Some(b"same"),
+            lang: None,
+        },
+        Case {
+            name: "lf_to_crlf",
+            old: Some(b"one\ntwo\n"),
+            new: Some(b"one\r\ntwo\r\n"),
+            lang: None,
+        },
+        Case {
+            name: "mixed_terminators",
+            old: Some(b"one\ntwo\nthree\n"),
+            new: Some(b"one\r\nchanged\nthree"),
+            lang: None,
+        },
+        Case {
+            name: "bare_cr_content",
+            old: Some(b"same"),
+            new: Some(b"same\r"),
             lang: None,
         },
         Case {

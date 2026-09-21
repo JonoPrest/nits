@@ -225,16 +225,22 @@ struct Hunk {
 }
 
 fn diff_hunks(old: &[Line], new: &[Line], ignore_whitespace: bool) -> Vec<Hunk> {
-    fn key(l: &Line, ignore_whitespace: bool) -> &str {
+    fn key(l: &Line, ignore_whitespace: bool) -> LineKey<'_> {
         if ignore_whitespace {
-            &l.normalised
+            LineKey {
+                text: &l.normalised,
+                ending: nits_protocol::LineEnding::Missing,
+            }
         } else {
-            &l.text
+            LineKey {
+                text: &l.text,
+                ending: l.ending,
+            }
         }
     }
-    let before: Vec<&str> = old.iter().map(|l| key(l, ignore_whitespace)).collect();
-    let after: Vec<&str> = new.iter().map(|l| key(l, ignore_whitespace)).collect();
-    let input = imara_diff::InternedInput::new(StrSlice(&before), StrSlice(&after));
+    let before: Vec<_> = old.iter().map(|l| key(l, ignore_whitespace)).collect();
+    let after: Vec<_> = new.iter().map(|l| key(l, ignore_whitespace)).collect();
+    let input = imara_diff::InternedInput::new(LineKeys(&before), LineKeys(&after));
     let mut diff = imara_diff::Diff::compute(imara_diff::Algorithm::Histogram, &input);
     diff.postprocess_lines(&input);
     diff.hunks()
@@ -245,12 +251,25 @@ fn diff_hunks(old: &[Line], new: &[Line], ignore_whitespace: bool) -> Vec<Hunk> 
         .collect()
 }
 
-/// `TokenSource` over a slice of already-split lines.
-struct StrSlice<'a>(&'a [&'a str]);
+/// Equality includes the terminator; indentation postprocessing reads source text.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct LineKey<'a> {
+    text: &'a str,
+    ending: nits_protocol::LineEnding,
+}
 
-impl<'a> imara_diff::TokenSource for StrSlice<'a> {
-    type Token = &'a str;
-    type Tokenizer = std::iter::Copied<std::slice::Iter<'a, &'a str>>;
+impl AsRef<[u8]> for LineKey<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self.text.as_bytes()
+    }
+}
+
+/// `TokenSource` over a slice of already-split lines.
+struct LineKeys<'a>(&'a [LineKey<'a>]);
+
+impl<'a> imara_diff::TokenSource for LineKeys<'a> {
+    type Token = LineKey<'a>;
+    type Tokenizer = std::iter::Copied<std::slice::Iter<'a, Self::Token>>;
     fn tokenize(&self) -> Self::Tokenizer {
         self.0.iter().copied()
     }
@@ -268,6 +287,7 @@ fn cell(
     Cell {
         line_no: LineNo::from_index(u32::try_from(index).unwrap_or(u32::MAX - 1)),
         text: line.text.clone(),
+        ending: line.ending,
         spans: spans.get(index).cloned().unwrap_or_default(),
         changed,
     }
