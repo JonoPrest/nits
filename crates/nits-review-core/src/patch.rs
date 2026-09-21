@@ -1,15 +1,29 @@
-//! Minimal unified-diff application for suggestion patches.
+//! Strict, byte-preserving unified-diff application for suggestion patches.
 //!
-//! Accepts the hunk format carried by `CommentKind::Suggestion`: zero or
-//! more `@@ -a,b +c,d @@` hunks with ` `, `-`, `+` lines. Context and removed
-//! lines must match exactly at the stated position (no fuzz).
+//! Accepts one or more `@@ -a,b +c,d @@` hunks, optionally preceded by a
+//! `---`/`+++` file-header pair. Both ranges and body counts must agree; context
+//! and removed lines match exactly, including CRLF. Body lines end in LF;
+//! `\ No newline at end of file` removes that LF from the preceding source
+//! line. No fuzz, newline normalization, binary patches or multi-file patches.
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PatchError {
-    #[error("malformed hunk header: {0:?}")]
+    #[error("malformed hunk header or range: {0:?}")]
     Header(String),
     #[error("unexpected line in hunk: {0:?}")]
     Line(String),
+    #[error("patch must contain at least one hunk")]
+    Empty,
+    #[error("hunk body does not match the counts in {0:?}")]
+    Count(String),
+    #[error(
+        "patch body line must end in LF; use a no-newline marker for an unterminated source line"
+    )]
+    UnterminatedPatchLine,
+    #[error(
+        "a line without a final newline must be nonempty and only appear at the end of the resulting file"
+    )]
+    MisplacedEndOfFile,
     #[error("hunk at old line {line} does not match: expected {expected:?}, found {found:?}")]
     Mismatch {
         line: usize,
@@ -18,86 +32,213 @@ pub enum PatchError {
     },
 }
 
-pub fn apply(original: &[u8], patch: &str) -> Result<Vec<u8>, PatchError> {
-    let text = String::from_utf8_lossy(original);
-    let had_trailing_nl = text.ends_with('\n');
-    let old_lines: Vec<&str> = text.lines().collect();
-    let mut out: Vec<String> = Vec::new();
-    let mut cursor = 0usize; // next old line index not yet copied
-
-    let mut lines = patch.lines().peekable();
-    while let Some(line) = lines.next() {
-        if line.starts_with("---") || line.starts_with("+++") || line.is_empty() {
-            continue;
-        }
-        let Some(header) = line.strip_prefix("@@ ") else {
-            return Err(PatchError::Line(line.to_owned()));
-        };
-        let old_start =
-            parse_old_start(header).ok_or_else(|| PatchError::Header(line.to_owned()))?;
-        let target = old_start.saturating_sub(1);
-        if target < cursor || target > old_lines.len() {
-            return Err(PatchError::Header(line.to_owned()));
-        }
-        out.extend(old_lines[cursor..target].iter().map(|s| (*s).to_owned()));
-        cursor = target;
-        while let Some(&body) = lines.peek() {
-            if body.starts_with("@@ ") {
-                break;
-            }
-            lines.next();
-            if body == "\\ No newline at end of file" {
-                continue;
-            }
-            let mut chars = body.chars();
-            let tag = chars.next();
-            let content = chars.as_str();
-            match tag {
-                Some(' ' | '-') => {
-                    let found = old_lines.get(cursor).copied();
-                    if found != Some(content) {
-                        return Err(PatchError::Mismatch {
-                            line: cursor + 1,
-                            expected: content.to_owned(),
-                            found: found.map(str::to_owned),
-                        });
-                    }
-                    if tag == Some(' ') {
-                        out.push(content.to_owned());
-                    }
-                    cursor += 1;
-                }
-                Some('+') => out.push(content.to_owned()),
-                None => {
-                    // A blank patch line is an empty context line.
-                    let found = old_lines.get(cursor).copied();
-                    if found != Some("") {
-                        return Err(PatchError::Mismatch {
-                            line: cursor + 1,
-                            expected: String::new(),
-                            found: found.map(str::to_owned),
-                        });
-                    }
-                    out.push(String::new());
-                    cursor += 1;
-                }
-                Some(_) => return Err(PatchError::Line(body.to_owned())),
-            }
-        }
-    }
-    out.extend(old_lines[cursor..].iter().map(|s| (*s).to_owned()));
-    let mut joined = out.join("\n");
-    if had_trailing_nl || (original.is_empty() && !joined.is_empty()) {
-        joined.push('\n');
-    }
-    Ok(joined.into_bytes())
+/// A validated unified-diff range, represented as a zero-based line offset.
+/// Git's zero-count ranges point *after* the stated line; nonempty ranges
+/// point at the stated one-based line. Construction also rules out overflow.
+#[derive(Debug)]
+struct HunkRange {
+    offset: usize,
+    count: usize,
 }
 
-fn parse_old_start(header: &str) -> Option<usize> {
-    // "-a,b +c,d @@..." or "-a +c @@"
-    let rest = header.strip_prefix('-')?;
-    let num: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    num.parse().ok()
+impl HunkRange {
+    fn parse(value: &str) -> Option<Self> {
+        let (start, count) = match value.split_once(',') {
+            Some((start, count)) => (number(start)?, number(count)?),
+            None => (number(value)?, 1),
+        };
+        let offset = if count == 0 {
+            start
+        } else {
+            start.checked_sub(1)?
+        };
+        offset.checked_add(count)?;
+        Some(Self { offset, count })
+    }
+}
+
+fn number(value: &str) -> Option<usize> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LineKind {
+    Context,
+    Remove,
+    Add,
+}
+
+#[derive(Debug)]
+struct BodyLine<'a> {
+    kind: LineKind,
+    /// Exact source bytes, including LF unless followed by a no-newline marker.
+    bytes: &'a [u8],
+}
+
+#[derive(Debug)]
+struct Hunk<'a> {
+    header: &'a str,
+    old: HunkRange,
+    new: HunkRange,
+    lines: Vec<BodyLine<'a>>,
+}
+
+impl<'a> Hunk<'a> {
+    fn header(header: &'a str) -> Result<Self, PatchError> {
+        let parse = || {
+            let (old, rest) = header.strip_prefix("@@ -")?.split_once(" +")?;
+            let (new, suffix) = rest.split_once(" @@")?;
+            if !suffix.is_empty() && !suffix.starts_with(' ') {
+                return None;
+            }
+            let old = HunkRange::parse(old)?;
+            let new = HunkRange::parse(new)?;
+            if old.count == 0 && new.count == 0 {
+                return None;
+            }
+            Some(Self {
+                header,
+                old,
+                new,
+                lines: Vec::new(),
+            })
+        };
+        parse().ok_or_else(|| PatchError::Header(header.to_owned()))
+    }
+
+    fn validate_counts(&self) -> Result<(), PatchError> {
+        let mut old = 0;
+        let mut new = 0;
+        for line in &self.lines {
+            match line.kind {
+                LineKind::Context => {
+                    old += 1;
+                    new += 1;
+                }
+                LineKind::Remove => old += 1,
+                LineKind::Add => new += 1,
+            }
+        }
+        if old != self.old.count || new != self.new.count {
+            return Err(PatchError::Count(self.header.to_owned()));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct Patch<'a> {
+    hunks: Vec<Hunk<'a>>,
+}
+
+impl<'a> TryFrom<&'a str> for Patch<'a> {
+    type Error = PatchError;
+
+    fn try_from(patch: &'a str) -> Result<Self, Self::Error> {
+        let mut lines = patch.split_inclusive('\n').peekable();
+        if lines.peek().is_some_and(|line| line.starts_with("--- ")) {
+            lines.next();
+            if !lines.next().is_some_and(|line| line.starts_with("+++ ")) {
+                return Err(PatchError::Header("expected +++ file header".into()));
+            }
+        }
+        let mut hunks = Vec::new();
+        while let Some(header) = lines.next() {
+            let header = header.strip_suffix('\n').unwrap_or(header);
+            let mut hunk = Hunk::header(header)?;
+            while let Some(&body) = lines.peek() {
+                if body.starts_with("@@ ") {
+                    break;
+                }
+                lines.next();
+                let mut chars = body.chars();
+                let kind = match chars.next() {
+                    Some(' ') => LineKind::Context,
+                    Some('-') => LineKind::Remove,
+                    Some('+') => LineKind::Add,
+                    Some(_) | None => {
+                        return Err(PatchError::Line(body.trim_end_matches('\n').to_owned()));
+                    }
+                };
+                let content = chars.as_str();
+                if !content.ends_with('\n') {
+                    return Err(PatchError::UnterminatedPatchLine);
+                }
+                let bytes = if lines.peek().is_some_and(|line| {
+                    line.trim_end_matches('\n') == "\\ No newline at end of file"
+                }) {
+                    lines.next();
+                    content
+                        .strip_suffix('\n')
+                        .ok_or(PatchError::UnterminatedPatchLine)?
+                        .as_bytes()
+                } else {
+                    content.as_bytes()
+                };
+                if bytes.is_empty() {
+                    return Err(PatchError::MisplacedEndOfFile);
+                }
+                hunk.lines.push(BodyLine { kind, bytes });
+            }
+            hunk.validate_counts()?;
+            hunks.push(hunk);
+        }
+        if hunks.is_empty() {
+            return Err(PatchError::Empty);
+        }
+        Ok(Self { hunks })
+    }
+}
+
+pub fn apply(original: &[u8], patch: &str) -> Result<Vec<u8>, PatchError> {
+    let patch = Patch::try_from(patch)?;
+    let old_lines: Vec<&[u8]> = original.split_inclusive(|&b| b == b'\n').collect();
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    for hunk in patch.hunks {
+        let untouched = old_lines
+            .get(cursor..hunk.old.offset)
+            .ok_or_else(|| PatchError::Header(hunk.header.to_owned()))?;
+        out.extend_from_slice(untouched);
+        // The new range includes the cumulative line delta of earlier hunks.
+        if out.len() != hunk.new.offset {
+            return Err(PatchError::Header(hunk.header.to_owned()));
+        }
+        cursor = hunk.old.offset;
+        for line in hunk.lines {
+            match line.kind {
+                LineKind::Context | LineKind::Remove => {
+                    let found = old_lines.get(cursor).copied();
+                    if found != Some(line.bytes) {
+                        return Err(PatchError::Mismatch {
+                            line: cursor + 1,
+                            expected: String::from_utf8_lossy(line.bytes).into_owned(),
+                            found: found.map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
+                        });
+                    }
+                    if matches!(line.kind, LineKind::Context) {
+                        out.push(line.bytes);
+                    }
+                    cursor += 1;
+                }
+                LineKind::Add => out.push(line.bytes),
+            }
+        }
+    }
+    out.extend_from_slice(
+        old_lines
+            .get(cursor..)
+            .ok_or(PatchError::MisplacedEndOfFile)?,
+    );
+    // An insertion cannot silently join with an unterminated preceding line,
+    // and a no-newline marker cannot manufacture a non-final source line.
+    if out.iter().rev().skip(1).any(|line| !line.ends_with(b"\n")) {
+        return Err(PatchError::MisplacedEndOfFile);
+    }
+    Ok(out.concat())
 }
 
 #[cfg(test)]
@@ -136,7 +277,11 @@ mod tests {
 
     #[test]
     fn preserves_missing_trailing_newline() {
-        let out = apply(b"a\nb", "@@ -2,1 +2,1 @@\n-b\n+c\n").unwrap();
+        let out = apply(
+            b"a\nb",
+            "@@ -2,1 +2,1 @@\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n",
+        )
+        .unwrap();
         assert_eq!(out, b"a\nc");
     }
 
@@ -149,6 +294,65 @@ mod tests {
                 apply(b"a\nb\nc\n", &format!("@@ -2,1 +2,1 @@\n{body}\n")),
                 Err(PatchError::Line(body.to_owned()))
             );
+        }
+    }
+
+    #[test]
+    fn retains_non_utf8_bytes_outside_the_edit() {
+        let original = b"\xff\r\nb\n\xfe";
+        assert_eq!(
+            apply(original, "@@ -2 +2 @@\n-b\n+B\n").unwrap(),
+            b"\xff\r\nB\n\xfe"
+        );
+    }
+
+    #[test]
+    fn validates_range_syntax_and_counts() {
+        for patch in [
+            "@@ -1 +1 @@trailing\n-a\n+b\n",
+            "@@ -1,1,1 +1 @@\n-a\n+b\n",
+            "@@ --1 +1 @@\n-a\n+b\n",
+            "@@ -1 +0 @@\n-a\n+b\n",
+            "@@ -1,0 +1,0 @@\n",
+            "@@ -1,2 +1 @@\n-a\n+b\n",
+            "@@ -1 +1,2 @@\n-a\n+b\n",
+            "@@ -1 +1 @@\n-a\n+b\n+extra\n",
+            "@@ -1 +1 @@\n-a\n",
+            "@@ -1 +1\n-a\n+b\n",
+            "@@ -1 +1 @@\n\\ No newline at end of file\n-a\n+b\n",
+            "@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n\\ No newline at end of file\n",
+        ] {
+            assert!(apply(b"a\n", patch).is_err(), "{patch:?}");
+        }
+        let overflowing = format!("@@ -{},2 +1 @@\n-a\n+b\n", usize::MAX);
+        assert!(matches!(
+            apply(b"a\n", &overflowing),
+            Err(PatchError::Header(_))
+        ));
+        assert_eq!(apply(b"a\n", ""), Err(PatchError::Empty));
+    }
+
+    #[test]
+    fn newline_markers_are_side_specific_and_only_at_eof() {
+        let invalid: &[(&[u8], &str)] = &[
+            (b"a", "@@ -1 +1 @@\n-a\n+b\n"), // Missing old-side marker.
+            (
+                b"a\n",
+                "@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n",
+            ),
+            (
+                b"a\nb\n",
+                "@@ -1 +1 @@\n-a\n+A\n\\ No newline at end of file\n",
+            ),
+            (b"a", "@@ -1,0 +2 @@\n+b\n"), // Cannot append after an unterminated line.
+            (b"", "@@ -0,0 +1 @@\n+\n\\ No newline at end of file\n"),
+            (
+                b"a\n",
+                "@@ -1,0 +2 @@\n+b\n\\ No newline at end of file\n@@ -1,0 +3 @@\n+c\n",
+            ),
+        ];
+        for &(original, patch) in invalid {
+            assert!(apply(original, patch).is_err(), "{patch:?}");
         }
     }
 
@@ -171,7 +375,7 @@ mod tests {
             suffix in prop::collection::vec(any::<char>(), 0..256),
         ) {
             let body: String = std::iter::once(prefix).chain(suffix).collect();
-            let expected = body.lines().next().unwrap().to_owned();
+            let expected = body.split('\n').next().unwrap().to_owned();
             prop_assert_eq!(
                 apply(b"a\nb\nc\n", &format!("@@ -2,1 +2,1 @@\n{body}")),
                 Err(PatchError::Line(expected))
