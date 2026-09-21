@@ -748,7 +748,11 @@ async fn browser_reaches_subscribed(port: u16) {
         let Message::Text(text) = message else {
             continue;
         };
-        let patches: Vec<nits_client_core::ViewPatch> = serde_json::from_str(&text).unwrap();
+        assert!(text.len() < nits_client_core::VIEW_MESSAGE_LIMIT);
+        let frame: nits_client_core::ViewFrame = serde_json::from_str(&text).unwrap();
+        let nits_client_core::ViewFrameBody::Complete { patches } = frame.body else {
+            panic!("the empty context fixture must fit in one delivery frame")
+        };
         if patches.iter().any(|patch| {
             matches!(
                 patch,
