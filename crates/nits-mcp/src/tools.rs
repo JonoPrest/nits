@@ -1328,7 +1328,7 @@ mod tests {
             serde_json::json!({"path":"source.rs","start_line":3,"end_line":2}),
             serde_json::json!({"path":"source.rs","start_line":-1}),
             serde_json::json!({"path":"source.rs","start_line":1.5}),
-            serde_json::json!({"path":"source.rs","start_line":4294967296u64}),
+            serde_json::json!({"path":"source.rs","start_line":4_294_967_296_u64}),
             serde_json::json!({"path":"source.rs","start_line":"1"}),
             serde_json::json!({"path":"../outside.rs"}),
             serde_json::json!({"path":true}),
