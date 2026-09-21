@@ -130,6 +130,9 @@ macro_rules! registry {
 }
 
 registry!(
+    CreationTargetId,
+    CreationRevision,
+    CreationEdit,
     CreationBase,
     CreationTarget,
     CreationDraft,
@@ -733,9 +736,9 @@ enum_fixture!(
             workspace_id: proto::<Workspace>()?.id
         },
         Action::CancelNewReview,
-        Action::UpdateCreationDraft {
+        Action::EditCreationDraft {
             review_id: review_id()?,
-            draft: local::<CreationDraft>()?
+            edit: local::<CreationEdit>()?
         },
         Action::SubmitReviewCreation {
             review_id: review_id()?
@@ -749,7 +752,7 @@ enum_fixture!(
         },
         Action::SelectCreationTarget {
             review_id: review_id()?,
-            index: 0
+            target_id: CreationTargetId::new(0)
         },
         Action::AddCreationTarget {
             review_id: review_id()?
@@ -1245,6 +1248,7 @@ struct_fixture!(
     CreationTarget,
     "CreationTarget",
     CreationTarget {
+        id: CreationTargetId::new(0),
         repo_id: repo_id()?,
         base: CreationBase::Automatic,
         head: "worktree".into()
@@ -1328,7 +1332,41 @@ struct_fixture!(
         context: Some(local::<DaemonContext>()?),
         draft: local::<CreationDraft>()?,
         defaults: vec![local::<CreationDefault>()?],
-        selected: Some(0),
+        selected: Some(CreationTargetId::new(0)),
+        revision: CreationRevision::new(0),
         status: CreationStatus::Editing
     }
+);
+
+struct_fixture!(
+    CreationTargetId,
+    "CreationTargetId",
+    CreationTargetId::new(0)
+);
+struct_fixture!(
+    CreationRevision,
+    "CreationRevision",
+    CreationRevision::new(0)
+);
+enum_fixture!(
+    CreationEdit,
+    CreationEditKind,
+    "CreationEdit",
+    [
+        CreationEdit::Title {
+            text: "Review title".into()
+        },
+        CreationEdit::Repository {
+            target_id: CreationTargetId::new(0),
+            repo_id: repo_id()?
+        },
+        CreationEdit::Base {
+            target_id: CreationTargetId::new(0),
+            text: "develop".into()
+        },
+        CreationEdit::Head {
+            target_id: CreationTargetId::new(0),
+            text: "worktree".into()
+        }
+    ]
 );

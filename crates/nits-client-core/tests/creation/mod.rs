@@ -55,11 +55,31 @@ fn edit(core: &mut ClientCore, change: impl FnOnce(&mut CreationDraft)) {
     let id = current.review_id;
     let mut draft = current.draft.clone();
     change(&mut draft);
-    core.handle(Input::User(Action::UpdateCreationDraft {
-        review_id: id,
-        draft,
-    }))
-    .unwrap();
+    let mut edits = vec![nits_client_core::CreationEdit::Title { text: draft.title }];
+    for target in draft.targets {
+        edits.push(nits_client_core::CreationEdit::Repository {
+            target_id: target.id,
+            repo_id: target.repo_id,
+        });
+        match target.base {
+            CreationBase::Automatic => {}
+            CreationBase::Manual { text } => edits.push(nits_client_core::CreationEdit::Base {
+                target_id: target.id,
+                text,
+            }),
+        }
+        edits.push(nits_client_core::CreationEdit::Head {
+            target_id: target.id,
+            text: target.head,
+        });
+    }
+    for edit in edits {
+        core.handle(Input::User(Action::EditCreationDraft {
+            review_id: id,
+            edit,
+        }))
+        .unwrap();
+    }
 }
 fn ready() -> (ClientCore, ReviewId) {
     let (mut core, id, request) = begin();
@@ -370,11 +390,10 @@ fn lookup_failure_never_resends_and_context_change_never_restores_another_daemon
         matches!(&creation(&restored).status,CreationStatus::Interrupted {message,..} if message.contains("offline storage"))
     );
     let effects = restored
-        .handle(Input::User(Action::UpdateCreationDraft {
+        .handle(Input::User(Action::EditCreationDraft {
             review_id: id,
-            draft: CreationDraft {
-                title: "must not replace attempt".into(),
-                targets: vec![],
+            edit: nits_client_core::CreationEdit::Title {
+                text: "must be ignored".into(),
             },
         }))
         .unwrap();
@@ -532,4 +551,99 @@ fn retained_or_completed_creation_does_not_capture_review_composer_actions() {
             assert_eq!(creation(&core), &retained);
         }
     }
+}
+
+#[test]
+fn target_structure_and_field_edits_stay_ordered_without_waiting_for_view_patches() {
+    use nits_client_core::{Command, CreationEdit, CreationRevision};
+    let (mut core, id) = ready();
+    let first = creation(&core).draft.targets[0].id;
+    let before = creation(&core).revision;
+    core.handle(Input::User(Action::RunCommand {
+        command: Command::AddReviewTarget,
+    }))
+    .unwrap();
+    let second = creation(&core).draft.targets[1].id;
+    assert_ne!(first, second);
+    for edit in [
+        CreationEdit::Title {
+            text: "title after add before ACK".into(),
+        },
+        CreationEdit::Base {
+            target_id: second,
+            text: "second-base".into(),
+        },
+    ] {
+        core.handle(Input::User(Action::EditCreationDraft {
+            review_id: id,
+            edit,
+        }))
+        .unwrap();
+    }
+    assert_eq!(creation(&core).draft.targets.len(), 2);
+    core.handle(Input::User(Action::SelectCreationTarget {
+        review_id: id,
+        target_id: first,
+    }))
+    .unwrap();
+    core.handle(Input::User(Action::RunCommand {
+        command: Command::RemoveReviewTarget,
+    }))
+    .unwrap();
+    for edit in [
+        CreationEdit::Title {
+            text: "title after remove before ACK".into(),
+        },
+        CreationEdit::Base {
+            target_id: first,
+            text: "stale removed row".into(),
+        },
+        CreationEdit::Head {
+            target_id: second,
+            text: "head".into(),
+        },
+    ] {
+        core.handle(Input::User(Action::EditCreationDraft {
+            review_id: id,
+            edit,
+        }))
+        .unwrap();
+    }
+    assert_eq!(creation(&core).draft.targets.len(), 1);
+    let target = &creation(&core).draft.targets[0];
+    assert_eq!(target.id, second);
+    assert_eq!(
+        target.base,
+        CreationBase::Manual {
+            text: "second-base".into()
+        }
+    );
+    assert_eq!(target.head, "head");
+    assert!(creation(&core).revision > before);
+    assert!(creation(&core).revision > CreationRevision::new(0));
+    let retained = creation(&core).clone();
+    let (_, created) = submit(&mut core, id);
+    assert_eq!(created.targets.len(), 1);
+    assert_eq!(created.title, retained.draft.title);
+    assert_eq!(
+        created.targets.first().base,
+        RefSpec::Branch {
+            name: "second-base".into()
+        }
+    );
+    // A browser that loses the ACK restores precisely these rows and checks
+    // the same attempt, without recreating removed rows or writing again.
+    let mut restored = subscribed(0);
+    let effects = restored
+        .handle(Input::User(Action::RestoreReviewCreation {
+            creation: retained.clone(),
+            resume: CreationResume::Submitted,
+        }))
+        .unwrap();
+    let (lookup, request) = sent_request(&effects).unwrap();
+    assert_eq!(request, Request::GetReview { review_id: id });
+    answer(&mut restored, lookup, Response::Review { review: created });
+    assert_eq!(creation(&restored).draft, retained.draft);
+    assert_eq!(creation(&restored).revision, retained.revision);
+    assert_eq!(creation(&restored).status, CreationStatus::Succeeded);
 }

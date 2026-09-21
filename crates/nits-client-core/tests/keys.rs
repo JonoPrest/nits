@@ -406,7 +406,7 @@ fn every_action_is_reachable_from_a_binding() {
         ActionKind::Reply,       // `r` opens a reply draft; the text is host's
         ActionKind::EditComment, // edit text is host's
         ActionKind::CreateReview, // direct typed creation supplied by a host
-        ActionKind::UpdateCreationDraft, // editor text
+        ActionKind::EditCreationDraft, // granular editor text
         ActionKind::SelectCreationTarget, // native field focus selects its row
         ActionKind::RestoreReviewCreation, // tab-local browser transport recovery
         ActionKind::ListReviews,

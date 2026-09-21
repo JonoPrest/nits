@@ -7,6 +7,55 @@ use strum::EnumDiscriminants;
 
 use crate::DaemonContext;
 
+/// Identifies a target row within one creation attempt, independently of its repo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CreationTargetId(u64);
+
+impl CreationTargetId {
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+/// Ordered acknowledgement of draft edits, including target commands and focus.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CreationRevision(u64);
+
+impl CreationRevision {
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+    fn advance(&mut self) {
+        self.0 += 1;
+    }
+}
+
+/// A field edit cannot replace unrelated target rows that changed in flight.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumDiscriminants)]
+#[strum_discriminants(name(CreationEditKind), derive(strum::EnumIter))]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum CreationEdit {
+    Title {
+        text: String,
+    },
+    Repository {
+        target_id: CreationTargetId,
+        repo_id: RepoId,
+    },
+    Base {
+        target_id: CreationTargetId,
+        text: String,
+    },
+    Head {
+        target_id: CreationTargetId,
+        text: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumDiscriminants)]
 #[strum_discriminants(name(CreationBaseKind), derive(strum::EnumIter))]
 #[serde(tag = "type", deny_unknown_fields)]
@@ -18,6 +67,7 @@ pub enum CreationBase {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreationTarget {
+    pub id: CreationTargetId,
     pub repo_id: RepoId,
     pub base: CreationBase,
     pub head: String,
@@ -98,7 +148,8 @@ pub struct ReviewCreation {
     pub context: Option<DaemonContext>,
     pub draft: CreationDraft,
     pub defaults: Vec<CreationDefault>,
-    pub selected: Option<usize>,
+    pub selected: Option<CreationTargetId>,
+    pub revision: CreationRevision,
     pub status: CreationStatus,
 }
 
@@ -220,6 +271,7 @@ impl ClientCore {
             .repos
             .first()
             .map(|repo| CreationTarget {
+                id: CreationTargetId::new(0),
                 repo_id: repo.id,
                 base: CreationBase::Automatic,
                 head: "worktree".into(),
@@ -236,6 +288,7 @@ impl ClientCore {
             },
             defaults: Vec::new(),
             selected: None,
+            revision: CreationRevision::default(),
             status: CreationStatus::Editing,
         });
         let mut effects = self.creation_defaults();
@@ -295,10 +348,10 @@ impl ClientCore {
             .collect()
     }
 
-    pub(crate) fn edit_creation(
+    pub(crate) fn edit_creation_field(
         &mut self,
         review_id: ReviewId,
-        draft: CreationDraft,
+        edit: CreationEdit,
     ) -> Vec<Effect> {
         let Some(creation) = &mut self.view.home.creating else {
             return Vec::new();
@@ -306,10 +359,41 @@ impl ClientCore {
         if creation.review_id != review_id || !creation.editable() {
             return Vec::new();
         }
-        creation.draft = draft;
-        creation.selected = creation
-            .selected
-            .filter(|index| *index < creation.draft.targets.len());
+        creation.revision.advance();
+        match edit {
+            CreationEdit::Title { text } => creation.draft.title = text,
+            CreationEdit::Repository { target_id, repo_id } => {
+                if let Some(target) = creation
+                    .draft
+                    .targets
+                    .iter_mut()
+                    .find(|t| t.id == target_id)
+                {
+                    target.repo_id = repo_id;
+                    target.base = CreationBase::Automatic;
+                }
+            }
+            CreationEdit::Base { target_id, text } => {
+                if let Some(target) = creation
+                    .draft
+                    .targets
+                    .iter_mut()
+                    .find(|t| t.id == target_id)
+                {
+                    target.base = CreationBase::Manual { text };
+                }
+            }
+            CreationEdit::Head { target_id, text } => {
+                if let Some(target) = creation
+                    .draft
+                    .targets
+                    .iter_mut()
+                    .find(|t| t.id == target_id)
+                {
+                    target.head = text;
+                }
+            }
+        }
         creation.status = CreationStatus::Editing;
         let mut effects = self.creation_defaults();
         effects.push(changed());
@@ -319,16 +403,24 @@ impl ClientCore {
     pub(crate) fn select_creation_target(
         &mut self,
         review_id: ReviewId,
-        index: usize,
+        target_id: CreationTargetId,
     ) -> Vec<Effect> {
         let Some(creation) = &mut self.view.home.creating else {
             return Vec::new();
         };
-        if creation.review_id != review_id || index >= creation.draft.targets.len() {
+        if creation.review_id != review_id || !creation.editable() {
             return Vec::new();
         }
-        creation.selected = Some(index);
-        self.view.focus = crate::Focus::Composer;
+        creation.revision.advance();
+        if creation
+            .draft
+            .targets
+            .iter()
+            .any(|target| target.id == target_id)
+        {
+            creation.selected = Some(target_id);
+            self.view.focus = crate::Focus::Composer;
+        }
         vec![changed()]
     }
 
@@ -339,13 +431,14 @@ impl ClientCore {
         if creation.review_id != review_id || !creation.editable() {
             return Vec::new();
         }
+        creation.revision.advance();
         let Some(workspace) = self
             .view
             .workspaces
             .iter()
             .find(|w| w.id == creation.workspace_id)
         else {
-            return Vec::new();
+            return vec![changed()];
         };
         let Some(repo) = workspace
             .repos
@@ -353,10 +446,12 @@ impl ClientCore {
             .find(|repo| !creation.draft.targets.iter().any(|t| t.repo_id == repo.id))
             .or_else(|| workspace.repos.first())
         else {
-            return Vec::new();
+            return vec![changed()];
         };
-        creation.selected = Some(creation.draft.targets.len());
+        let id = CreationTargetId::new(creation.revision.0);
+        creation.selected = Some(id);
         creation.draft.targets.push(CreationTarget {
+            id,
             repo_id: repo.id,
             base: CreationBase::Automatic,
             head: "worktree".into(),
@@ -375,17 +470,21 @@ impl ClientCore {
         if creation.review_id != review_id || !creation.editable() {
             return Vec::new();
         }
-        let Some(index) = creation
-            .selected
-            .filter(|index| *index < creation.draft.targets.len())
-        else {
-            return Vec::new();
+        creation.revision.advance();
+        let Some(index) = creation.selected.and_then(|id| {
+            creation
+                .draft
+                .targets
+                .iter()
+                .position(|target| target.id == id)
+        }) else {
+            return vec![changed()];
         };
         creation.draft.targets.remove(index);
         creation.selected = if creation.draft.targets.is_empty() {
             None
         } else {
-            Some(index.min(creation.draft.targets.len() - 1))
+            Some(creation.draft.targets[index.min(creation.draft.targets.len() - 1)].id)
         };
         creation.status = CreationStatus::Editing;
         vec![changed()]

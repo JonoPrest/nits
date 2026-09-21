@@ -128,11 +128,8 @@ test("switching workspace during review creation resets the draft and repository
   expect(
     calls->Array.some(args =>
       switch args->Array.getUnsafe(0) {
-      | Action.UpdateCreationDraft({reviewId, draft}) =>
-        reviewId == second.id &&
-        draft.title == "Second draft" &&
-        Array.length(draft.targets) == 1 &&
-        (draft.targets->Array.getUnsafe(0)).repoId == (second.repos->Array.getUnsafe(0)).id
+      | Action.EditCreationDraft({reviewId, edit: Title({text})}) =>
+        reviewId == second.id && text == "Second draft"
       | _ => false
       }
     ),

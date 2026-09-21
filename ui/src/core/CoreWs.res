@@ -131,7 +131,7 @@ let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.
     dispatch: action => {
       let creationIntent = switch action {
       | RunCommand({command: Submit}) if store.model.openReview != None => false
-      | _ => CreationRecovery.beforeAction(recovery, action)
+      | _ => CreationRecovery.beforeAction(recovery, action, ~workspaces=store.model.workspaces)
       }
       if creationIntent && (!open_.contents || recovering.contents) {
         onError(
@@ -147,7 +147,11 @@ let make = (~url: string, ~onError: string => unit=e => Console.error(e)): Core.
       | Some(hint) =>
         keyPrefix := ""
         if store.model.openReview == None {
-          let _ = CreationRecovery.beforeAction(recovery, RunCommand({command: hint.command}))
+          let _ = CreationRecovery.beforeAction(
+            recovery,
+            RunCommand({command: hint.command}),
+            ~workspaces=store.model.workspaces,
+          )
         }
       | None =>
         keyPrefix := (

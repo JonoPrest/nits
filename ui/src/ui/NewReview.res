@@ -9,57 +9,54 @@ let make = (
   ~connection: View.ConnectionView.t=Subscribed({}),
   ~dispatch: Action.t => unit,
 ) => {
+  let local = React.useRef(CreationRecovery.make())
   let (draft, setDraft) = React.useState(() => creation.draft)
   let (submitted, setSubmitted) = React.useState(() => false)
+  let pendingKeys = React.useRef("")
   React.useEffect1(() => {
+    CreationRecovery.observe(local.current, Some(creation))
+    let current =
+      local.current.snapshot->Option.map(s => s.creation.draft)->Option.getOr(creation.draft)
+    setDraft(_ => current)
     switch creation.status {
     | Failed(_) | Interrupted(_) => setSubmitted(_ => false)
     | Editing(_) | Pending(_) | Reconciling(_) | Succeeded(_) => ()
     }
     None
-  }, [creation.status])
-  let draftRef = React.useRef(creation.draft)
-  let sent = React.useRef([])
-  let lastIncoming = React.useRef(creation.draft)
-  let pendingKeys = React.useRef("")
-  React.useEffect1(() => {
-    let incoming = creation.draft
-    if incoming != lastIncoming.current {
-      lastIncoming.current = incoming
-      let index = sent.current->Array.findIndex(value => value == incoming)
-      if index >= 0 {
-        sent.current = sent.current->Array.filterWithIndex((_, i) => i > index)
-        if Array.length(sent.current) == 0 {
-          draftRef.current = incoming
-          setDraft(_ => incoming)
-        }
-      } else {
-        sent.current = []
-        draftRef.current = incoming
-        setDraft(_ => incoming)
-      }
-    }
-    None
-  }, [creation.draft])
+  }, [creation])
   let editable = View.ReviewCreation.editable(creation) && !submitted
   let workspace = workspaces->Array.find(w => w.id == creation.workspaceId)
-  let update = next => {
-    draftRef.current = next
-    setDraft(_ => next)
-    sent.current = sent.current->Array.concat([next])
-    dispatch(UpdateCreationDraft({reviewId: creation.reviewId, draft: next}))
-  }
-  let target = (i, change) =>
-    update({
-      ...draftRef.current,
-      targets: draftRef.current.targets->Array.mapWithIndex((t, j) => i == j ? change(t) : t),
-    })
-  let select = index => dispatch(SelectCreationTarget({reviewId: creation.reviewId, index}))
-  let run = (command: View.Command.t) => {
-    if command == Submit {
-      setSubmitted(_ => true)
+  let send = action => {
+    let _ = CreationRecovery.beforeAction(local.current, action, ~workspaces)
+    switch local.current.snapshot {
+    | Some(saved) => setDraft(_ => saved.creation.draft)
+    | None => ()
     }
-    dispatch(Action.RunCommand({command: command}))
+    dispatch(action)
+  }
+  let edit = value => send(EditCreationDraft({reviewId: creation.reviewId, edit: value}))
+  let select = targetId => send(SelectCreationTarget({reviewId: creation.reviewId, targetId}))
+  // A submitted recovery snapshot must contain the automatic defaults the
+  // user saw. A newly added optimistic row may still be waiting for its ACK.
+  let waitingDefaults =
+    editable &&
+    draft.targets->Array.some(t =>
+      switch t.base {
+      | Manual(_) => false
+      | Automatic(_) =>
+        switch creation.defaults->Array.find(d => d.repoId == t.repoId) {
+        | Some({state: Ready(_) | Failed(_)}) => false
+        | Some({state: Loading(_)}) | None => true
+        }
+      }
+    )
+  let run = (command: View.Command.t) => {
+    if command != Submit || !waitingDefaults {
+      if command == Submit {
+        setSubmitted(_ => true)
+      }
+      send(Action.RunCommand({command: command}))
+    }
   }
   let onKey = (ev: ReactEvent.Keyboard.t) => {
     switch Keys.ofBrowser({
@@ -101,6 +98,7 @@ let make = (
   <form
     className="new-review panel"
     ariaLabel="new review"
+    onKeyDown=onKey
     onSubmit={ev => {
       ReactEvent.Form.preventDefault(ev)
       run(Submit)
@@ -121,12 +119,12 @@ let make = (
         ariaLabel="Review title"
         autoFocus=true
         disabled={!editable}
-        onChange={title => update({...draftRef.current, title})}
+        onChange={text => edit(Title({text: text}))}
         onKeyEvent=onKey
       />
     </UI.Field>
     {draft.targets
-    ->Array.mapWithIndex((t, i) => {
+    ->Array.map(t => {
       let default =
         creation.defaults->Array.find(d => d.repoId == t.repoId)->Option.map(d => d.state)
       let base = switch t.base {
@@ -137,7 +135,7 @@ let make = (
         | Some(Loading(_) | Failed(_)) | None => ""
         }
       }
-      <div key={Int.toString(i)} className="new-review-target">
+      <div key={Int.toString(t.id)} className="new-review-target">
         <UI.Field label="Repository">
           <UI.Select
             ariaLabel="repo"
@@ -148,9 +146,9 @@ let make = (
               w.repos->Array.map(r => (r.id, RepositoryIdentity.repoLabel(w, r.id)))
             )
             ->Option.getOr([])}
-            onFocus={() => select(i)}
+            onFocus={() => select(t.id)}
             onKeyEvent=onKey
-            onChange={repoId => target(i, t => {...t, repoId, base: Automatic({})})}
+            onChange={repoId => edit(Repository({targetId: t.id, repoId}))}
           />
         </UI.Field>
         <UI.Field label="Base">
@@ -159,9 +157,9 @@ let make = (
             ariaLabel="Base revision"
             placeholder="Base revision"
             disabled={!editable}
-            onFocus={() => select(i)}
+            onFocus={() => select(t.id)}
             onKeyEvent=onKey
-            onChange={text => target(i, t => {...t, base: Manual({text: text})})}
+            onChange={text => edit(Base({targetId: t.id, text}))}
           />
         </UI.Field>
         <UI.Field label="Head">
@@ -170,9 +168,9 @@ let make = (
             ariaLabel="Head revision"
             placeholder="Head revision"
             disabled={!editable}
-            onFocus={() => select(i)}
+            onFocus={() => select(t.id)}
             onKeyEvent=onKey
-            onChange={head => target(i, t => {...t, head})}
+            onChange={text => edit(Head({targetId: t.id, text}))}
           />
         </UI.Field>
         <UI.Button
@@ -182,7 +180,7 @@ let make = (
           disabled={!editable}
           title=?{Chrome.tip(chrome, RemoveReviewTarget)}
           onClick={() => {
-            select(i)
+            select(t.id)
             run(RemoveReviewTarget)
           }}
         />
@@ -231,7 +229,7 @@ let make = (
         label={retry ? "Check and retry" : "Create"}
         kind=Primary
         title=?{Chrome.tip(chrome, Submit)}
-        disabled={!editable && !retry}
+        disabled={(!editable && !retry) || waitingDefaults}
         onClick={() => run(Submit)}
       />
       <UI.Button
