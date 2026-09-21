@@ -713,3 +713,14 @@ so `CoreWs` retains a tab-local recovery snapshot before sending submit and rest
 it through a typed core action after reconnect. The snapshot is scoped to the
 bridge and daemon context; it never enters shared KV and never restores into
 another context. The core validates that scope again before any write.
+
+Creation field edits address stable `CreationTargetId`s instead of replacing the
+entire draft. `CreationRevision` acknowledges editable field/target/focus actions
+and submission intents, including unchanged-input retries. A rejected local
+submission or disconnected checked retry still acknowledges that intent; duplicate
+pending submissions remain inert. The form and tab-local recovery share an ordered
+operation reducer: acknowledged operations are removed, later edits are replayed,
+and older lifecycle snapshots cannot release a frozen submission. Pending controls
+follow that reconciled state. Automatic defaults must be displayed before the form
+submits, so its recovery snapshot contains the chosen bases even if the host ACK is
+lost; entering a manual base permits immediate submission.

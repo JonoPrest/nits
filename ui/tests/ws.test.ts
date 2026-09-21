@@ -145,7 +145,7 @@ it("recovers a browser-host lost ACK using the stable ID and frozen latest draft
   expect(actions.some(message => ["SubmitReviewCreation", "CreateReview", "RunCommand"].includes(message.action.type))).toBe(false);
   second.message([creationPatch(null)]);
   expect(second.sent.filter(text => text.includes("RestoreReviewCreation"))).toHaveLength(1);
-  second.message([creationPatch({ ...creation, status: { type: "Succeeded" } })]);
+  second.message([creationPatch({ ...creation, revision: 2, status: { type: "Succeeded" } })]);
   second.close();
   vi.advanceTimersByTime(1000);
   const third = FakeWebSocket.instances[2];
@@ -183,10 +183,31 @@ it("retains unacknowledged structural and row edits when the browser host loses 
   expect(restored.type).toBe("RestoreReviewCreation");
   expect(restored.resume).toBe("Submitted");
   expect(restored.creation.review_id).toBe(creation.review_id);
-  expect(restored.creation.revision).toBe(5);
+  expect(restored.creation.revision).toBe(6);
   expect(restored.creation.draft.title).toBe("last editor value");
   expect(restored.creation.draft.targets).toHaveLength(1);
   expect(restored.creation.draft.targets[0]).toMatchObject({ id: 1, base: { type: "Manual", text: "chosen-base" } });
+});
+
+it("retains an unchanged-input retry over the prior failure before host recovery", () => {
+  vi.useFakeTimers();
+  const core = CoreWs.make("ws://test", () => {});
+  const first = FakeWebSocket.instances[0];
+  first.open();
+  const failed = { ...creationFixture(), revision: 7, status: { type: "Failed", message: "Missing ref" } };
+  first.message([creationPatch(failed), patchFixture("Connection")]);
+  dispatchJson(core, { type: "RunCommand", command: "Submit" });
+  first.message([creationPatch(failed)]);
+  dispatchJson(core, { type: "RunCommand", command: "Submit" });
+  first.close();
+  vi.advanceTimersByTime(1000);
+  const second = FakeWebSocket.instances[1];
+  second.open();
+  second.message([creationPatch(null), patchFixture("Connection")]);
+  const actions = second.sent.map(text => JSON.parse(text)).filter(message => message.cmd === "dispatch");
+  expect(actions).toHaveLength(1);
+  expect(actions[0].action).toMatchObject({ type: "RestoreReviewCreation", resume: "Submitted",
+    creation: { review_id: failed.review_id, revision: 8, draft: failed.draft } });
 });
 
 it("never restores a tab-local draft into another daemon context", () => {

@@ -10,7 +10,7 @@ let view = (creation, dispatch) =>
     bindings=CreationFixtures.hints
     dispatch
   />
-let lastDraft = dispatch => {
+let lastCreation = dispatch => {
   let state = CreationRecovery.make()
   CreationRecovery.observe(state, Some(CreationFixtures.make()))
   mock(dispatch).calls->Array.forEach(args => {
@@ -20,8 +20,9 @@ let lastDraft = dispatch => {
       ~workspaces=[CreationFixtures.workspace()],
     )
   })
-  (state.snapshot->Option.getExn).creation.draft
+  (state.snapshot->Option.getExn).creation
 }
+let lastDraft = dispatch => lastCreation(dispatch).draft
 
 test("failed creation keeps title and refs visible until confirmed success", () => {
   let dispatch = fn()
@@ -34,7 +35,12 @@ test("failed creation keeps title and refs visible until confirmed success", () 
   let draft = lastDraft(dispatch)
   rerender(
     view(
-      {...creation, draft, status: Failed({message: "revision missing-ref does not exist"})},
+      {
+        ...creation,
+        draft,
+        revision: lastCreation(dispatch).revision,
+        status: Failed({message: "revision missing-ref does not exist"}),
+      },
       dispatch,
     ),
   )
@@ -120,7 +126,10 @@ test(
     let saved = state.snapshot->Option.getExn
     expect(saved.resume)->toBe(View.CreationResume.Submitted)
     expect(saved.creation.draft.title)->toBe("latest unsaved input")
-    CreationRecovery.observe(state, Some({...creation, status: Succeeded({})}))
+    CreationRecovery.observe(
+      state,
+      Some({...creation, revision: saved.creation.revision, status: Succeeded({})}),
+    )
     expect(state.snapshot)->toBe(None)
   },
 )
@@ -265,7 +274,10 @@ test("a delayed failure patch cannot discard its later correction before reconne
   let _ = CreationRecovery.beforeAction(state, RunCommand({command: Submit}))
   CreationRecovery.observe(state, Some(failed))
   expect((state.snapshot->Option.getExn).resume)->toBe(View.CreationResume.Submitted)
-  expect((state.snapshot->Option.getExn).creation)->toEqual(corrected)
+  expect((state.snapshot->Option.getExn).creation)->toEqual({
+    ...corrected,
+    revision: corrected.revision + 1,
+  })
 })
 
 test("submit waits for displayed automatic defaults but accepts an immediate manual base", () => {
@@ -284,4 +296,50 @@ test("submit waits for displayed automatic defaults but accepts an immediate man
   expect(Element.hasAttribute(Screen.getByText("Create"), "disabled"))->toBe(false)
   FireEvent.keyDown(Screen.getByPlaceholderText("Title"), {"key": "u", "ctrlKey": true})
   expect(dispatch)->toHaveBeenCalledWith(Action.RunCommand({command: Submit}))
+})
+
+test(
+  "unchanged retry stays frozen through an old failure until this submit is acknowledged",
+  () => {
+    let failed = {...CreationFixtures.make(), revision: 7, status: Failed({message: "Missing ref"})}
+    let dispatch = fn()
+    let {rerender} = render(view(failed, dispatch))
+    FireEvent.click(Screen.getByText("Create"))
+    rerender(view({...failed, defaults: failed.defaults->Array.map(d => d)}, dispatch))
+    expect(Element.hasAttribute(Screen.getByText("Create"), "disabled"))->toBe(true)
+    expect(Element.hasAttribute(Screen.getByPlaceholderText("Title"), "disabled"))->toBe(true)
+    expect(Element.hasAttribute(Screen.getByLabelText("Base revision"), "disabled"))->toBe(true)
+    FireEvent.keyDown(Screen.getByText("+ target"), {"key": "u", "ctrlKey": true})
+    expect(Array.length(mock(dispatch).calls))->toBe(1)
+    // A failure acknowledging this actual submit releases the unchanged draft.
+    rerender(
+      view({...failed, revision: 8, status: Failed({message: "Still unavailable"})}, dispatch),
+    )
+    expect(Element.hasAttribute(Screen.getByText("Create"), "disabled"))->toBe(false)
+    expect(Element.hasAttribute(Screen.getByPlaceholderText("Title"), "disabled"))->toBe(false)
+    let _ = Screen.getByText("Still unavailable")
+  },
+)
+
+test("interrupted retry has a new lifecycle revision and ignores an old interruption", () => {
+  let submission: View.CreationSubmission.t = {title: "retained", targets: []}
+  let interrupted = {
+    ...CreationFixtures.make(),
+    revision: 4,
+    status: Interrupted({submission, message: "Reconnect to check"}),
+  }
+  let state = CreationRecovery.make()
+  CreationRecovery.observe(state, Some(interrupted))
+  let _ = CreationRecovery.beforeAction(state, RunCommand({command: Submit}))
+  let retried = state.snapshot->Option.getExn
+  expect(retried.creation.revision)->toBe(5)
+  expect(retried.creation.status)->toEqual(
+    View.CreationStatus.Reconciling({submission, next: Retry}),
+  )
+  CreationRecovery.observe(state, Some(interrupted))
+  expect(state.snapshot)->toEqual(Some(retried))
+  let _ = CreationRecovery.beforeAction(state, RunCommand({command: Submit}))
+  expect(state.snapshot)->toEqual(Some(retried))
+  CreationRecovery.observe(state, Some({...interrupted, revision: 5}))
+  expect((state.snapshot->Option.getExn).creation.status)->toEqual(interrupted.status)
 })

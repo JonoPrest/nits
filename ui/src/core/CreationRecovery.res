@@ -54,6 +54,14 @@ let observe = (state: t, creation: option<View.ReviewCreation.t>) => {
   | None =>
     state.snapshot = None
     state.edits = []
+  | Some(creation)
+    if state.snapshot
+    ->Option.map(previous =>
+      previous.creation.reviewId == creation.reviewId &&
+      previous.resume == Submitted &&
+      creation.revision < previous.creation.revision
+    )
+    ->Option.getOr(false) => ()
   | Some(creation) =>
     switch state.snapshot {
     | Some(previous) if previous.creation.reviewId != creation.reviewId => state.edits = []
@@ -68,8 +76,7 @@ let observe = (state: t, creation: option<View.ReviewCreation.t>) => {
       | Some(previous)
         if previous.creation.reviewId == creation.reviewId &&
         previous.resume == Submitted &&
-        (creation.status == View.CreationStatus.Editing({}) ||
-          creation.revision < previous.creation.revision) => ()
+        creation.status == View.CreationStatus.Editing({}) => ()
       | Some(_) | None =>
         state.edits = state.edits->Array.filter(edit => edit.revision > creation.revision)
         let creation = state.edits->Array.reduce(creation, apply)
@@ -122,10 +129,33 @@ let beforeAction = (
     edit(reviewId, Add(target))
   }
   let remove = reviewId => edit(reviewId, Remove(current->Option.flatMap(s => s.creation.selected)))
-  let submit = () =>
+  let submit = reviewId =>
     switch current {
-    | Some(previous) if View.ReviewCreation.editable(previous.creation) =>
-      state.snapshot = Some({...previous, resume: Submitted})
+    | Some(previous)
+      if previous.creation.reviewId == reviewId &&
+      previous.resume == Editing &&
+      View.ReviewCreation.editable(previous.creation) =>
+      state.snapshot = Some({
+        creation: {...previous.creation, revision: previous.creation.revision + 1},
+        resume: Submitted,
+      })
+    | Some(_) | None => ()
+    }
+  let retry = reviewId =>
+    switch current {
+    | Some(previous) if previous.creation.reviewId == reviewId =>
+      switch previous.creation.status {
+      | Interrupted({submission}) =>
+        state.snapshot = Some({
+          creation: {
+            ...previous.creation,
+            revision: previous.creation.revision + 1,
+            status: Reconciling({submission, next: Retry}),
+          },
+          resume: Submitted,
+        })
+      | Editing(_) | Failed(_) | Pending(_) | Reconciling(_) | Succeeded(_) => ()
+      }
     | Some(_) | None => ()
     }
   switch action {
@@ -147,13 +177,22 @@ let beforeAction = (
   | RunCommand({command: RemoveReviewTarget}) =>
     current->Option.forEach(saved => remove(saved.creation.reviewId))
     true
-  | SubmitReviewCreation(_) =>
-    submit()
+  | SubmitReviewCreation({reviewId}) =>
+    submit(reviewId)
     true
   | RunCommand({command: Submit}) =>
-    submit()
+    current->Option.forEach(saved => {
+      switch saved.creation.status {
+      | Interrupted(_) => retry(saved.creation.reviewId)
+      | Editing(_) | Failed(_) | Pending(_) | Reconciling(_) | Succeeded(_) =>
+        submit(saved.creation.reviewId)
+      }
+    })
     state.snapshot != None
-  | RetryReviewCreation(_) | RestoreReviewCreation(_) | StartReview(_) | CancelNewReview(_) => true
+  | RetryReviewCreation({reviewId}) =>
+    retry(reviewId)
+    true
+  | RestoreReviewCreation(_) | StartReview(_) | CancelNewReview(_) => true
   | _ => false
   }
 }
