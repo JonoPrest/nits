@@ -422,6 +422,74 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn unexpected_writer_panic_stops_listeners_and_status_cannot_report_running() {
+        use crate::contexts::{Status, status};
+        use crate::server::{UnixServer, WsServer};
+        use nits_config::Context;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("nitsd.sock");
+        // Keep the selected endpoint associated with Core exactly as serve does.
+        // A bare listener with no guard deliberately has legacy status semantics.
+        let daemon =
+            Daemon::open_at_socket(&DataDir::new(dir.path()), identity().client, &socket).unwrap();
+        let unix = UnixServer::bind(&socket).unwrap();
+        crate::ownership::associate_socket(&socket, dir.path()).unwrap();
+        daemon.set_phase(crate::ownership::Phase::Serving);
+        let ws = WsServer::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let contexts = [
+            Context::Local {
+                data_dir: Some(dir.path().to_path_buf()),
+                socket: Some(socket.clone()),
+            },
+            Context::Ws {
+                url: format!("ws://{}", ws.addr()),
+            },
+        ];
+        // Use the same cancellation token wiring as the daemon's serve entrypoint.
+        let unix = tokio::spawn(unix.run(Arc::clone(&daemon), daemon.shutdown().clone()));
+        let ws = tokio::spawn(ws.run(Arc::clone(&daemon), daemon.shutdown().clone()));
+        for context in &contexts {
+            assert!(matches!(status(context).await, Status::Running { .. }));
+        }
+
+        let result = daemon
+            .write(|_| -> Result<(), CoreError> { panic!("injected unexpected writer failure") })
+            .await;
+        assert!(matches!(result, Err(DaemonError::Shutdown)));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            unix.await.unwrap();
+            ws.await.unwrap();
+        })
+        .await
+        .expect("writer failure must stop both daemon listeners");
+        assert!(daemon.shutdown().is_cancelled());
+        assert!(!socket.exists());
+        assert!(matches!(
+            status(&contexts[0]).await,
+            Status::Transitioning { .. }
+        ));
+        assert!(matches!(status(&contexts[1]).await, Status::Stopped));
+        assert!(matches!(
+            daemon
+                .write(|core| core.create_workspace(
+                    &Daemon::ctx(identity().author, identity().client_id, ClientSeq::new(1)),
+                    WorkspaceId::from_parts(1, 1),
+                    "cannot commit after writer failure".into(),
+                ))
+                .await,
+            Err(DaemonError::Shutdown)
+        ));
+        assert!(daemon.core().events_after(None).unwrap().is_empty());
+        drop(daemon);
+        for context in &contexts {
+            assert!(matches!(status(context).await, Status::Stopped));
+        }
+    }
+
     async fn deleted_review_gap(daemon: &Daemon, repo: &TestRepo) -> (Seq, Vec<Event>) {
         let who = identity();
         let ctx = Daemon::ctx(who.author, who.client_id, ClientSeq::new(1));
