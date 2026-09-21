@@ -21,6 +21,41 @@ fn executable(path: &Path, body: &str) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
 }
 
+fn configure_contexts(dir: &Path, socket: &Path, ssh: &Path) {
+    let mut config = nits_config::Config::default();
+    for (name, data_dir, endpoint) in [
+        ("box", dir.join("data"), socket.to_path_buf()),
+        (
+            "socket-only",
+            dir.join("unrelated-data"),
+            socket.to_path_buf(),
+        ),
+        (
+            "socket-alias",
+            dir.join("unrelated-data"),
+            dir.join("alias.sock"),
+        ),
+    ] {
+        config.contexts.insert(
+            name.parse().unwrap(),
+            nits_config::Context::Local {
+                data_dir: Some(data_dir),
+                socket: Some(endpoint),
+            },
+        );
+    }
+    config.contexts.insert(
+        "remote".parse().unwrap(),
+        nits_config::Context::Ssh {
+            host: "test-host".into(),
+            bin: nits_config::RemoteBin::Default,
+            args: Vec::new(),
+            ssh: Some(ssh.to_str().unwrap().into()),
+        },
+    );
+    config.save(&dir.join("config.toml")).unwrap();
+}
+
 struct Fixture {
     dir: tempfile::TempDir,
     repo: TestRepo,
@@ -36,7 +71,6 @@ impl Fixture {
             .unwrap();
         let data = dir.path().join("data");
         let socket = dir.path().join("daemon.sock");
-        let config = dir.path().join("config.toml");
         let filter = dir.path().join("filter");
         executable(
             &filter,
@@ -83,16 +117,8 @@ impl Fixture {
                 quote(binary),
             ),
         );
-        std::fs::write(
-            config,
-            format!(
-                "[contexts.box]\ntype = \"Local\"\ndata_dir = {data}\nsocket = {socket}\n\n[contexts.remote]\ntype = \"Ssh\"\nhost = \"test-host\"\nssh = {ssh}\n",
-                data = serde_json::to_string(&data).unwrap(),
-                socket = serde_json::to_string(&socket).unwrap(),
-                ssh = serde_json::to_string(&ssh).unwrap(),
-            ),
-        )
-        .unwrap();
+        std::os::unix::fs::symlink("daemon.sock", dir.path().join("alias.sock")).unwrap();
+        configure_contexts(dir.path(), &socket, &ssh);
         let log = std::fs::File::create(dir.path().join("initial-daemon.log")).unwrap();
         let daemon = Command::new(binary)
             .args(["daemon", "serve", "--data-dir"])
@@ -174,9 +200,13 @@ impl Fixture {
     }
 
     fn logs(&self) -> String {
-        ["initial-daemon.log", "data/nitsd.log"]
-            .map(|name| std::fs::read_to_string(self.path(name)).unwrap_or_default())
-            .join("\n")
+        [
+            "initial-daemon.log",
+            "data/nitsd.log",
+            "unrelated-data/nitsd.log",
+        ]
+        .map(|name| std::fs::read_to_string(self.path(name)).unwrap_or_default())
+        .join("\n")
     }
 
     async fn assert_stopping(&self) {
@@ -227,7 +257,7 @@ impl Drop for Fixture {
             for pid in pids.lines() {
                 if let Ok(process) = Command::new("ps").args(["-p", pid, "-o", "args="]).output()
                     && String::from_utf8_lossy(&process.stdout)
-                        .contains(self.path("data").to_str().unwrap())
+                        .contains(self.dir.path().to_str().unwrap())
                 {
                     let _ = Command::new("kill").args(["-TERM", pid]).output();
                 }
@@ -243,6 +273,20 @@ async fn stop_waits_for_git(context: &str) {
     let fixture = Fixture::new().await;
     let mut stop = fixture.spawn(context, &["daemon", "stop"]);
     fixture.assert_stopping().await;
+    fixture
+        .wait_for(|| !fixture.path("daemon.sock").exists())
+        .await;
+    let status = fixture.ok(context, &["daemon", "status", "--json"]).await;
+    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status[0]["status"], "transitioning");
+    assert_eq!(
+        status[0]["phase"],
+        if context.starts_with("socket-") {
+            "Unknown"
+        } else {
+            "Stopping"
+        }
+    );
     assert!(
         stop.try_wait().unwrap().is_none(),
         "stop completed before the gated Git read"
@@ -316,4 +360,11 @@ async fn cancelled_stop_preserves_ownership_and_start_waits_for_release() {
         "{}",
         fixture.logs()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn socket_only_context_and_dangling_alias_retain_the_actual_daemons_ownership() {
+    for context in ["socket-only", "socket-alias"] {
+        stop_waits_for_git(context).await;
+    }
 }

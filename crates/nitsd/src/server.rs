@@ -1,6 +1,7 @@
 //! Accept loops. Each accepted stream is served by `connection::serve` in
 //! its own task.
 
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -24,14 +25,24 @@ impl UnixServer {
     /// Bind `path`, replacing a stale socket file left by a crashed daemon.
     /// A live daemon on the same path is detected by connecting first.
     pub fn bind(path: &Path) -> std::io::Result<Self> {
-        if path.exists() {
-            if std::os::unix::net::UnixStream::connect(path).is_ok() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AddrInUse,
-                    format!("another nitsd is listening on {}", path.display()),
-                ));
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_socket() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        format!("refusing to replace a non-socket path: {}", path.display()),
+                    ));
+                }
+                if std::os::unix::net::UnixStream::connect(path).is_ok() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::AddrInUse,
+                        format!("another nitsd is listening on {}", path.display()),
+                    ));
+                }
+                std::fs::remove_file(path)?;
             }
-            std::fs::remove_file(path)?;
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -142,4 +153,52 @@ impl WsServer {
 pub async fn serve_stdio(daemon: Arc<Daemon>) -> Result<(), connection::ConnectionError> {
     let stream = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
     connection::serve(daemon, stream).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn binding_preserves_regular_files_and_the_stable_ownership_inode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("important-file");
+        std::fs::write(&path, "keep this file").unwrap();
+        assert_eq!(
+            UnixServer::bind(&path).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep this file");
+        let owner = crate::ownership::Lease::acquire(dir.path()).unwrap();
+        owner.set_phase(crate::ownership::Phase::Stopping).unwrap();
+        assert!(UnixServer::bind(&dir.path().join("daemon.lock")).is_err());
+        assert_eq!(
+            crate::ownership::probe(dir.path()).unwrap(),
+            crate::ownership::Ownership::Held {
+                phase: crate::ownership::Phase::Stopping,
+            }
+        );
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink("important-file", &alias).unwrap();
+        assert!(UnixServer::bind(&alias).is_err());
+        assert_eq!(
+            std::fs::read_link(alias).unwrap(),
+            Path::new("important-file")
+        );
+    }
+
+    #[tokio::test]
+    async fn binding_still_reclaims_stale_sockets_and_refuses_live_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.sock");
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        assert!(path.exists());
+        let live = UnixServer::bind(&path).unwrap();
+        assert_eq!(
+            UnixServer::bind(&path).unwrap_err().kind(),
+            std::io::ErrorKind::AddrInUse
+        );
+        drop(live);
+        assert!(!path.exists());
+    }
 }

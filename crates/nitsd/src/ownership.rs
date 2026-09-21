@@ -9,7 +9,7 @@
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 const FILE_NAME: &str = "daemon.lock";
@@ -21,6 +21,8 @@ pub enum Phase {
     Starting = 1,
     Serving = 2,
     Stopping = 3,
+    /// The endpoint is occupied but the caller does not know its data directory.
+    Unknown = 4,
 }
 
 impl TryFrom<u8> for Phase {
@@ -31,6 +33,7 @@ impl TryFrom<u8> for Phase {
             1 => Ok(Self::Starting),
             2 => Ok(Self::Serving),
             3 => Ok(Self::Stopping),
+            4 => Ok(Self::Unknown),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid daemon ownership phase",
@@ -54,12 +57,24 @@ pub(crate) struct Lease {
 impl Lease {
     pub(crate) fn acquire(data_dir: &Path) -> io::Result<Self> {
         std::fs::create_dir_all(data_dir)?;
+        Self::acquire_file(&data_dir.join(FILE_NAME))
+    }
+
+    pub(crate) fn for_socket(socket: &Path) -> io::Result<Self> {
+        let path = socket_owner_path(socket)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        Self::acquire_file(&path)
+    }
+
+    fn acquire_file(path: &Path) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(data_dir.join(FILE_NAME))?;
+            .open(path)?;
         file.lock_shared()?;
         // Only a successfully opened Core may publish a phase. A competing
         // process that redb rejects must not overwrite the incumbent's state.
@@ -82,24 +97,85 @@ impl Lease {
 /// Read-only, nonblocking probe. Old daemons without a lease retain their
 /// listener-based lifecycle semantics; the probe never creates a lock file.
 pub fn probe(data_dir: &Path) -> io::Result<Ownership> {
-    let mut file = match File::open(data_dir.join(FILE_NAME)) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Ownership::Free),
-        Err(error) => return Err(error),
-    };
-    match file.try_lock() {
-        Ok(()) => Ok(Ownership::Free),
-        Err(TryLockError::Error(error)) => Err(error),
-        Err(TryLockError::WouldBlock) => {
+    match probe_file(&data_dir.join(FILE_NAME))? {
+        Probe::Free => Ok(Ownership::Free),
+        Probe::Held(mut file) => {
             let mut byte = [Phase::Starting as u8];
-            // A first opener may have acquired the lock just before its initial
-            // phase write. An empty file then honestly means it is starting.
+            // Acquisition can precede the first successful Core/phase write.
             let _ = file.read(&mut byte)?;
             Ok(Ownership::Held {
                 phase: Phase::try_from(byte[0])?,
             })
         }
     }
+}
+
+/// A socket-only context may not know the server's actual data directory.
+/// This independent occupancy guard has no writable phase metadata: even a
+/// competing server opening a different store cannot overwrite its incumbent.
+pub fn probe_socket(socket: &Path) -> io::Result<Ownership> {
+    Ok(match probe_file(&socket_owner_path(socket)?)? {
+        Probe::Free => Ownership::Free,
+        Probe::Held(_) => Ownership::Held {
+            phase: Phase::Unknown,
+        },
+    })
+}
+
+enum Probe {
+    Free,
+    Held(File),
+}
+
+fn probe_file(path: &Path) -> io::Result<Probe> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Probe::Free),
+        Err(error) => return Err(error),
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(Probe::Free),
+        Err(TryLockError::Error(error)) => Err(error),
+        Err(TryLockError::WouldBlock) => Ok(Probe::Held(file)),
+    }
+}
+
+fn socket_owner_path(socket: &Path) -> io::Result<PathBuf> {
+    let mut name = socket_target(socket)?.into_os_string();
+    name.push(".owner");
+    Ok(PathBuf::from(name))
+}
+
+/// The bind path and occupancy path must follow the same socket alias, including
+/// after the old listener has removed its target during shutdown.
+pub(crate) fn socket_target(socket: &Path) -> io::Result<PathBuf> {
+    let mut path = socket.to_path_buf();
+    // Follow the socket itself even after shutdown makes its symlink dangling.
+    // Parent-directory aliases are resolved by the OS when the guard is opened.
+    for _ in 0..40 {
+        match std::fs::read_link(&path) {
+            Ok(target) => {
+                path = if target.is_absolute() {
+                    target
+                } else {
+                    path.parent().unwrap_or(Path::new(".")).join(target)
+                };
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidInput | io::ErrorKind::NotFound
+                ) =>
+            {
+                return Ok(path);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "too many socket symlink indirections",
+    ))
 }
 
 #[cfg(test)]
@@ -122,7 +198,8 @@ mod tests {
     async fn cancelled_read_retains_ownership_until_its_core_is_released() {
         let dir = tempfile::tempdir().unwrap();
         let data = DataDir::new(dir.path());
-        let daemon = Daemon::open(&data, build()).unwrap();
+        let socket = dir.path().join("daemon.sock");
+        let daemon = Daemon::open_at_socket(&data, build(), &socket).unwrap();
         let weak = Arc::downgrade(&daemon);
         let (entered, started) = tokio::sync::oneshot::channel();
         let (release, gate) = std::sync::mpsc::channel();
@@ -149,15 +226,24 @@ mod tests {
             }
         );
         assert!(Core::open(&data).is_err());
+        assert_eq!(
+            probe_socket(&socket).unwrap(),
+            Ownership::Held {
+                phase: Phase::Unknown
+            }
+        );
         release.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
-            while probe(&data.root).unwrap() != Ownership::Free {
+            while probe(&data.root).unwrap() != Ownership::Free
+                || probe_socket(&socket).unwrap() != Ownership::Free
+            {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .unwrap();
         // Free ownership must imply the stores have already been dropped.
+        assert_eq!(probe_socket(&socket).unwrap(), Ownership::Free);
         let reopened = Core::open(&data).unwrap();
         drop(reopened);
         assert!(
@@ -296,5 +382,38 @@ mod tests {
         .await
         .unwrap();
         drop(Core::open(&data).unwrap());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn socket_guards_follow_dangling_relative_aliases_without_publishing_phase() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("daemon.sock");
+        let alias = dir.path().join("alias.sock");
+        std::os::unix::fs::symlink("daemon.sock", &alias).unwrap();
+        let guard = Lease::for_socket(&socket).unwrap();
+        assert_eq!(
+            probe_socket(&alias).unwrap(),
+            Ownership::Held {
+                phase: Phase::Unknown
+            }
+        );
+        let extra = Lease::for_socket(&alias).unwrap();
+        drop(guard);
+        assert_eq!(
+            probe_socket(&socket).unwrap(),
+            Ownership::Held {
+                phase: Phase::Unknown
+            }
+        );
+        assert!(
+            std::fs::read(socket_owner_path(&socket).unwrap())
+                .unwrap()
+                .is_empty()
+        );
+        drop(extra);
+        assert_eq!(probe_socket(&alias).unwrap(), Ownership::Free);
+        assert!(socket_owner_path(&socket).unwrap().exists());
+        std::os::unix::fs::symlink("loop", dir.path().join("loop")).unwrap();
+        assert!(probe_socket(&dir.path().join("loop")).is_err());
     }
 }
