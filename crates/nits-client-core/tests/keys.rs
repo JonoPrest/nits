@@ -3198,7 +3198,7 @@ fn active_file_collapse_is_the_same_core_state_as_the_stacked_file() {
 fn help_keeps_visual_selection_and_returns_to_its_exact_row() {
     let mut core = on_row(4, Side::Head);
     press(&mut core, "V j").unwrap();
-    let selection = core.view().visual.clone();
+    let selection = core.view().visual;
     let focus = core.view().focus;
     assert!(selection.is_some());
     core.handle(Input::User(Action::ToggleHelp)).unwrap();
