@@ -1,0 +1,13 @@
+{
+  "position": {
+    "since": {
+      "seq": 0,
+      "type": "After"
+    },
+    "type": "Start"
+  },
+  "scope": {
+    "type": "All"
+  },
+  "type": "ReplayEvents"
+}

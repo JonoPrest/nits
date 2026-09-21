@@ -105,6 +105,23 @@ impl EventPoll {
 }
 
 impl Ops {
+    /// One bounded, scoped replay page. `Follow` waits for new log entries;
+    /// `Continue` retains the preceding page's fixed historical boundary.
+    pub async fn replay_events(
+        &self,
+        scope: SubscribeScope,
+        position: nits_protocol::ReplayPosition,
+    ) -> Result<nits_protocol::ReplayPage, OpsError> {
+        match self
+            .client
+            .request(Request::ReplayEvents { scope, position })
+            .await?
+        {
+            Response::ReplayEvents { page } => Ok(page),
+            _ => Err(OpsError::Shape),
+        }
+    }
+
     #[must_use]
     pub fn new(client: Client) -> Self {
         Self { client, seq: 0 }

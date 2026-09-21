@@ -21,6 +21,7 @@ use nits_protocol::events::*;
 use nits_protocol::ids::*;
 use nits_protocol::invariants::*;
 use nits_protocol::render::*;
+use nits_protocol::replay::*;
 use nits_protocol::rpc::*;
 use nits_protocol::version::*;
 
@@ -40,6 +41,8 @@ pub enum FixtureError {
     Json(#[from] serde_json::Error),
     #[error("invalid gap table in fixture: {0}")]
     GapTable(#[from] nits_protocol::GapTableError),
+    #[error("invalid replay cursor: {0}")]
+    ReplayCursor(#[from] ReplayCursorError),
 }
 
 /// A named example value of a protocol type.
@@ -216,6 +219,10 @@ registry!(
     ClientMsg,
     ServerMsg,
     Since,
+    ReplayCursor,
+    ReplayPosition,
+    ReplayProgress,
+    ReplayPage,
     SubscribeScope,
     Mutation,
     Request,
@@ -1380,6 +1387,51 @@ enum_fixture!(
         },
     ]
 );
+struct_fixture!(
+    ReplayCursor,
+    "ReplayCursor",
+    ReplayCursor::new(Seq::new(42), Seq::new(84))?
+);
+enum_fixture!(
+    ReplayPosition,
+    ReplayPositionKind,
+    "ReplayPosition",
+    [
+        ReplayPosition::Start {
+            since: Since::After { seq: Seq::new(42) }
+        },
+        ReplayPosition::Continue {
+            cursor: ReplayCursor::new(Seq::new(42), Seq::new(84))?
+        },
+        ReplayPosition::Follow {
+            after: Seq::new(84)
+        },
+    ]
+);
+enum_fixture!(
+    ReplayProgress,
+    ReplayProgressKind,
+    "ReplayProgress",
+    [
+        ReplayProgress::More {
+            after: Seq::new(42)
+        },
+        ReplayProgress::Complete,
+    ]
+);
+struct_fixture!(
+    ReplayPage,
+    "ReplayPage",
+    ReplayPage {
+        through: Seq::new(84),
+        events: vec![event(EventBody::ReviewDeleted {
+            review_id: review_id()
+        })],
+        progress: ReplayProgress::More {
+            after: Seq::new(42)
+        },
+    }
+);
 enum_fixture!(
     Mutation,
     MutationKind,
@@ -1580,6 +1632,12 @@ enum_fixture!(
             },
             since: Since::After { seq: Seq::new(41) }
         },
+        Request::ReplayEvents {
+            scope: SubscribeScope::All,
+            position: ReplayPosition::Start {
+                since: Since::After { seq: Seq::new(0) }
+            }
+        },
         Request::Shutdown,
         Request::Unsubscribe {
             scope: SubscribeScope::Review {
@@ -1663,6 +1721,13 @@ enum_fixture!(
             chunk: render_chunk()?
         },
         Response::Subscribed { seq: Seq::new(42) },
+        Response::ReplayEvents {
+            page: ReplayPage {
+                through: Seq::new(42),
+                events: vec![],
+                progress: ReplayProgress::Complete
+            }
+        },
         Response::Unsubscribed,
         Response::ShuttingDown,
         Response::Committed {

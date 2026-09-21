@@ -4,16 +4,15 @@
 //! verbatim for scripting.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{Context as _, bail};
 use clap::{Args, FromArgMatches, Parser, Subcommand, ValueEnum};
 use nits_config::{Context, ContextName, Selection, SelectionOrigin};
 use nits_protocol::{
     AgentVia, Anchor, Author, BuildInfo, ClientId, CommentKind, DirectoryReviewOutcome, Event,
-    EventBody, LineNo, LineRange, Mutation, NonEmpty, RefSpec, RenderOpts, RepoId, RepoPath,
-    Review, ReviewId, ReviewTarget, Seq, Side, Since, SubscribeScope, ThreadId, Workspace,
-    WorkspaceId,
+    EventBody, LineNo, LineRange, Mutation, NonEmpty, RefSpec, RenderOpts, ReplayCursor,
+    ReplayPosition, ReplayProgress, RepoId, RepoPath, Review, ReviewId, ReviewTarget, Seq, Side,
+    Since, SubscribeScope, ThreadId, Workspace, WorkspaceId,
 };
 use nitsd::client::Identity;
 use nitsd::contexts::{self, Status};
@@ -194,7 +193,7 @@ enum Cmd {
         /// Mutually exclusive with `--workspace` and `--review`.
         #[arg(long)]
         awaiting: Option<String>,
-        /// Replay everything after this log position first.
+        /// Replay through the log head captured at startup. JSON output is one event per line.
         #[arg(long)]
         since: Option<u64>,
     },
@@ -1806,22 +1805,34 @@ async fn events(
     since: Option<u64>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let mut since = since.map_or(Since::Now, |n| Since::After { seq: Seq::new(n) });
+    let mut position = ReplayPosition::Start {
+        since: since.map_or(Since::Now, |n| Since::After { seq: Seq::new(n) }),
+    };
     loop {
-        let timeout = if follow {
-            Duration::from_hours(1)
-        } else {
-            Duration::ZERO
-        };
-        let polled = ops.poll_events(scope.clone(), since, timeout, 1000).await?;
-        for e in &polled.events {
-            emit(json, e, || event_line(e))?;
+        let page = ops.replay_events(scope.clone(), position).await?;
+        // Write each event directly: compact JSON Lines for streams, keeping
+        // embedded newlines escaped. A slow consumer holds only this one page.
+        {
+            use std::io::Write as _;
+            let mut out = std::io::stdout().lock();
+            for event in &page.events {
+                if json {
+                    serde_json::to_writer(&mut out, event)?;
+                    writeln!(out)?;
+                } else {
+                    writeln!(out, "{}", event_line(event))?;
+                }
+            }
+            out.flush()?;
         }
-        if !follow {
-            break;
-        }
-        since = Since::After {
-            seq: polled.last_seq,
+        position = match page.progress {
+            ReplayProgress::More { after } => ReplayPosition::Continue {
+                cursor: ReplayCursor::new(after, page.through)?,
+            },
+            ReplayProgress::Complete if follow => ReplayPosition::Follow {
+                after: page.through,
+            },
+            ReplayProgress::Complete => break,
         };
     }
     Ok(())

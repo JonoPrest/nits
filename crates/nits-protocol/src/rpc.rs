@@ -125,6 +125,31 @@ pub enum SubscribeScope {
     },
 }
 
+impl SubscribeScope {
+    /// Shared replay/live policy. The caller resolves review membership from
+    /// persisted records (including tombstones), optionally through its cache.
+    pub fn matches(
+        &self,
+        event: &Event,
+        workspace_of: impl FnOnce(ReviewId) -> Option<WorkspaceId>,
+    ) -> bool {
+        match self {
+            Self::All => true,
+            Self::Workspace { workspace_id } => {
+                event
+                    .body
+                    .workspace_id()
+                    .or_else(|| event.body.review_id().and_then(workspace_of))
+                    == Some(*workspace_id)
+            }
+            Self::Review { review_id } => event.body.review_id() == Some(*review_id),
+            Self::AwaitingAgent { agent } => {
+                matches!(&event.body, crate::EventBody::ReviewRequested { agent: recipient, .. } if recipient == agent)
+            }
+        }
+    }
+}
+
 /// A mutation submitted by a client. Author is taken from the connection,
 /// `client_seq` lets the client match its optimistic copy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumDiscriminants)]
@@ -345,6 +370,11 @@ pub enum Request {
         scope: SubscribeScope,
         since: Since,
     },
+    /// One bounded page; following waits never enqueue historical subscriptions.
+    ReplayEvents {
+        scope: SubscribeScope,
+        position: crate::ReplayPosition,
+    },
     Unsubscribe {
         scope: SubscribeScope,
     },
@@ -379,6 +409,7 @@ impl Request {
             | Request::TreeSnapshot { .. }
             | Request::RenderChunk { .. }
             | Request::Subscribe { .. }
+            | Request::ReplayEvents { .. }
             | Request::Unsubscribe { .. }
             | Request::Mutate { .. }
             | Request::Shutdown => ResponseShape::Single,
@@ -459,6 +490,9 @@ pub enum Response {
     /// Position from which live events will flow.
     Subscribed {
         seq: Seq,
+    },
+    ReplayEvents {
+        page: crate::ReplayPage,
     },
     Unsubscribed,
     /// The committed form of a mutation. The same event is also broadcast.

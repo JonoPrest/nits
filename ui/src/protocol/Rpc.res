@@ -61,6 +61,35 @@ module SubscribeScope = {
   @@warning("+27")
 }
 
+module ReplayCursor = {
+  @schema
+  type t = {after: seq, through: seq}
+}
+
+module ReplayPosition = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t =
+    | @as("Start") Start({since: Since.t})
+    | @as("Continue") Continue({cursor: ReplayCursor.t})
+    | @as("Follow") Follow({after: seq})
+  @@warning("+27")
+}
+
+module ReplayProgress = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t =
+    | @as("More") More({after: seq})
+    | @as("Complete") Complete({})
+  @@warning("+27")
+}
+
+module ReplayPage = {
+  @schema
+  type t = {through: seq, events: array<Events.Event.t>, progress: ReplayProgress.t}
+}
+
 module ViewSection = {
   @schema
   type t =
@@ -294,6 +323,7 @@ module Request = {
         index: Render.chunkIndex,
       })
     | @as("Subscribe") Subscribe({scope: SubscribeScope.t, since: Since.t})
+    | @as("ReplayEvents") ReplayEvents({scope: SubscribeScope.t, position: ReplayPosition.t})
     | @as("Unsubscribe") Unsubscribe({scope: SubscribeScope.t})
     | @as("Mutate") Mutate({@as("client_seq") clientSeq: clientSeq, mutation: Mutation.t})
     | @as("Shutdown") Shutdown({})
@@ -318,6 +348,7 @@ module Response = {
     | @as("TreeSnapshot") TreeSnapshot({snapshot: TreeSnapshot.t})
     | @as("RenderChunk") RenderChunk({chunk: Render.RenderChunk.t})
     | @as("Subscribed") Subscribed({seq: seq})
+    | @as("ReplayEvents") ReplayEvents({page: ReplayPage.t})
     | @as("Unsubscribed") Unsubscribed({})
     | @as("Committed") Committed({event: Events.Event.t})
     | @as("ShuttingDown") ShuttingDown({})

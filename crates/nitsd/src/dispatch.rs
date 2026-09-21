@@ -25,6 +25,9 @@ pub async fn single(
     request: Request,
 ) -> Result<Response, DaemonError> {
     match request {
+        Request::ReplayEvents { scope, position } => Ok(Response::ReplayEvents {
+            page: daemon.replay_events(scope, position).await?,
+        }),
         Request::EnsureDirectoryReview {
             client_seq,
             options,

@@ -480,6 +480,7 @@ impl Sim {
                     | Request::BlobRender { .. }
                     | Request::RenderChunk { .. }
                     | Request::Subscribe { .. }
+                    | Request::ReplayEvents { .. }
                     | Request::Unsubscribe { .. }
                     | Request::Mutate { .. }
                     | Request::Shutdown => {}
@@ -682,6 +683,7 @@ impl Sim {
             | Request::ChangeRender { .. }
             | Request::RenderChunk { .. }
             | Request::Unsubscribe { .. }
+            | Request::ReplayEvents { .. }
             | Request::Shutdown => self.push_down(
                 peer,
                 ServerMsg::Error {

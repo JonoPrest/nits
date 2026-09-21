@@ -4699,6 +4699,7 @@ fn response_name(r: &Response) -> &'static str {
         Response::TreeSnapshot { .. } => "TreeSnapshot",
         Response::RenderChunk { .. } => "RenderChunk",
         Response::Subscribed { .. } => "Subscribed",
+        Response::ReplayEvents { .. } => "ReplayEvents",
         Response::Unsubscribed => "Unsubscribed",
         Response::Committed { .. } => "Committed",
         Response::ShuttingDown => "ShuttingDown",
