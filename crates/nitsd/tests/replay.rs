@@ -236,7 +236,7 @@ async fn wait_lifecycle(websocket: bool) {
             match Daemon::open(&data, identity().client) {
                 Ok(reopened) => break drop(reopened),
                 Err(error) if error.to_string().contains("Database already open") => {
-                    tokio::task::yield_now().await
+                    tokio::task::yield_now().await;
                 }
                 Err(error) => panic!("unexpected reopen: {error}"),
             }
