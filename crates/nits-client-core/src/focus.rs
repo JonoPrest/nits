@@ -914,6 +914,9 @@ pub(crate) fn resolve(core: &ClientCore, command: Command) -> Result<Action, NoT
             if view.active_creation().is_some() {
                 return Ok(Action::CancelNewReview);
             }
+            if focus == Focus::Composer {
+                return Ok(Action::DraftDiscarded);
+            }
             if in_visual {
                 return Ok(Action::LeaveVisual);
             }

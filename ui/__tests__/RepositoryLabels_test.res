@@ -31,10 +31,10 @@ let thread = (i, place) => {
 let query = (container, selector) =>
   Element.querySelector(container, selector)->Nullable.toOption->Option.getExn
 let chrome: array<View.Hint.t> = [
-  {keys: "g c", command: Comment, label: "comment"},
+  {keys: "g c", command: CommentOnFile, label: "comment on file"},
   {keys: "g v", command: ToggleViewed, label: "mark viewed"},
   {keys: "g y", command: CopyPath, label: "copy path"},
-  {keys: "g x", command: ExpandContext, label: "expand context"},
+  {keys: "g x", command: ExpandFile, label: "expand file"},
   {keys: "g z", command: ToggleFileCollapse, label: "fold file"},
 ]
 

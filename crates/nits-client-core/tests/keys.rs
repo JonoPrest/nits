@@ -3160,8 +3160,6 @@ fn back_closes_help_before_underlying_search_and_composer() {
     press(&mut core, "esc").unwrap();
     assert!(core.view().help.is_none());
     assert_eq!(core.view().tree.search, search);
-    press(&mut core, "esc").unwrap();
-    assert!(core.view().tree.search.is_none());
     core.handle(Input::User(Action::DraftOpened {
         anchor: Anchor::Review,
     }))
@@ -3173,6 +3171,9 @@ fn back_closes_help_before_underlying_search_and_composer() {
     assert_eq!(core.view().draft, draft);
     press(&mut core, "esc").unwrap();
     assert!(core.view().draft.is_none());
+    assert_eq!(core.view().tree.search, search);
+    press(&mut core, "esc").unwrap();
+    assert!(core.view().tree.search.is_none());
 }
 
 #[test]
