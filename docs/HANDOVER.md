@@ -433,7 +433,9 @@ Written 2026-08-27 at the end of the session that finished Milestone 3 and
   bridges `nits-client-host`; `CoreWs.res` is the
   browser adapter and `Main.res` picks it outside Tauri
   (same-origin `/ws`; `?ws=` overrides; Vite dev proxies `/ws` → 9777). Run
-  `cargo run -p nits-client-web`, serve `ui/dist` (or `pnpm dev`), open in
+  `cargo run -p nits-client-web` and open its URL, or explicitly trust the dev
+  UI with `--allow-origin http://localhost:5173` before running `pnpm dev`
+  (use the exact origin Vite prints; see ARCHITECTURE §6.2). Open in
   a browser — agents can drive it with headless Playwright
   (`npm i playwright && npx playwright install chromium`; verified: page
   connects, review opens, threads render, zero console errors). Tauri

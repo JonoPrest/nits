@@ -427,6 +427,38 @@ tab. Closing a socket cancels its connection (including an owned SSH child),
 and reconnecting creates a fresh session whose empty model replaces the old
 one before attach.
 
+Before creating that session, the bridge checks `Host` on every HTTP request
+and requires an approved `Origin` on the exact `GET /ws` upgrade. By default,
+the origin must match the request's host and the actual listener address/port
+(or `localhost` on loopback). Arbitrary DNS names, opaque `null` origins,
+missing origins and duplicate Host/Origin headers are rejected. Native clients
+use the daemon protocol rather than an Origin-free browser session. Host
+validation also protects the embedded UI from DNS rebinding.
+
+Development/proxy UI origins are explicit, per launch: run
+`cargo run -p nits-client-web -- --allow-origin http://localhost:5173` alongside
+`pnpm --dir ui dev`, substituting the exact origin Vite prints (no trailing
+slash). Repeat `--allow-origin` for additional trusted UI origins. The Vite
+proxy preserves Host and Origin; a configured proxy may instead send the
+bridge's Host, but must preserve the browser's Origin. Forwarded headers do
+not grant trust. A separately served UI using `?ws=` needs the same explicit
+origin grant. HTTPS proxy origins are supported explicitly, including their
+public Host; the bridge itself serves HTTP.
+
+No capability token is needed for this boundary: the served UI contains no
+secret, browsers cannot forge Origin, and neither Origin nor Host is inferred
+from an untrusted forwarded header. This is browser isolation, not client
+authentication: non-browser programs can supply both headers. Keep the bridge
+on loopback (as both CLI launchers do); remote daemon access remains protected
+by SSH. Adding public bridge hosting would require authentication separately.
+
+The real Chromium regression runs against a disposable daemon and the actual
+Vite proxy, proving supported origins can read and mutate while unrelated and
+opaque origins cannot. After building the UI, run
+`pnpm --dir ui exec playwright install chromium`, then
+`cargo nextest run -p nits-client-web --run-ignored only -E 'test(real_browser_origin_boundary)'`.
+CI runs this test explicitly; the ordinary Rust suite does not require a browser.
+
 ### 6.3 Type bridge
 
 The Rust `ViewModel`/`Action`/`Event` types and their ReScript counterparts are both **hand-written types**; on the ReScript side the Sury (`rescript-schema`) schema is derived from the type by the `@schema` ppx (`@as` for field names, `@tag("type")` for enums, `@s.null` for `Option`), which gives static types plus a validator. The adapters parse at the boundary so drift is caught at runtime, not deep in a component. Rust enums use `#[serde(tag = "type")]` so they map to Sury tagged unions — and, because `@tag` also names the runtime tag field, ReScript values have exactly the wire shape.

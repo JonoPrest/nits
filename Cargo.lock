@@ -3203,6 +3203,7 @@ dependencies = [
  "fastrand",
  "futures-util",
  "gethostname",
+ "httparse",
  "include_dir",
  "nits-client-core",
  "nits-client-host",
@@ -3220,6 +3221,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

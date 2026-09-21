@@ -1,6 +1,7 @@
 //! `nits-web [context] [--port 9777]`: WebSocket bridge for the browser
 //! UI. Run `pnpm --dir ui dev`, open the Vite URL, and the page connects
-//! to this bridge (default `ws://127.0.0.1:9777`, override with `?ws=`).
+//! to this bridge via its `/ws` proxy. Trust the dev origin explicitly with
+//! `--allow-origin http://localhost:5173` (use the exact URL Vite prints).
 
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -25,6 +26,10 @@ struct Args {
     /// Port to listen on (loopback only).
     #[arg(long, default_value_t = 9777)]
     port: u16,
+    /// Trust an additional exact UI origin, e.g. `http://localhost:5173` for Vite.
+    /// May be repeated. No wildcards, paths, or trailing slash.
+    #[arg(long = "allow-origin")]
+    allowed_origins: Vec<nits_client_web::BrowserOrigin>,
 }
 
 fn author() -> Author {
@@ -43,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (name, ctx) = cfg.resolve(args.context.as_deref())?;
     let endpoint = DaemonEndpoint::resolve(&ctx, StartPolicy::StartIfNeeded)?;
     // Dev tool: memory KV is enough (prefs reset per run).
-    let config = nits_client_web::web_config(
+    let mut config = nits_client_web::web_config(
         endpoint,
         BuildInfo {
             name: "nits-web".into(),
@@ -53,6 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         IdSeed(fastrand::u128(..)),
         KvConfig::Memory,
     );
+    config.allowed_origins = args.allowed_origins;
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, args.port));
     let server = nits_client_web::serve(addr, config).await?;
     eprintln!(

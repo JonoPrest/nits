@@ -29,72 +29,23 @@ use nits_client_host::{
     Handle, HostError, HostFactory, HostSession, HostSettings, Identity, KvConfig,
 };
 use nitsd::contexts::DaemonEndpoint;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::AsyncWriteExt as _;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+use tokio_tungstenite::tungstenite::handshake::server::{create_response, write_response};
+use tokio_tungstenite::tungstenite::http::{Method, header};
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_util::sync::CancellationToken;
 
 /// The built browser UI, embedded at compile time (build `ui/dist` first).
 static UI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/dist");
 
-/// The one request head we parse: method, path, and the two headers the
-/// websocket upgrade needs. Anything else is a plain asset request.
-#[derive(Debug)]
-struct RequestHead {
-    get: bool,
-    path: String,
-    upgrade_websocket: bool,
-    ws_key: Option<String>,
-}
+mod access;
+mod http;
 
-/// Read a request head (≤ 16 KB) off a fresh connection.
-async fn read_head(stream: &mut TcpStream) -> std::io::Result<(RequestHead, Vec<u8>)> {
-    let mut buf = Vec::with_capacity(1024);
-    let mut byte = [0u8; 1024];
-    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
-        if buf.len() > 16 * 1024 {
-            return Err(std::io::Error::other("request head too large"));
-        }
-        let n = stream.read(&mut byte).await?;
-        if n == 0 {
-            return Err(std::io::ErrorKind::UnexpectedEof.into());
-        }
-        buf.extend_from_slice(&byte[..n]);
-    }
-    let text = String::from_utf8_lossy(&buf);
-    let mut lines = text.lines();
-    let request = lines.next().unwrap_or_default();
-    let mut parts = request.split_whitespace();
-    let method = parts.next().unwrap_or_default();
-    let path = parts.next().unwrap_or("/").to_owned();
-    let mut upgrade_websocket = false;
-    let mut ws_key = None;
-    for line in lines {
-        if line.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':') {
-            let value = value.trim();
-            match name.to_ascii_lowercase().as_str() {
-                "upgrade" if value.eq_ignore_ascii_case("websocket") => upgrade_websocket = true,
-                "sec-websocket-key" => ws_key = Some(value.to_owned()),
-                _ => {}
-            }
-        }
-    }
-    Ok((
-        RequestHead {
-            get: method == "GET",
-            path,
-            upgrade_websocket,
-            ws_key,
-        },
-        buf,
-    ))
-}
+pub use access::{BrowserOrigin, InvalidBrowserOrigin};
+use http::{RequestHead, read_head};
 
 fn mime(path: &str) -> &'static str {
     match path.rsplit_once('.').map(|(_, ext)| ext) {
@@ -113,11 +64,11 @@ fn mime(path: &str) -> &'static str {
 /// Serve one asset from the embedded build; unknown paths fall back to
 /// `index.html` (query strings like `?review=` land on the app shell).
 async fn respond_asset(stream: &mut TcpStream, head: &RequestHead) -> std::io::Result<()> {
-    let path = head.path.split(['?', '#']).next().unwrap_or("/");
+    let path = head.uri().path();
     let rel = path.trim_start_matches('/');
     let (body, mime): (&[u8], &str) = match UI.get_file(rel) {
-        Some(f) if head.get && !rel.is_empty() => (f.contents(), mime(rel)),
-        _ if head.get => (
+        Some(f) if head.method() == Method::GET && !rel.is_empty() => (f.contents(), mime(rel)),
+        _ if head.method() == Method::GET => (
             UI.get_file("index.html")
                 .map_or(b"missing ui/dist" as &[u8], |f| f.contents()),
             "text/html; charset=utf-8",
@@ -150,6 +101,10 @@ enum Command {
 /// allocator; it is not installed directly into any core.
 #[derive(Debug, Clone)]
 pub struct WebConfig {
+    /// Additional trusted UI origins (for example Vite's exact origin).
+    /// Proxies must preserve Origin and may preserve Host or use the bridge's.
+    /// Empty by default; only this listener's same-origin UI is trusted.
+    pub allowed_origins: Vec<BrowserOrigin>,
     pub reference_context: Option<nits_client_core::protocol::ReferenceContext>,
     pub endpoint: DaemonEndpoint,
     pub kv: KvConfig,
@@ -172,6 +127,7 @@ pub fn web_config(
     kv: KvConfig,
 ) -> WebConfig {
     WebConfig {
+        allowed_origins: Vec::new(),
         reference_context: None,
         endpoint,
         kv,
@@ -361,21 +317,42 @@ async fn route(
     active: Arc<AtomicUsize>,
     shutdown: CancellationToken,
 ) -> Result<(), RouteError> {
-    let (head, _raw) = read_head(&mut stream).await?;
-    if head.get && head.upgrade_websocket && head.path.starts_with("/ws") {
-        let Some(key) = &head.ws_key else {
-            stream
-                .write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n")
-                .await?;
+    let (head, pending) = match read_head(&mut stream).await {
+        Ok(head) => head,
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            http::reject(&mut stream, "400 Bad Request").await?;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let access = access::Access::new(stream.local_addr()?, &sessions.config.allowed_origins);
+    if !access.allows_host(head.headers()) {
+        http::reject(&mut stream, "403 Forbidden").await?;
+        return Ok(());
+    }
+    if head.uri().path() == "/ws" || head.headers().contains_key(header::UPGRADE) {
+        if head.uri() != "/ws" {
+            http::reject(&mut stream, "404 Not Found").await?;
+            return Ok(());
+        }
+        if !access.allows_origin(head.headers()) {
+            http::reject(&mut stream, "403 Forbidden").await?;
+            return Ok(());
+        }
+        let Ok(response) = create_response(&head) else {
+            http::reject(&mut stream, "400 Bad Request").await?;
             return Ok(());
         };
-        let accept = derive_accept_key(key.as_bytes());
-        let reply = format!(
-            "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {accept}\r\n\r\n"
-        );
-        stream.write_all(reply.as_bytes()).await?;
-        let ws =
-            tokio_tungstenite::WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+        let mut reply = Vec::new();
+        write_response(&mut reply, &response).map_err(std::io::Error::other)?;
+        stream.write_all(&reply).await?;
+        let ws = tokio_tungstenite::WebSocketStream::from_partially_read(
+            stream,
+            pending,
+            Role::Server,
+            None,
+        )
+        .await;
         let session_shutdown = shutdown.child_token();
         let _active = ActiveSession::new(active, session_shutdown.clone());
         let session = sessions.next()?;

@@ -83,6 +83,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: ./.github/actions/web-bundle
       - run: cargo nextest run --workspace
+      - name: browser origin boundary
+        run: |
+          pnpm --dir ui exec playwright install --with-deps chromium
+          cargo nextest run -p nits-client-web --run-ignored only -E 'test(real_browser_origin_boundary)'
       - name: fixtures are up to date
         run: cargo xtask fixtures && git diff --exit-code -- fixtures
 
