@@ -19,7 +19,7 @@ impl CreationTargetId {
     }
 }
 
-/// Ordered acknowledgement of draft edits, including target commands and focus.
+/// Ordered acknowledgement of draft, target, focus and submission intents.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct CreationRevision(u64);
@@ -519,12 +519,15 @@ impl ClientCore {
     }
 
     pub(crate) fn submit_creation(&mut self, review_id: ReviewId) -> Vec<Effect> {
-        let Some(creation) = &self.view.home.creating else {
+        let Some(creation) = &mut self.view.home.creating else {
             return Vec::new();
         };
         if creation.review_id != review_id || !creation.editable() {
             return Vec::new();
         }
+        // Even unchanged-input retries need their own acknowledgement. A
+        // pre-submit Failed snapshot must not look like this attempt's result.
+        creation.revision.advance();
         let result = if creation.context != self.view.daemon_context {
             Err("This draft belongs to a different daemon context. Return to that context before submitting.".into())
         } else if !matches!(self.connection, crate::Connection::Subscribed { .. }) {
@@ -684,9 +687,6 @@ impl ClientCore {
         review_id: ReviewId,
         next: CreationReconcile,
     ) -> Vec<Effect> {
-        if !matches!(self.connection, crate::Connection::Subscribed { .. }) {
-            return Vec::new();
-        }
         let Some(creation) = &mut self.view.home.creating else {
             return Vec::new();
         };
@@ -696,6 +696,20 @@ impl ClientCore {
         let CreationStatus::Interrupted { submission, .. } = &creation.status else {
             return Vec::new();
         };
+        if next == CreationReconcile::Retry {
+            creation.revision.advance();
+        }
+        if !matches!(self.connection, crate::Connection::Subscribed { .. }) {
+            if next == CreationReconcile::Retry {
+                creation.status = CreationStatus::Interrupted {
+                    submission: submission.clone(),
+                    message: "The daemon is disconnected. Reconnect before checking this attempt."
+                        .into(),
+                };
+                return vec![changed()];
+            }
+            return Vec::new();
+        }
         creation.status = CreationStatus::Reconciling {
             submission: submission.clone(),
             next,

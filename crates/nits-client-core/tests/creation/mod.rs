@@ -647,3 +647,102 @@ fn target_structure_and_field_edits_stay_ordered_without_waiting_for_view_patche
     assert_eq!(creation(&restored).revision, retained.revision);
     assert_eq!(creation(&restored).status, CreationStatus::Succeeded);
 }
+
+#[test]
+fn unchanged_retry_has_a_new_acknowledgement_and_recovers_without_duplicate_writes() {
+    for committed in [false, true] {
+        let (mut core, id) = ready();
+        let (first, _) = submit(&mut core, id);
+        let effects = error(
+            &mut core,
+            first,
+            RpcError::Internal {
+                message: "missing branch".into(),
+            },
+        );
+        let (lookup, _) = sent_request(&effects).unwrap();
+        error(&mut core, lookup, missing(id));
+        let failed = creation(&core).clone();
+        assert!(matches!(failed.status, CreationStatus::Failed { .. }));
+        // The repository can be repaired externally: no draft edit is needed.
+        let (_, created) = submit(&mut core, id);
+        let retry_revision = creation(&core).revision;
+        assert!(retry_revision > failed.revision);
+        assert_eq!(creation(&core).draft, failed.draft);
+        assert!(
+            core.handle(Input::User(Action::SubmitReviewCreation { review_id: id }))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(creation(&core).revision, retry_revision);
+        // The browser only saw the previous failure; its local submit intent
+        // advances the revision before any host acknowledgement can be lost.
+        let mut frozen = failed.clone();
+        frozen.revision = retry_revision;
+        let mut restored = subscribed(0);
+        let effects = restored
+            .handle(Input::User(Action::RestoreReviewCreation {
+                creation: frozen,
+                resume: CreationResume::Submitted,
+            }))
+            .unwrap();
+        let (lookup, request) = sent_request(&effects).unwrap();
+        assert_eq!(request, Request::GetReview { review_id: id });
+        if committed {
+            answer(&mut restored, lookup, Response::Review { review: created });
+            assert_eq!(creation(&restored).status, CreationStatus::Succeeded);
+        } else {
+            error(&mut restored, lookup, missing(id));
+            assert!(matches!(
+                creation(&restored).status,
+                CreationStatus::Interrupted { .. }
+            ));
+            let effects = restored
+                .handle(Input::User(Action::RetryReviewCreation { review_id: id }))
+                .unwrap();
+            assert!(creation(&restored).revision > retry_revision);
+            let (lookup, request) = sent_request(&effects).unwrap();
+            assert_eq!(request, Request::GetReview { review_id: id });
+            assert!(
+                restored
+                    .handle(Input::User(Action::RetryReviewCreation { review_id: id }))
+                    .unwrap()
+                    .is_empty()
+            );
+            let effects = error(&mut restored, lookup, missing(id));
+            let (_, request) = sent_request(&effects).unwrap();
+            assert!(matches!(request, Request::Mutate {
+                mutation: Mutation::CreateReview { review_id, title, targets, .. }, ..
+            } if review_id == id && title == created.title && targets == created.targets));
+        }
+        assert_eq!(creation(&restored).draft, failed.draft);
+    }
+}
+
+#[test]
+fn rejected_submission_and_disconnected_retry_acknowledge_the_current_intent() {
+    let (mut core, id, _) = begin();
+    let revision = creation(&core).revision;
+    let effects = core
+        .handle(Input::User(Action::SubmitReviewCreation { review_id: id }))
+        .unwrap();
+    assert!(sent_request(&effects).is_none());
+    assert!(matches!(
+        creation(&core).status,
+        CreationStatus::Failed { .. }
+    ));
+    assert!(creation(&core).revision > revision);
+    let (mut core, id) = ready();
+    submit(&mut core, id);
+    disconnect(&mut core);
+    let interrupted = creation(&core).clone();
+    let effects = core
+        .handle(Input::User(Action::RetryReviewCreation { review_id: id }))
+        .unwrap();
+    assert!(sent_request(&effects).is_none());
+    assert!(!effects.is_empty());
+    assert!(creation(&core).revision > interrupted.revision);
+    assert_eq!(creation(&core).draft, interrupted.draft);
+    assert!(matches!(&creation(&core).status,
+        CreationStatus::Interrupted {message, ..} if message.contains("Reconnect")));
+}

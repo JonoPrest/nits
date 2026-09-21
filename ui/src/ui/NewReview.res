@@ -18,10 +18,19 @@ let make = (
     let current =
       local.current.snapshot->Option.map(s => s.creation.draft)->Option.getOr(creation.draft)
     setDraft(_ => current)
-    switch creation.status {
-    | Failed(_) | Interrupted(_) => setSubmitted(_ => false)
-    | Editing(_) | Pending(_) | Reconciling(_) | Succeeded(_) => ()
-    }
+    // The incoming status can predate a locally submitted retry. Only the
+    // reconciled snapshot may release the pending form, including on failure.
+    let frozen =
+      local.current.snapshot
+      ->Option.map(saved =>
+        saved.resume == Submitted &&
+          switch saved.creation.status {
+          | Interrupted(_) => false
+          | Editing(_) | Failed(_) | Pending(_) | Reconciling(_) | Succeeded(_) => true
+          }
+      )
+      ->Option.getOr(false)
+    setSubmitted(_ => frozen)
     None
   }, [creation])
   let editable = View.ReviewCreation.editable(creation) && !submitted
@@ -50,8 +59,12 @@ let make = (
         }
       }
     )
+  let retry = switch creation.status {
+  | Interrupted(_) => true
+  | Editing(_) | Failed(_) | Pending(_) | Reconciling(_) | Succeeded(_) => false
+  }
   let run = (command: View.Command.t) => {
-    if command != Submit || !waitingDefaults {
+    if command != Submit || (!submitted && (editable || retry) && !waitingDefaults) {
       if command == Submit {
         setSubmitted(_ => true)
       }
@@ -90,10 +103,6 @@ let make = (
       }
     }
     ReactEvent.Keyboard.stopPropagation(ev)
-  }
-  let retry = switch creation.status {
-  | Interrupted(_) => true
-  | Editing(_) | Failed(_) | Pending(_) | Reconciling(_) | Succeeded(_) => false
   }
   <form
     className="new-review panel"
@@ -229,7 +238,7 @@ let make = (
         label={retry ? "Check and retry" : "Create"}
         kind=Primary
         title=?{Chrome.tip(chrome, Submit)}
-        disabled={(!editable && !retry) || waitingDefaults}
+        disabled={submitted || !editable && !retry || waitingDefaults}
         onClick={() => run(Submit)}
       />
       <UI.Button
