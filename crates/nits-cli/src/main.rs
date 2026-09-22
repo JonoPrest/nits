@@ -42,8 +42,8 @@ struct Cli {
     /// `--ws` remains accepted as a deprecated alias.
     #[arg(long, alias = "ws", env = "NITS_WS_URL", global = true, value_parser = parse_daemon_url)]
     daemon_url: Option<String>,
-    /// Workspace for review create/list and events. Default for reviews:
-    /// the workspace whose attached repo contains the current directory.
+    /// Workspace for review creation, scoped listing and events. Creation can
+    /// infer the workspace from cwd; listing defaults to all workspaces.
     #[arg(long, global = true, value_name = "ID")]
     workspace: Option<WorkspaceId>,
     /// Ad-hoc local context: data dir (socket at `<data-dir>/nitsd.sock`).
