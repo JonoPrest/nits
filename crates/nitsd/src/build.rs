@@ -86,7 +86,16 @@ pub fn executable(program: &Path) -> io::Result<PathBuf> {
         .into_iter()
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
         .map(|directory| directory.join(program))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| {
+            candidate.is_file()
+                && rustix::fs::accessat(
+                    rustix::fs::CWD,
+                    candidate,
+                    rustix::fs::Access::EXEC_OK,
+                    rustix::fs::AtFlags::EACCESS,
+                )
+                .is_ok()
+        })
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,

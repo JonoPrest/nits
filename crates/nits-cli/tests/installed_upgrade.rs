@@ -87,6 +87,67 @@ impl Drop for Remote {
 }
 
 #[test]
+fn path_inspection_skips_unlaunchable_entries_but_preserves_explicit_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let denied = dir.path().join("denied");
+    let directory = dir.path().join("directory");
+    let dangling = dir.path().join("dangling");
+    let installed = dir.path().join("installed");
+    for parent in [&denied, &directory, &dangling, &installed] {
+        std::fs::create_dir(parent).unwrap();
+    }
+    std::fs::write(denied.join("nits"), b"not an executable").unwrap();
+    std::fs::set_permissions(denied.join("nits"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::create_dir(directory.join("nits")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("missing"), dangling.join("nits")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_nits"), installed.join("nits")).unwrap();
+    // Relative PATH entries also keep the installed symlink as the selected
+    // program, rather than replacing its identity with the symlink's target.
+    let mut command = Command::new("nits");
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("NITS_") {
+            command.env_remove(key);
+        }
+    }
+    command
+        .current_dir(dir.path())
+        .env("PATH", "denied:directory:dangling:installed")
+        .env("NITS_CONFIG", dir.path().join("absent.toml"))
+        .env("NITS_DATA_DIR", dir.path().join("data"))
+        .env("NITS_SOCKET", dir.path().join("absent.sock"))
+        .args(["daemon", "upgrade-status", "--json"]);
+    let output = command.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let status: nits_protocol::ManagedDaemonStatus =
+        serde_json::from_slice(&output.stdout).unwrap();
+    let nits_protocol::InstalledCandidate::Available { build } = status.installed else {
+        panic!("PATH did not choose the executable: {status:?}")
+    };
+    assert_eq!(
+        build.digest,
+        nitsd::build::digest(Path::new(env!("CARGO_BIN_EXE_nits"))).unwrap()
+    );
+    assert_eq!(
+        status.running,
+        nits_protocol::ManagedDaemonState::Stopped {}
+    );
+    assert!(!dir.path().join("data").exists());
+
+    let output = command
+        .env("NITS_BIN", denied.join("nits"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let status: nits_protocol::ManagedDaemonStatus =
+        serde_json::from_slice(&output.stdout).unwrap();
+    assert!(matches!(
+        status.installed,
+        nits_protocol::InstalledCandidate::Unavailable { .. }
+    ));
+    assert!(!dir.path().join("data").exists());
+}
+
+#[test]
 fn ssh_management_preserves_literal_install_selection_and_rejects_stale_preflight() {
     let fixture = Remote::new();
     let before = std::fs::read(&fixture.config).unwrap();
