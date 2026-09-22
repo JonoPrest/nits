@@ -139,16 +139,23 @@ impl Ops {
         base: Option<BaseRefSpec>,
         head: Option<RefSpec>,
     ) -> Result<nits_protocol::DirectoryReview, OpsError> {
+        // Each entity gets independent entropy, just as when created separately.
+        // The daemon still reuses existing membership/review IDs atomically.
         let (ts, random) = crate::ids::fresh_parts();
+        let workspace_id = WorkspaceId::from_parts(ts, random);
+        let (ts, random) = crate::ids::fresh_parts();
+        let repo_id = RepoId::from_parts(ts, random);
+        let (ts, random) = crate::ids::fresh_parts();
+        let review_id = ReviewId::from_parts(ts, random);
         self.seq += 1;
         match self
             .client
             .request(Request::EnsureDirectoryReview {
                 client_seq: nits_protocol::ClientSeq::new(self.seq),
                 options: nits_protocol::EnsureDirectoryReview {
-                    workspace_id: WorkspaceId::from_parts(ts, random),
-                    repo_id: RepoId::from_parts(ts, random),
-                    review_id: ReviewId::from_parts(ts, random),
+                    workspace_id,
+                    repo_id,
+                    review_id,
                     path,
                     base,
                     head,

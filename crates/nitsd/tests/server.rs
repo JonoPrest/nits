@@ -1306,6 +1306,47 @@ async fn stale_socket_file_is_replaced_and_live_one_is_refused() {
         .unwrap();
 }
 
+async fn directory_bootstrap_allocates_distinct_ids_and_converges(t: Transport) {
+    let h = start_on(small_repo(), t);
+    let path = h.repo.path().to_string_lossy().into_owned();
+    let mut first = Ops::new(connect(&h, 1, "ada").await);
+    let mut second = Ops::new(connect(&h, 2, "bob").await);
+    let (a, b) = tokio::join!(
+        first.ensure_directory_review(path.clone(), None, None),
+        second.ensure_directory_review(path.clone(), None, None),
+    );
+    let a = a.unwrap();
+    let b = b.unwrap();
+    assert_ne!(a.workspace_id.to_string(), a.repo_id.to_string());
+    assert_ne!(a.workspace_id.to_string(), a.review_id.to_string());
+    assert_ne!(a.repo_id.to_string(), a.review_id.to_string());
+    assert_eq!(a.workspace_id, b.workspace_id);
+    assert_eq!(a.repo_id, b.repo_id);
+    assert_eq!(a.review_id, b.review_id);
+    assert_ne!(a.outcome, b.outcome, "one creation, one reuse");
+    let history = h.daemon.core().events_after(None).unwrap();
+    let again = first
+        .ensure_directory_review(path.clone(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(again.review_id, a.review_id);
+    assert_eq!(h.daemon.core().events_after(None).unwrap(), history);
+
+    let another = second
+        .ensure_directory_review(path, Some(BaseRefSpec::Head), Some(RefSpec::Head))
+        .await
+        .unwrap();
+    assert_eq!(another.workspace_id, a.workspace_id);
+    assert_eq!(another.repo_id, a.repo_id);
+    assert_ne!(another.review_id, a.review_id);
+    assert_ne!(another.review_id.to_string(), a.workspace_id.to_string());
+    assert_ne!(another.review_id.to_string(), a.repo_id.to_string());
+    let workspaces = h.daemon.core().workspaces().unwrap();
+    assert_eq!(workspaces.len(), 1);
+    assert_eq!(workspaces[0].repos.len(), 1);
+    assert_eq!(h.daemon.core().reviews(a.workspace_id).unwrap().len(), 2);
+}
+
 /// Expand each listed `async fn name(t: Transport)` into a `#[tokio::test]`
 /// per transport, in `unix::name` and `ws::name`. The WebSocket harness
 /// blocks briefly while the listener binds, hence the multi-thread flavour.
@@ -1331,6 +1372,7 @@ macro_rules! on_both_transports {
 }
 
 on_both_transports! {
+    directory_bootstrap_allocates_distinct_ids_and_converges,
     concurrent_noop_suggestion_applies_once_with_a_durable_receipt,
     malformed_unicode_suggestion_preserves_file_events_and_writer,
     two_clients_one_writes_other_receives_in_order,
