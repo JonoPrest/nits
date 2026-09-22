@@ -2341,6 +2341,68 @@ mod attribution;
 
 mod bootstrap;
 #[test]
+fn conflicting_review_scopes_fail_before_configuration_dial_or_autostart() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("unused-data");
+    let marker = dir.path().join("daemon-started");
+    let launcher = dir.path().join("fake-nits");
+    std::fs::write(
+        &launcher,
+        "#!/bin/sh\nprintf launched > \"$NITS_LAUNCH_MARKER\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let socket = dir.path().join("untouched.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let malformed = dir.path().join("malformed.toml");
+    std::fs::write(&malformed, "[invalid TOML").unwrap();
+    let absent = dir.path().join("absent.toml");
+    let workspace = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    for args in [
+        vec!["--workspace", workspace, "review", "list", "--all"],
+        vec!["review", "--workspace", workspace, "list", "--all"],
+        vec!["review", "list", "--workspace", workspace, "--all"],
+        vec!["review", "list", "--all", "--workspace", workspace],
+    ] {
+        for config in [&malformed, &absent] {
+            for existing_socket in [false, true] {
+                let mut command = configured_nits(config);
+                command
+                    .env("NITS_BIN", &launcher)
+                    .env("NITS_LAUNCH_MARKER", &marker)
+                    .arg("--data-dir")
+                    .arg(&data)
+                    .args(["--start-policy", "start-if-needed"])
+                    .timeout(std::time::Duration::from_secs(3));
+                if existing_socket {
+                    command.arg("--socket").arg(&socket);
+                }
+                command
+                    .args(&args)
+                    .assert()
+                    .code(2)
+                    .stdout("")
+                    .stderr(predicate::str::contains(
+                        "scope flags cannot be used together",
+                    ))
+                    .stderr(predicate::str::contains("--all"))
+                    .stderr(predicate::str::contains("--workspace"));
+                assert!(!data.exists(), "{args:?} created a data directory");
+                assert!(!marker.exists(), "{args:?} launched a daemon");
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock,
+                    "{args:?} dialed the socket"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn review_discovery_is_scoped_only_explicitly_and_filters_without_cwd() {
     let h = start();
     let mut rows = Vec::new();
