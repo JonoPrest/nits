@@ -2927,7 +2927,11 @@ async fn fetch_review_and_request_comparison_use_the_shared_daemon_contract() {
         snapshot["requests"][1]["checkpoint_comparison"],
         request["checkpoint_comparison"]
     );
-    let before_seq = h.daemon.read(|core| core.last_seq()).await.unwrap();
+    let before_seq = h
+        .daemon
+        .read(nits_review_core::Core::last_seq)
+        .await
+        .unwrap();
     let error = call_err(
         &mut s,
         "fetch_review",
@@ -2936,7 +2940,10 @@ async fn fetch_review_and_request_comparison_use_the_shared_daemon_contract() {
     .await;
     assert!(error.contains("remote name"), "{error}");
     assert_eq!(
-        h.daemon.read(|core| core.last_seq()).await.unwrap(),
+        h.daemon
+            .read(nits_review_core::Core::last_seq)
+            .await
+            .unwrap(),
         before_seq
     );
 }

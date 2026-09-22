@@ -634,8 +634,8 @@ fn target_structure_and_field_edits_stay_ordered_without_waiting_for_view_patche
     assert_eq!(created.title, retained.draft.title);
     assert_eq!(
         created.targets.first().base,
-        RefSpec::Branch {
-            name: "second-base".into()
+        RefSpec::Revision {
+            expression: "second-base".parse().unwrap()
         }
     );
     // A browser that loses the ACK restores precisely these rows and checks
@@ -958,4 +958,28 @@ fn help_back_preserves_creation_until_the_next_back() {
     )))
     .unwrap();
     assert!(core.view().home.creating.is_none());
+}
+
+#[test]
+fn manual_creation_preserves_remote_and_ancestry_revision_requests() {
+    let (mut core, id) = ready();
+    edit(&mut core, |draft| {
+        draft.targets[0].base = CreationBase::Manual {
+            text: "origin/main~1".into(),
+        };
+        draft.targets[0].head = "refs/remotes/origin/topic".into();
+    });
+    let (_, created) = submit(&mut core, id);
+    assert_eq!(
+        created.targets.first().base,
+        RefSpec::Revision {
+            expression: "origin/main~1".parse().unwrap()
+        }
+    );
+    assert_eq!(
+        created.targets.first().head,
+        RefSpec::Revision {
+            expression: "refs/remotes/origin/topic".parse().unwrap()
+        }
+    );
 }

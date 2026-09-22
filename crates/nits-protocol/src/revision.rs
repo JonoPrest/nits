@@ -35,10 +35,10 @@ impl Default for RemoteName {
 }
 
 impl TryFrom<String> for RemoteName {
-    // Git ref components forbid the literal case-sensitive `.lock` suffix.
-    #[allow(clippy::case_sensitive_file_extension_comparisons)]
     type Error = String;
 
+    // Git ref components forbid the literal case-sensitive `.lock` suffix.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty()
             || value.starts_with('-')

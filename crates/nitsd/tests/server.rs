@@ -1486,9 +1486,9 @@ async fn remote_fetch_and_captured_request_comparison_cross_both_transports() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_checkpoint_and_request_comparison_follow_committed_event_order() {
     let h = start(small_repo());
-    let requester = connect(&h, 601, "author").await;
+    let author_client = connect(&h, 601, "author").await;
     let reviewer = connect(&h, 602, "reviewer").await;
-    seed(&h, &requester).await;
+    seed(&h, &author_client).await;
     let targets = h
         .daemon
         .core()
@@ -1508,7 +1508,7 @@ async fn concurrent_checkpoint_and_request_comparison_follow_committed_event_ord
                 }
             ),
             mutate(
-                &requester,
+                &author_client,
                 100 + round,
                 Mutation::RequestReview {
                     review_id: review_id(),
