@@ -57,6 +57,10 @@ fn comment_list_filters_joins_indents_tombstones_and_keeps_a_coherent_cursor() {
     assert_eq!(all.summary.deleted, 1);
     assert_eq!(all.summary.comments, 3);
     assert_eq!(list(&["--open"]), list(&["--status", "open"]));
+    assert!(
+        h.out(&["comment", "list", &review, "--open"])
+            .contains("1 thread: 1 open")
+    );
     assert_eq!(
         list(&["--author", "responder"]).threads[0].comments.len(),
         2
