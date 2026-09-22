@@ -440,7 +440,8 @@ enum ReviewCmd {
     /// Discover reviews across all workspaces, newest activity first.
     List {
         /// Explicitly select every workspace, independent of the current directory.
-        #[arg(long, conflicts_with = "workspace")]
+        /// Mutually exclusive with `--workspace`.
+        #[arg(long)]
         all: bool,
         /// Case-insensitive title substring (for example a PR number).
         #[arg(long)]
@@ -1238,6 +1239,24 @@ async fn early_lifecycle_entry(cli: &Cli) -> anyhow::Result<std::ops::ControlFlo
     Ok(std::ops::ControlFlow::Continue(()))
 }
 
+/// Parse discovery scope before configuration or connection, after Clap has
+/// propagated global workspace arguments from every command position.
+fn review_scope(cli: &Cli) -> Result<nits_protocol::ReviewScope, clap::Error> {
+    let Some(Cmd::Review(ReviewCmd::List { all, .. })) = &cli.cmd else {
+        return Ok(nits_protocol::ReviewScope::All {});
+    };
+    match (*all, cli.workspace) {
+        (false, Some(workspace_id)) => {
+            Ok(nits_protocol::ReviewScope::Workspace { workspace_id })
+        }
+        (true | false, None) => Ok(nits_protocol::ReviewScope::All {}),
+        (true, Some(_)) => Err(<Cli as clap::CommandFactory>::command().error(
+            clap::error::ErrorKind::ArgumentConflict,
+            "review list accepts only one of --all or --workspace; these scope flags cannot be used together",
+        )),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let matches = <Cli as clap::CommandFactory>::command().get_matches();
@@ -1252,10 +1271,11 @@ async fn main() -> anyhow::Result<()> {
         // Offline instructions do not depend on build inspection or config.
         return skill::print();
     }
+    let event_scope = event_scope(&cli).unwrap_or_else(|error| error.exit());
+    let review_scope = review_scope(&cli).unwrap_or_else(|error| error.exit());
     if early_lifecycle_entry(&cli).await?.is_break() {
         return Ok(());
     }
-    let event_scope = event_scope(&cli).unwrap_or_else(|error| error.exit());
     if cli.cmd.is_none()
         && cli.path.is_some()
         && let Some(workspace) = cli.workspace
@@ -1332,7 +1352,7 @@ async fn main() -> anyhow::Result<()> {
             emit(json, &reference, || reference.to_string())
         }
         Cmd::Workspace(c) => workspace(&mut ops, c, json).await,
-        Cmd::Review(c) => review(&mut ops, c, cli.workspace, json).await,
+        Cmd::Review(c) => review(&mut ops, c, cli.workspace, review_scope, json).await,
         Cmd::Comment(c) => comment(&mut ops, c, json).await,
         Cmd::Files { .. } | Cmd::Diff { .. } | Cmd::Show { .. } => content(&ops, cmd, json).await,
         Cmd::Events { follow, since, .. } => {
@@ -1681,6 +1701,7 @@ async fn review(
     ops: &mut Ops,
     cmd: ReviewCmd,
     workspace: Option<WorkspaceId>,
+    scope: nits_protocol::ReviewScope,
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
@@ -1852,16 +1873,8 @@ async fn review(
             emit(json, &event, || id.to_string())
         }
         ReviewCmd::List {
-            all,
-            title,
-            awaiting,
+            title, awaiting, ..
         } => {
-            let scope = match (all, workspace) {
-                (false, Some(workspace_id)) => {
-                    nits_protocol::ReviewScope::Workspace { workspace_id }
-                }
-                (true, _) | (false, None) => nits_protocol::ReviewScope::All {},
-            };
             let discovery = ops
                 .discover_reviews(nits_protocol::ReviewQuery {
                     scope,
@@ -2519,6 +2532,48 @@ async fn daemon_cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_scopes_parse_after_global_argument_propagation() {
+        let workspace_id = WorkspaceId::from_parts(1, 2);
+        let workspace = workspace_id.to_string();
+        for args in [
+            vec!["nits", "--workspace", &workspace, "review", "list"],
+            vec!["nits", "review", "--workspace", &workspace, "list"],
+            vec!["nits", "review", "list", "--workspace", &workspace],
+        ] {
+            assert_eq!(
+                review_scope(&Cli::try_parse_from(&args).unwrap()).unwrap(),
+                nits_protocol::ReviewScope::Workspace { workspace_id }
+            );
+            let mut conflicting = args;
+            conflicting.push("--all");
+            let error = review_scope(&Cli::try_parse_from(conflicting).unwrap()).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+            assert_eq!(error.exit_code(), 2);
+        }
+        for args in [
+            vec!["nits", "review", "list"],
+            vec!["nits", "review", "list", "--all"],
+            vec!["nits", "--workspace", &workspace, "events"],
+            vec![
+                "nits",
+                "--workspace",
+                &workspace,
+                "review",
+                "create",
+                "--base",
+                "main",
+                "--head",
+                "worktree",
+            ],
+        ] {
+            assert_eq!(
+                review_scope(&Cli::try_parse_from(args).unwrap()).unwrap(),
+                nits_protocol::ReviewScope::All {}
+            );
+        }
+    }
 
     #[test]
     fn event_scopes_reject_every_conflict_before_connection() {
