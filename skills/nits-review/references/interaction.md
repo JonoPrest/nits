@@ -24,6 +24,25 @@ handshake, discards previous subscriptions, and leaves the CLI default unchanged
 Failure retains the previous context. Save `context.name` from daemon reads with
 the IDs/cursors returned. Context switches do not translate IDs between daemons.
 
+For daemon recovery, `get_daemon_status {}` inspects the selected context and
+installed candidate without starting or restarting it. `restart_daemon {}`
+explicitly activates that verified installation; it accepts no executable path.
+An `Accepted` operation is still running: inspect status until `Ready` or `Failed`.
+Initialization, identity, context and management remain usable when the application
+handshake is incompatible. A supported supervisor can replace its worker while
+preserving the initialized identity and selected context; use the newly advertised
+tool schemas after a tool-list change. No in-flight mutation is replayed.
+
+Same release version with different executable bytes, as with a development
+rebuild, has no automatic ordering. Automatic repair requires an incompatible
+older daemon and an eligible newer installed release; compatible processes keep
+running until explicit activation. Raw WebSocket contexts are unmanaged. SSH
+activation needs the intended remote daemon and a compatible local MCP worker;
+updating one installation does not update the other. Pre-supervisor MCP hosts need
+one host restart, and pre-maintenance daemons require the supported manual
+stop/start bootstrap. Report these boundaries rather than promising transparent
+recovery from every old executable.
+
 A typical opening sequence is:
 
 ```text
@@ -99,6 +118,11 @@ For the same logical review, use `update_review_target`:
 
 Use `type: "Base"` to change the base; a working tree cannot be a base in this
 target-update/bootstrap selector. Keep other repositories' targets intact.
+
+For a single review spanning multiple attached repositories, `create_review`
+takes a `targets` array with one `repo_id`, `base` and `head` per repository.
+Use the returned workspace/repository IDs. The CLI's `review create` selects one
+repository; do not invent repeated `--repo` arguments as a multi-target interface.
 
 Start a line finding and continue it using the returned `thread_id`:
 

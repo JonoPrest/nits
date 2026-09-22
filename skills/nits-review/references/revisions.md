@@ -21,6 +21,35 @@ nits review request REVIEW_ID reviewer-a --note 'Please check the empty-input fi
 
 Use the agent identity/context flags from [interaction mechanics](interaction.md).
 
+For pushed work that is not yet available on the daemon, use explicit
+`fetch_review {"review_id":"REVIEW_ID","repo_id":"REPO_ID","remote":"origin"}`
+or `nits review fetch REVIEW_ID --repo REPO_ID --remote origin`. Omit `repo_id` only
+for a single-repository review. Fetch updates the named remote's tracking heads
+without changing the checkout, index, local branches, tags or `FETCH_HEAD`.
+It then refreshes existing selected refs; it does not change local `HEAD` into
+`origin/feature`. A successful fetch can carry a separate resolution failure.
+Select the intended head before requesting another round:
+
+```text
+update_review_target {"review_id":"REVIEW_ID","repo_id":"REPO_ID","revision":{"type":"Head","ref_spec":{"type":"Revision","expression":"origin/feature"}}}
+```
+
+CLI ref selection also accepts available short/full OIDs, remote refs, tags,
+ancestry and message-search expressions that resolve to one commit. Quote shell
+expressions containing spaces or metacharacters. `branch:NAME` and `tag:NAME`
+select explicit namespaces. Selection never fetches implicitly; remote context
+paths and objects belong to the daemon's machine.
+
+Every new request retains `checkpoint_comparison`: `NoCheckpoint`, `Compared`
+with the latest checkpoint ID and `SameTargets`, `ChangedTargets` or
+`UnknownRevision`, or `Unknown` for historical provenance. The comparison uses
+the latest committed checkpoint in that review, regardless of its reviewer.
+`SameTargets` warns that the requested identities are unchanged; a new commit
+can count as changed even when its tree is identical. Missing historical capture
+remains unknown, and later checkpoints do not rewrite earlier comparisons.
+This warning is evidence about the requested revision, not approval or a claim
+that all reviewers checked it.
+
 Inspect requested content with `get_diff` using
 `scope: {"type":"Requested","request_id":REQUEST_ID}`. CLI `files REVIEW_ID
 --request REQUEST_ID` lists that comparison's files, and `diff REVIEW_ID PATH

@@ -1,6 +1,13 @@
 # Implementation Plan
 
-Companion to `ARCHITECTURE.md`. Four milestones, each shippable and tested on its own.
+Companion to `ARCHITECTURE.md`. These milestones organize the design and its
+acceptance goals; individual test and performance bullets are not a record that
+every proposed experiment has shipped. Current source has the Core, daemon,
+CLI/MCP, native browser bridge and optional Tauri host, including client caches,
+keyboard review, creation and recovery. A TUI and standalone browser-Wasm host
+remain deferred. See the [README](../README.md#status) for capabilities and the
+[quickstart](QUICKSTART.md) for a runnable entry point.
+
 Two cross-cutting principles apply to every task.
 
 ## Principles
@@ -42,7 +49,7 @@ Goal: headless engine. Given repos on disk, create workspaces/reviews, produce r
 - Events: `Event { seq, ts, author, client_id, client_seq, body: EventBody }` and each `EventBody` variant.
 - Render model: `Row`, `Cell`, `Span`, `FileRender`, `DiffSummary`.
 - RPC: `ClientMsg`, `ServerMsg`, `Request`/`Response` per method, `SubscribeScope`, `OpenReviewItem` stream items, `ReviewSnapshot`, `ViewDelta` sections.
-- All `#[serde(tag = "type")]`, `deny_unknown_fields`.
+- Payload enums use `#[serde(tag = "type")]` and `deny_unknown_fields`; unit-only enums are bare PascalCase strings. Structs reject unknown fields where the wire boundary requires it.
 - Versioning (§4.9): `ProtocolVersion`, `SchemaVersion`, `Envelope<T>`, `Hello`/`Welcome`/`Rejected`, `UnsupportedProtocol`/`VersionMismatch` errors, `UpgradeNotice`.
 - **Fixtures**: `cargo xtask fixtures` writes `fixtures/protocol/<Type>/<variant>.json` for every variant (a `Fixtures` trait implemented per type; a test asserts every enum variant has a fixture via exhaustive match).
 - Tests: serde round-trip per fixture; `insta` snapshot of every fixture so wire changes are visible in review; `proptest` round-trip for IDs/ranges.
@@ -59,14 +66,14 @@ Goal: headless engine. Given repos on disk, create workspaces/reviews, produce r
 - `Repo::open(path)`, `resolve(RefSpec) -> ResolvedRef`, `tree(CommitOid)`, `blob(BlobOid)`, `commits_between(base, head) -> [CommitInfo]` (full message body, author/committer signatures with times).
 - `WorkingTree` snapshot: hash working files into a virtual tree (`WorkTreeSnapshot { tree_oid, dirty: [path] }`); unchanged files reuse index OIDs.
 - `tree_snapshot(root: TreeOid) -> TreeSnapshot` (full recursive walk, flat sorted entries) and `tree_delta(from, to)`; working-tree snapshot yields a synthetic root OID.
-- `changed_files(base, head) -> [FileChange { path, kind: Added|Deleted|Modified|Renamed{from}, old: Option<BlobOid>, new: Option<BlobOid> }]`.
+- File changes carry typed old/new entries with Git modes and distinct blob versus gitlink identity, so absent entries, executable bits, symlinks and submodule transitions remain distinguishable.
 - Tests with `nits-test-support` repos: each `RefSpec` variant resolves; renames detected; working-tree snapshot reflects unstaged edits and untracked files; binary files flagged.
 
 ### 1.5 Diff + render model (`nits_review_core::render`)
 - `render_file(old: Option<&[u8]>, new: Option<&[u8]>, lang, opts) -> (FileRenderHeader, impl Iterator<RenderChunk>)`.
 - Pipeline: (optional whitespace-normalised line view for `ignore_whitespace`) → `imara-diff` hunks → pair `-`/`+` into `Modified` → intra-line ranges → context collapsing with `Expander` → syntect spans (whole-file pass, size-capped) → split into ~500-row chunks. Whitespace-only files collapse to a single marker row.
 - `render_blob(bytes, lang)` for explorer views (all `Context` rows), same chunked shape.
-- Content-keyed disk cache `(old_oid, new_oid, opts_hash, chunk_index)`; header cached separately.
+- Content-keyed disk cache includes a renderer generation as well as OIDs/options/chunk identity; header cached separately. Rendering changes cannot reuse older semantically incompatible rows.
 - Tests: `insta` snapshots for a corpus (add/delete/modify/rename/whitespace-only/binary/huge/no-trailing-newline/CRLF), each rendered with and without `ignore_whitespace`; with it on, re-indenting a block yields zero `Modified` rows while the text in rows is unchanged; invariants via `proptest`: every source line appears exactly once on its side, line numbers monotonic, spans within cell bounds, `Expander.hidden` sums to the omitted count, chunks concatenate to `total_rows` with no gaps; unified and split derive from the same rows. Benchmark: 10k-line and 100k-line files, header returned < 50 ms, first chunk < 200 ms; above the cap `highlighted == false`.
 
 ### 1.6 Reviews (`nits_review_core::review`)
@@ -98,10 +105,10 @@ Goal: `nitsd` running, multiple clients connected, events streaming, MCP working
 - Tests: framing round-trip, partial reads, oversized frame rejected, interleaved requests answered by id; handshake table (same version, older minor, newer minor, other major); every response `Envelope.v` equals the negotiated version.
 
 ### 2.2 Unix socket server
-- tokio; one task per connection; `Core` behind `Arc<RwLock>` or actor (decide during impl; prefer actor with a command channel so `Core` stays single-threaded and simple).
+- tokio; owned connection tasks, one dedicated writer for mutations/reanchoring and a blocking read pool over shared Core. Cancellation closes transport halves and releases pending callers without dropping ownership of accepted blocking work.
 - `subscribe(scope, since)` → replay from store then live tail via broadcast.
 - `open_review` streamed in the order of §4.8; fresh subscribers get `ReviewSnapshot` + `since = current_seq`, never a log replay.
-- Re-anchoring runs on the blocking pool after `ReviewTargetsResolved`, emitting `CommentReanchored` incrementally.
+- Re-anchoring runs in the serialized writer after `ReviewTargetsResolved`, emitting `CommentReanchored` incrementally.
 - Render work leaves the actor: `file_render` resolves blobs on the actor, then runs the pure render on `spawn_blocking`; header sent as soon as the diff is done, chunks streamed as `ServerMsg::RenderChunk` with the requested index first.
 - Tests: two clients, one writes, other receives with correct `Seq`; reconnect with `since` receives exactly the gap; slow subscriber doesn't block others; a 100k-line render in flight does not delay an `add_comment` from another client (latency assertion); `open_review` on a 300-file review completes headers in one stream with no client-initiated requests; re-anchoring 500 comments after a rebase does not block a concurrent `list_reviews` > 50 ms.
 
@@ -115,7 +122,7 @@ Goal: `nitsd` running, multiple clients connected, events streaming, MCP working
 - Tests: shared transport test-suite run against both unix and ws (`#[test_case]` / generic harness).
 
 ### 2.5 MCP
-- `nits-mcp` stdio binary proxying to daemon socket; tool per `Core` method; `Author::Agent` from MCP client info + session.
+- `nits mcp` is a stdio host with a replaceable worker from the `nits-mcp` library. Advertised tool names and schemas are derived; ordinary tools adapt the shared Core, while context/installation management belongs to the adapter. `Author::Agent` retains MCP client/session provenance.
 - `subscribe_events` tool for long-poll/streaming, with source-context cursor checks after switching.
 - `list_contexts` / `use_context` select a session-local daemon through a successful replacement handshake; reads report source context, identity survives, and subscriptions cannot cross the switch.
 - Tests: JSON-RPC conformance for tool list; each tool maps to core and round-trips; agent-authored comment carries provenance.
@@ -127,7 +134,7 @@ Goal: `nitsd` running, multiple clients connected, events streaming, MCP working
 - Tests: `assert_cmd` against spawned daemons in temp dirs, including selection precedence and MCP startup/switch isolation.
 
 ### 2.7 Lifecycle
-- Data dir, socket path, `nitsd --stdio` mode for `ssh host nitsd --stdio`, graceful shutdown, crash-safe reopen.
+- Data dir, socket path, `nits daemon stdio` proxy for SSH, bounded ownership-aware shutdown, crash-safe reopen, and separately versioned installed-build activation. See [daemon upgrades](DAEMON-UPGRADES.md) for same-release development builds, old-client bootstrap and recovery limits.
 - Tests: kill -9 mid-append → reopen consistent (redb guarantees; assert view rebuild path works).
 
 ---
@@ -148,8 +155,8 @@ Goal: sans-I/O client that models everything the UI needs; proven under races.
 ### 3.2 Cache (§5.1)
 - `ContentCache` keyed by OID / `(base_oid, head_oid, opts, chunk_index)`; entries are headers and chunks, never whole files; two tiers, each LRU with a byte budget.
 - Memory tier in `client-core`; open-review headers and open-file chunks pinned. Disk tier via `Persist`/`Load` effects to the host KV; memory eviction writes through; memory miss → `Load` from disk → only then `Send` to daemon.
-- Host KV implementations: Tauri = redb file under the app data dir; browser = IndexedDB; TUI = redb file.
-- `TreeSnapshot` cached by `root_oid`, pinned while its ref is open; `TreeDelta` applied in place for working-tree refs.
+- Native hosts provide memory/file KV. The browser currently uses a native bridge; IndexedDB for a standalone Wasm host and a TUI KV are future work.
+- `TreeSnapshot` cached by `(RepoId, TreeOid)`, pinned while its ref is open; `TreeDelta` applied to that repository's identity. Shared tree hashes must not collapse separate repository roots. Derived render keys also carry the renderer generation.
 - Prefetch policy: on review open request tree snapshots for all target refs, then all headers and the first chunk of each file; on file open request viewport chunk then ±2; on tree navigation request sibling entries.
 - Viewport tracking: `Action::Viewport { file, first_row, last_row }` drives chunk requests; requests for chunks no longer near the viewport are cancelled (not sent if still queued).
 - Tests: memory hit → no effects; memory miss + disk hit → exactly one `Load`, no `Send`; full miss → `Load` then `Send`, concurrent misses deduped; eviction respects both budgets and writes through; pinned entries survive pressure; restart simulation (new `ClientCore` over same KV) serves previous review without `Send`; scrolling a 100k-line file requests only viewport ±2 chunks and never more than N in flight.
@@ -157,7 +164,8 @@ Goal: sans-I/O client that models everything the UI needs; proven under races.
 ### 3.3 Optimistic mutations
 - `PendingEvent` list; local apply; on own `CommittedEvent` → drop pending; on foreign → rebase.
 - LWW by `Seq` for edits/resolve.
-- Tests: **two-client simulator** (`nits_test_support::Sim`) that drives two `ClientCore`s and an in-memory daemon model with controllable delivery order. Cases: concurrent replies to one thread; concurrent edit of same comment (LWW); resolve/unresolve race; disconnect mid-pending then reconnect (pending re-sent exactly once, idempotent by `CommentId`). `proptest`: any interleaving converges both clients to the daemon state.
+- A lost mutation reply is an unknown outcome, not permission to resend. Reconnect reconciles durable events; only an explicit typed rejection proving the request was never admitted allows automatic resend. Client sequence numbers and comment IDs are not a general exactly-once write guarantee. Suggestion apply reconciles its durable receipt/preview and requires explicit retry when unconfirmed.
+- Tests: **two-client simulator** (`nits_test_support::Sim`) drives controllable delivery order: concurrent replies/edits, disposition races, lost replies, never-admitted rejection and reconnect reconciliation without duplicate writes. Property tests check convergence across interleavings.
 
 ### 3.4 Deferred refresh (§5.4)
 - `Draft` state in `ViewModel`; `ReviewTargetsResolved` queued while a draft is open; drained on submit/discard; new comment anchored to the head at draft-open time and re-anchored by the daemon.
@@ -183,16 +191,16 @@ Exit criteria: wasm target check passes for `nits-client-core`; simulator suite 
 Goal: usable desktop app.
 
 ### 4.0 Scaffold
-- `ui/` with ReScript 11 + React + Vite; Tailwind v4 through `@tailwindcss/vite`; `src/styles/app.css` holds `@theme` tokens (light/dark, diff add/remove/context, syntax palette) and the semantic row/cell/span classes (§6.6); `@source` covers `src/**/*.res`.
+- `ui/` with ReScript 12 + React + Vite; Tailwind v4 through `@tailwindcss/vite`; `src/styles/app.css` holds `@theme` tokens (light/dark, diff add/remove/context, syntax palette) and the semantic row/cell/span classes (§6.6); `@source` covers `src/**/*.res`.
 - CI: ReScript build + `vitest`; a test asserts every `SpanClass`, `Row` kind and `Cell` side has a class in `app.css` (parse the CSS, compare to the protocol fixtures).
 
 ### 4.1 Sury schemas + boundary test (§6.3)
-- `ui/src/protocol/*.res` hand-written Sury schemas for `ViewModel`, `Action`, and everything they contain.
+- `ui/src/protocol/*.res` declares typed `@schema` models for `ViewModel`, `Action` and their contents; Sury schemas are derived from those declarations.
 - Test: for each `fixtures/protocol/**.json`, parse with Sury, serialize, canonicalise, compare. Run in CI; a missing schema for a new fixture fails.
 
 ### 4.2 Adapters
 - `Core.res` interface; `CoreTauri.res` (`invoke("dispatch")`, `listen("view")`); `CoreWasm.res` stub.
-- Tests: adapter unit tests with a mocked Tauri API; assert no IPC message exceeds 64 KB during a scripted session (typing a comment, scrolling a 100k-line file).
+- Native hosts encode bounded `ViewFrame` complete/fragment groups; adapters validate and assemble a logical update atomically before applying it. Large source rows are not truncated to fit one frame. Tests cover serialized frame budgets, malformed/missing fragments, resync revision floors and backpressure cancellation, alongside component/adapter cases.
 
 ### 4.3 Tauri host (`nits-client-tauri`)
 - Owns `ClientCore`, a context-aware Local/SSH/WebSocket transport, KV via file, and clock; pushes `ViewModel` diffs to the webview. SSH children are owned and reaped by the connection they carry.

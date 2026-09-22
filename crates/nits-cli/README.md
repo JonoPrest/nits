@@ -3,21 +3,46 @@
 A daemon-backed code review tool. Nits are anchored to content (blobs), not to
 diffs or line numbers — so they survive rebases, amends and force-pushes.
 
-```console
-$ cargo install nits
-$ nits workspace add .
-$ nits review create --base main --head HEAD
-$ nits diff
+From an existing Git checkout:
+
+```sh
+nits .
 ```
+
+Open the printed HTTP URL and leave the command running. The directory shortcut
+attaches the checkout if needed and creates or reuses its working-tree review;
+`workspace add` alone only creates a named workspace. For a script:
+
+```sh
+review_id=$(nits . --headless)
+nits files "$review_id"
+nits comment list "$review_id" --open
+```
+
+Use a path returned by `files` with `nits diff REVIEW_ID PATH` (and `--repo REPO_ID`
+when needed). The [complete runnable quickstart](https://github.com/JonoPrest/nits/blob/main/docs/QUICKSTART.md)
+creates a disposable checkout, carries returned IDs into concrete diff/comment
+commands, opens the browser and attaches a second repository.
 
 - A workspace groups multiple git repos; a review spans any base vs any head
   across them, with commit stepping.
 - Inline, file-level and review-level comments, with human and agent authorship
   recorded.
-- Everything is served by one daemon per machine, reachable locally or over
-  SSH. The daemon is this same binary — `nits daemon serve`, started on demand
-  — so there is nothing else to install and no way for the two to be different
-  versions. Agents attach through `nits mcp`.
+- Each selected data store has one daemon owner, reachable locally, over SSH or
+  WebSocket. The daemon is a subcommand of this binary, `nits daemon serve`, started
+  on demand. An existing process can still run an older build after installation.
+  Agents attach through `nits mcp`.
+
+The repository's main-branch documentation describes current source. Published
+`nits-v0.1.0` predates several features, including the bundled guide below;
+`cargo install nits --locked` installs the published package. For current-source
+installation, use the recorded-checkout/path instructions in the
+[root README](https://github.com/JonoPrest/nits#install). Repeated builds with the
+same package version need explicit installed-build activation; inspect
+`nits daemon upgrade-status --json` and use `nits daemon upgrade --json`.
+Pre-contract daemons/adapters need the documented manual stop/start bootstrap.
+See [daemon upgrades](https://github.com/JonoPrest/nits/blob/main/docs/DAEMON-UPGRADES.md)
+for local/SSH ownership, unmanaged WebSocket endpoints and retained client state.
 
 Other ways to install — Homebrew, `apt`, `dnf`, the AUR — and the full
 documentation are at <https://github.com/JonoPrest/nits>.
@@ -99,6 +124,16 @@ uses the same optional `workspace_id`, `title` and `awaiting` filters and return
 `{context, reviews, seq}` from one coherent store read. Use `get_review` or
 `review show --json` for the full snapshot and its own replay cursor.
 
+`comment list REVIEW_ID` returns complete joined conversations and status counts.
+Filter with `--open` or `--status open|resolved|deferred|informational|deleted`,
+`--thread`, exact `--path`/`--repo`/`--author`, and exclusive `--since SEQ` activity.
+`--oneline` prints the first body line; normal text indents every body line and
+separates replies. JSON is a named object with `threads`, `summary`, `suggestions`,
+review-wide requests/checkpoints and `seq`, not the older positional tuple.
+Deleted roots are separate from open findings; their retained JSON prose is
+historical. Filtered `--since` examines current state, so it is not a removal feed.
+Use unfiltered activity/events or reread a filtered list to discover departures.
+
 A checkout can be attached once per workspace, including through symlinks or its
 `.git` directory. Repeating `workspace attach` reports the existing repository ID;
 it does not create another attachment. The same checkout can belong to another
@@ -153,6 +188,21 @@ comments this includes name and machine. With `--agent`, retain the same agent
 name, `NITS_AGENT_MODEL`, `NITS_SESSION_ID`, and invoking human; matching the agent
 name alone is insufficient. Editing prose preserves anchors, suggestion patches
 and any applied receipt. Historical events remain unchanged.
+
+For pushed fixes on the selected daemon, `review fetch REVIEW_ID --repo REPO_ID
+--remote origin` explicitly updates remote-tracking heads and refreshes the
+review's existing refs. It preserves the checkout, index, local branches, tags
+and `FETCH_HEAD`; a successful fetch can separately report a resolution failure.
+Select `origin/feature` with `review set-head` if the review still follows local
+`HEAD`. Ref arguments accept short/full commit IDs, remote refs, tags and Git
+single-commit expressions; quote expressions containing shell metacharacters.
+Use `branch:NAME` or `tag:NAME` to disambiguate. No ref lookup fetches implicitly.
+
+`review request` captures the selected targets and their comparison with the
+latest committed checkpoint. An unchanged-target warning names that checkpoint;
+the JSON receipt retains `checkpoint_comparison`. Later checkpoints do not alter
+old requests. Unknown historical capture stays explicit, and a warning is not an
+approval or a substitute for choosing the intended head.
 
 For scripts, `nits --json . --headless` creates or reuses the directory's
 working-tree review and prints one JSON object with `review_id`, `workspace_id`,
