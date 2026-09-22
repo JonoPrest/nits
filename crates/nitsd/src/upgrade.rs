@@ -41,6 +41,41 @@ struct Plan {
     intent: UpgradeIntent,
 }
 
+/// Only a plan published after revalidation may finish the shared journal.
+#[derive(Debug)]
+struct ActivePlan(Plan);
+
+#[derive(Debug)]
+enum Revalidated {
+    Activate,
+    Complete(RequestOutcome),
+}
+
+/// A contender's terminal receipt is independent of the currently published
+/// operation. Rejection before admission must not overwrite another owner's
+/// progress, and callers must still receive their own precise failure.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+enum RequestOutcome {
+    AlreadyCurrent { build: BuildDescriptor },
+    Restarted { operation: UpgradeOperation },
+    Failed { failure: UpgradeFailure },
+}
+
+impl From<RequestOutcome> for UpgradeResult {
+    fn from(outcome: RequestOutcome) -> Self {
+        match outcome {
+            RequestOutcome::AlreadyCurrent { build } => Self::AlreadyCurrent { build },
+            RequestOutcome::Restarted { operation } => Self::Restarted { operation },
+            RequestOutcome::Failed { failure } => Self::Failed { failure },
+        }
+    }
+}
+
+fn outcome_path(data_dir: &Path, request: UpgradeId) -> PathBuf {
+    data_dir.join(format!("upgrade-result-{request}.json"))
+}
+
 fn failed(
     stage: UpgradeStage,
     kind: UpgradeFailureKind,
@@ -397,10 +432,22 @@ async fn observe_operation(
     let stage = UpgradeStage::PreparingRestart;
     let deadline = tokio::time::Instant::now() + CALL_BUDGET;
     loop {
+        match read_json::<RequestOutcome>(&outcome_path(data_dir, plan.operation.id)) {
+            Ok(RequestOutcome::Failed { failure }) => return Err(failure),
+            Ok(outcome) => return Ok(outcome.into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_failure(stage, &error)),
+        }
         if let Some(operation) = operation(data_dir).map_err(|error| io_failure(stage, &error))?
-            && operation.target.digest == plan.operation.target.digest
             && (Some(operation.id) != prior_id || prior_active || operation.id == plan.operation.id)
         {
+            if operation.target != plan.operation.target {
+                return Err(failed(
+                    stage,
+                    UpgradeFailureKind::ContextMismatch,
+                    "another installed build won activation after preflight; inspect its operation before retrying",
+                ));
+            }
             match &operation.progress {
                 UpgradeProgress::Ready {} => return Ok(UpgradeResult::Restarted { operation }),
                 UpgradeProgress::Failed { failure } => return Err(failure.clone()),
@@ -441,19 +488,26 @@ fn detached_command(program: &Path) -> Command {
 /// Private process entry point. The stable lock serializes all target requests,
 /// including canonical/symlink paths, and is never unlinked or replaced.
 pub async fn run(plan_path: &Path) -> io::Result<()> {
-    let mut plan: Plan = read_json(plan_path)?;
+    let plan: Plan = read_json(plan_path)?;
     std::fs::remove_file(plan_path)?;
     let data_dir = std::fs::canonicalize(&plan.runtime.data_dir)?;
     let _owner = lock(&data_dir).await?;
-    let result = run_owned(&data_dir, &mut plan).await;
-    match result {
-        Ok(()) => plan.operation.progress = UpgradeProgress::Ready {},
-        Err(failure) => plan.operation.progress = UpgradeProgress::Failed { failure },
-    }
-    write_json(&data_dir.join(JOURNAL), &plan.operation)
+    let request = plan.operation.id;
+    let outcome = match revalidate(&data_dir, &plan).await {
+        Err(failure) => RequestOutcome::Failed { failure },
+        Ok(Revalidated::Complete(outcome)) => outcome,
+        Ok(Revalidated::Activate) => match ActivePlan::publish(&data_dir, plan) {
+            Err(failure) => RequestOutcome::Failed { failure },
+            Ok(mut active) => {
+                let result = run_owned(&data_dir, &mut active).await;
+                active.finish(&data_dir, result)?
+            }
+        },
+    };
+    write_json(&outcome_path(&data_dir, request), &outcome)
 }
 
-async fn run_owned(data_dir: &Path, plan: &mut Plan) -> Result<(), UpgradeFailure> {
+async fn revalidate(data_dir: &Path, plan: &Plan) -> Result<Revalidated, UpgradeFailure> {
     let preparing = UpgradeStage::PreparingRestart;
     // Revalidate after acquiring ownership: another upgrader may have won.
     let running = control::inspect(&plan.runtime.socket)
@@ -464,9 +518,13 @@ async fn run_owned(data_dir: &Path, plan: &mut Plan) -> Result<(), UpgradeFailur
             && existing.target.digest == plan.operation.target.digest
             && matches!(existing.progress, UpgradeProgress::Ready {})
         {
-            plan.operation = existing;
+            return Ok(Revalidated::Complete(RequestOutcome::Restarted {
+                operation: existing,
+            }));
         }
-        return Ok(());
+        return Ok(Revalidated::Complete(RequestOutcome::AlreadyCurrent {
+            build: running.build,
+        }));
     }
     allow(&plan.operation.target, &running.build, plan.intent)?;
     if running.runtime != plan.runtime || running.build != plan.operation.source {
@@ -492,8 +550,45 @@ async fn run_owned(data_dir: &Path, plan: &mut Plan) -> Result<(), UpgradeFailur
             "frozen replacement does not match the planned build",
         ));
     }
-    write_json(&data_dir.join(ACTIVE_PLAN), plan).map_err(|error| io_failure(preparing, &error))?;
-    publish(data_dir, &mut plan.operation, preparing)?;
+    Ok(Revalidated::Activate)
+}
+
+impl ActivePlan {
+    fn publish(data_dir: &Path, mut plan: Plan) -> Result<Self, UpgradeFailure> {
+        let preparing = UpgradeStage::PreparingRestart;
+        write_json(&data_dir.join(ACTIVE_PLAN), &plan)
+            .map_err(|error| io_failure(preparing, &error))?;
+        publish(data_dir, &mut plan.operation, preparing)?;
+        Ok(Self(plan))
+    }
+
+    fn finish(
+        mut self,
+        data_dir: &Path,
+        result: Result<(), UpgradeFailure>,
+    ) -> io::Result<RequestOutcome> {
+        let outcome = match result {
+            Ok(()) => {
+                self.0.operation.progress = UpgradeProgress::Ready {};
+                RequestOutcome::Restarted {
+                    operation: self.0.operation.clone(),
+                }
+            }
+            Err(failure) => {
+                self.0.operation.progress = UpgradeProgress::Failed {
+                    failure: failure.clone(),
+                };
+                RequestOutcome::Failed { failure }
+            }
+        };
+        write_json(&data_dir.join(JOURNAL), &self.0.operation)?;
+        Ok(outcome)
+    }
+}
+
+async fn run_owned(data_dir: &Path, active: &mut ActivePlan) -> Result<(), UpgradeFailure> {
+    let plan = &mut active.0;
+    let preparing = UpgradeStage::PreparingRestart;
     match control::request(
         &plan.runtime.socket,
         control::Request::Prepare {
@@ -734,6 +829,205 @@ pub async fn repair_incompatible(spec: &DaemonSpec) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RunningFixture {
+        directory: tempfile::TempDir,
+        runtime: crate::serve::ServeOpts,
+        daemon: std::sync::Arc<crate::Daemon>,
+        task: tokio::task::JoinHandle<()>,
+        build: BuildDescriptor,
+    }
+
+    impl RunningFixture {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let runtime = crate::serve::ServeOpts::new(directory.path().to_path_buf());
+            let daemon = crate::Daemon::open_at_socket(
+                &nits_review_core::DataDir::new(directory.path()),
+                nits_protocol::BuildInfo {
+                    name: "coordinator-test".into(),
+                    version: "1".into(),
+                },
+                &runtime.socket,
+            )
+            .unwrap();
+            let server = control::Server::bind(runtime.clone()).unwrap();
+            let task = tokio::spawn(server.run(std::sync::Arc::clone(&daemon)));
+            Self {
+                directory,
+                runtime,
+                daemon,
+                task,
+                build: crate::build::running().unwrap(),
+            }
+        }
+
+        fn plan(&self, id: u128, source: BuildDescriptor, target: BuildDescriptor) -> Plan {
+            Plan {
+                operation: UpgradeOperation {
+                    id: UpgradeId::from_parts(1, id),
+                    source,
+                    target,
+                    progress: UpgradeProgress::Active {
+                        stage: UpgradeStage::PreparingRestart,
+                    },
+                },
+                runtime: self.runtime.clone(),
+                program: self.directory.path().join("missing-frozen-candidate"),
+                installed: self.directory.path().join("installation"),
+                intent: UpgradeIntent::Explicit,
+            }
+        }
+
+        fn winner(&self, target: BuildDescriptor) -> Plan {
+            let mut plan = self.plan(1, self.changed_build(1), target);
+            plan.operation.progress = UpgradeProgress::Ready {};
+            write_json(&self.directory.path().join(ACTIVE_PLAN), &plan).unwrap();
+            write_json(&self.directory.path().join(JOURNAL), &plan.operation).unwrap();
+            plan
+        }
+
+        fn changed_build(&self, byte: u8) -> BuildDescriptor {
+            let mut build = self.build.clone();
+            build.digest = nits_protocol::BuildDigest::from_bytes([byte; 32]);
+            build
+        }
+
+        async fn complete(&self, plan: &Plan) {
+            let path = self
+                .directory
+                .path()
+                .join(format!("request-{}", plan.operation.id));
+            write_json(&path, plan).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), run(&path))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    impl Drop for RunningFixture {
+        fn drop(&mut self) {
+            self.daemon.shutdown().cancel();
+            self.task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn refused_contenders_keep_the_winners_journal_and_their_own_precise_failure() {
+        let fixture = RunningFixture::new();
+        let winner = fixture.winner(fixture.build.clone());
+        let files = [ACTIVE_PLAN, JOURNAL].map(|name| {
+            let path = fixture.directory.path().join(name);
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        });
+        for (id, source, expected) in [
+            (
+                2,
+                fixture.changed_build(1),
+                UpgradeFailureKind::ContextMismatch,
+            ),
+            (
+                3,
+                fixture.build.clone(),
+                UpgradeFailureKind::CandidateUnavailable,
+            ),
+        ] {
+            let plan = fixture.plan(id, source, fixture.changed_build(3));
+            fixture.complete(&plan).await;
+            for (path, bytes) in &files {
+                assert_eq!(&std::fs::read(path).unwrap(), bytes);
+            }
+            let error = tokio::time::timeout(
+                Duration::from_secs(1),
+                observe_operation(
+                    fixture.directory.path(),
+                    &plan,
+                    Some(winner.operation.id),
+                    false,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert_eq!(error.kind, expected);
+            assert_eq!(
+                operation(fixture.directory.path()).unwrap(),
+                Some(winner.operation.clone())
+            );
+            assert_eq!(
+                control::inspect(&fixture.runtime.socket)
+                    .await
+                    .unwrap()
+                    .build,
+                fixture.build
+            );
+            assert!(fixture.daemon.lifecycle().borrow().is_none());
+            assert!(!fixture.daemon.shutdown().is_cancelled());
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_same_target_joins_readiness_or_reports_current_without_republishing() {
+        let fixture = RunningFixture::new();
+        for (id, previous_target) in [(2, fixture.build.clone()), (3, fixture.changed_build(4))] {
+            let winner = fixture.winner(previous_target);
+            let files = [ACTIVE_PLAN, JOURNAL].map(|name| {
+                let path = fixture.directory.path().join(name);
+                let bytes = std::fs::read(&path).unwrap();
+                (path, bytes)
+            });
+            let plan = fixture.plan(id, fixture.changed_build(1), fixture.build.clone());
+            fixture.complete(&plan).await;
+            let result = observe_operation(
+                fixture.directory.path(),
+                &plan,
+                Some(winner.operation.id),
+                false,
+            )
+            .await
+            .unwrap();
+            if winner.operation.target == fixture.build {
+                assert_eq!(
+                    result,
+                    UpgradeResult::Restarted {
+                        operation: winner.operation
+                    }
+                );
+            } else {
+                assert_eq!(
+                    result,
+                    UpgradeResult::AlreadyCurrent {
+                        build: fixture.build.clone()
+                    }
+                );
+            }
+            for (path, bytes) in &files {
+                assert_eq!(&std::fs::read(path).unwrap(), bytes);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_distinct_new_winner_rejects_the_observing_contender_without_waiting_for_its_child() {
+        let fixture = RunningFixture::new();
+        let winner = fixture.winner(fixture.build.clone());
+        let contender = fixture.plan(2, fixture.changed_build(1), fixture.changed_build(3));
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            observe_operation(fixture.directory.path(), &contender, None, false),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(error.kind, UpgradeFailureKind::ContextMismatch);
+        assert_eq!(
+            operation(fixture.directory.path()).unwrap(),
+            Some(winner.operation)
+        );
+        assert!(!outcome_path(fixture.directory.path(), contender.operation.id).exists());
+    }
 
     fn descriptor(version: &str) -> BuildDescriptor {
         let mut build = crate::build::running().unwrap();
