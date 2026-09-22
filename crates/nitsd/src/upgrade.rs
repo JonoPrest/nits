@@ -35,6 +35,10 @@ pub const START_OPERATION_ENV: &str = "NITS_UPGRADE_OPERATION";
 #[serde(deny_unknown_fields)]
 struct Plan {
     operation: UpgradeOperation,
+    /// The last admitted operation observed before this request was spawned.
+    /// A queued child cannot retry after an intervening admission, even when
+    /// that operation failed before changing the incumbent.
+    preflight_operation: Option<UpgradeId>,
     runtime: crate::serve::ServeOpts,
     program: PathBuf,
     installed: PathBuf,
@@ -343,19 +347,9 @@ async fn begin_inner(
             "installed candidate changed since preflight; the incumbent was not disrupted. Inspect the new build before retrying",
         ));
     }
-    if let Some(operation) =
-        endpoint_operation(&spec.socket).map_err(|error| io_failure(stage, &error))?
-        && matches!(operation.progress, UpgradeProgress::Active { .. })
-    {
-        return if operation.target == candidate.descriptor {
-            Ok(UpgradeResult::Accepted { operation })
-        } else {
-            Err(failed(
-                stage,
-                UpgradeFailureKind::ContextMismatch,
-                "another installed build is already being activated for this endpoint; inspect its operation before retrying",
-            ))
-        };
+    let existing = endpoint_operation(&spec.socket).map_err(|error| io_failure(stage, &error))?;
+    if let Some(result) = join_active(existing.as_ref(), &candidate.descriptor)? {
+        return Ok(result);
     }
     let running = control::inspect(&spec.socket).await.map_err(|error| {
         failed(
@@ -386,18 +380,20 @@ async fn begin_inner(
         target: candidate.descriptor.clone(),
         progress: UpgradeProgress::Active { stage },
     };
+    let prior = operation(&data_dir).map_err(|error| io_failure(stage, &error))?;
+    // Admission can race the earlier endpoint check while inspecting/freezing
+    // the candidate. Join or refuse now; never spawn behind a known active job.
+    if let Some(result) = join_active(prior.as_ref(), &candidate.descriptor)? {
+        return Ok(result);
+    }
     let plan = Plan {
         operation: requested_operation,
+        preflight_operation: prior.as_ref().map(|operation| operation.id),
         runtime: running.runtime,
         program: path.clone(),
         installed: candidate.program,
         intent,
     };
-    let prior = operation(&data_dir).map_err(|error| io_failure(stage, &error))?;
-    let prior_active = prior
-        .as_ref()
-        .is_some_and(|operation| matches!(operation.progress, UpgradeProgress::Active { .. }));
-    let prior_id = prior.as_ref().map(|operation| operation.id);
     let plan_path = data_dir.join(format!("upgrade-request-{}.json", plan.operation.id));
     write_json(&plan_path, &plan).map_err(|error| io_failure(stage, &error))?;
     let mut command = detached_command(&path);
@@ -420,15 +416,35 @@ async fn begin_inner(
             error.to_string(),
         ));
     }
-    observe_operation(&data_dir, &plan, prior_id, prior_active).await
+    observe_operation(&data_dir, &plan).await
 }
 
-async fn observe_operation(
-    data_dir: &Path,
-    plan: &Plan,
-    prior_id: Option<UpgradeId>,
-    prior_active: bool,
-) -> Result<UpgradeResult, UpgradeFailure> {
+/// Active operations are joined only by callers selecting the same full build.
+/// Check both before inspecting the incumbent and immediately before spawning.
+fn join_active(
+    operation: Option<&UpgradeOperation>,
+    target: &BuildDescriptor,
+) -> Result<Option<UpgradeResult>, UpgradeFailure> {
+    let Some(operation) = operation else {
+        return Ok(None);
+    };
+    if !matches!(operation.progress, UpgradeProgress::Active { .. }) {
+        return Ok(None);
+    }
+    if operation.target == *target {
+        Ok(Some(UpgradeResult::Accepted {
+            operation: operation.clone(),
+        }))
+    } else {
+        Err(failed(
+            UpgradeStage::PreparingRestart,
+            UpgradeFailureKind::ContextMismatch,
+            "another installed build is already being activated for this endpoint; inspect its operation before retrying",
+        ))
+    }
+}
+
+async fn observe_operation(data_dir: &Path, plan: &Plan) -> Result<UpgradeResult, UpgradeFailure> {
     let stage = UpgradeStage::PreparingRestart;
     let deadline = tokio::time::Instant::now() + CALL_BUDGET;
     loop {
@@ -439,7 +455,7 @@ async fn observe_operation(
             Err(error) => return Err(io_failure(stage, &error)),
         }
         if let Some(operation) = operation(data_dir).map_err(|error| io_failure(stage, &error))?
-            && (Some(operation.id) != prior_id || prior_active || operation.id == plan.operation.id)
+            && (Some(operation.id) != plan.preflight_operation || operation.id == plan.operation.id)
         {
             if operation.target != plan.operation.target {
                 return Err(failed(
@@ -525,6 +541,23 @@ async fn revalidate(data_dir: &Path, plan: &Plan) -> Result<Revalidated, Upgrade
         return Ok(Revalidated::Complete(RequestOutcome::AlreadyCurrent {
             build: running.build,
         }));
+    }
+    let current = operation(data_dir).map_err(|error| io_failure(preparing, &error))?;
+    if current.as_ref().map(|operation| operation.id) != plan.preflight_operation {
+        if let Some(UpgradeOperation {
+            target,
+            progress: UpgradeProgress::Failed { failure },
+            ..
+        }) = current
+            && target == plan.operation.target
+        {
+            return Err(failure);
+        }
+        return Err(failed(
+            preparing,
+            UpgradeFailureKind::ContextMismatch,
+            "another operation was admitted after preflight; this queued request cannot activate. Inspect current status and retry explicitly",
+        ));
     }
     allow(&plan.operation.target, &running.build, plan.intent)?;
     if running.runtime != plan.runtime || running.build != plan.operation.source {
@@ -872,6 +905,9 @@ mod tests {
                         stage: UpgradeStage::PreparingRestart,
                     },
                 },
+                preflight_operation: operation(self.directory.path())
+                    .unwrap()
+                    .map(|operation| operation.id),
                 runtime: self.runtime.clone(),
                 program: self.directory.path().join("missing-frozen-candidate"),
                 installed: self.directory.path().join("installation"),
@@ -941,12 +977,7 @@ mod tests {
             }
             let error = tokio::time::timeout(
                 Duration::from_secs(1),
-                observe_operation(
-                    fixture.directory.path(),
-                    &plan,
-                    Some(winner.operation.id),
-                    false,
-                ),
+                observe_operation(fixture.directory.path(), &plan),
             )
             .await
             .unwrap()
@@ -972,22 +1003,17 @@ mod tests {
     async fn queued_same_target_joins_readiness_or_reports_current_without_republishing() {
         let fixture = RunningFixture::new();
         for (id, previous_target) in [(2, fixture.build.clone()), (3, fixture.changed_build(4))] {
+            let plan = fixture.plan(id, fixture.changed_build(1), fixture.build.clone());
             let winner = fixture.winner(previous_target);
             let files = [ACTIVE_PLAN, JOURNAL].map(|name| {
                 let path = fixture.directory.path().join(name);
                 let bytes = std::fs::read(&path).unwrap();
                 (path, bytes)
             });
-            let plan = fixture.plan(id, fixture.changed_build(1), fixture.build.clone());
             fixture.complete(&plan).await;
-            let result = observe_operation(
-                fixture.directory.path(),
-                &plan,
-                Some(winner.operation.id),
-                false,
-            )
-            .await
-            .unwrap();
+            let result = observe_operation(fixture.directory.path(), &plan)
+                .await
+                .unwrap();
             if winner.operation.target == fixture.build {
                 assert_eq!(
                     result,
@@ -1012,11 +1038,11 @@ mod tests {
     #[tokio::test]
     async fn a_distinct_new_winner_rejects_the_observing_contender_without_waiting_for_its_child() {
         let fixture = RunningFixture::new();
-        let winner = fixture.winner(fixture.build.clone());
         let contender = fixture.plan(2, fixture.changed_build(1), fixture.changed_build(3));
+        let winner = fixture.winner(fixture.build.clone());
         let error = tokio::time::timeout(
             Duration::from_secs(1),
-            observe_operation(fixture.directory.path(), &contender, None, false),
+            observe_operation(fixture.directory.path(), &contender),
         )
         .await
         .unwrap()
@@ -1027,6 +1053,83 @@ mod tests {
             Some(winner.operation)
         );
         assert!(!outcome_path(fixture.directory.path(), contender.operation.id).exists());
+    }
+
+    #[tokio::test]
+    async fn failed_admission_cannot_activate_a_refused_or_coalesced_child_but_allows_a_new_retry()
+    {
+        for same_target in [false, true] {
+            let fixture = RunningFixture::new();
+            let contender = fixture.plan(2, fixture.build.clone(), fixture.changed_build(2));
+            let target = if same_target {
+                contender.operation.target.clone()
+            } else {
+                fixture.changed_build(3)
+            };
+            let mut winner = fixture.winner(target);
+            let rejection = failed(
+                UpgradeStage::PreparingRestart,
+                UpgradeFailureKind::Io,
+                "preparation failed while the original daemon remained live",
+            );
+            winner.operation.progress = UpgradeProgress::Failed {
+                failure: rejection.clone(),
+            };
+            write_json(&fixture.directory.path().join(JOURNAL), &winner.operation).unwrap();
+            let files = [ACTIVE_PLAN, JOURNAL].map(|name| {
+                let path = fixture.directory.path().join(name);
+                let bytes = std::fs::read(&path).unwrap();
+                (path, bytes)
+            });
+            let expected = if same_target {
+                UpgradeFailureKind::Io
+            } else {
+                UpgradeFailureKind::ContextMismatch
+            };
+            // The caller has already received a definitive refusal/failure.
+            let observed = observe_operation(fixture.directory.path(), &contender)
+                .await
+                .unwrap_err();
+            assert_eq!(observed.kind, expected);
+            if same_target {
+                assert_eq!(observed, rejection);
+            }
+            // Its detached child obtains the lock afterward. The unchanged
+            // incumbent is insufficient permission to activate or even inspect
+            // the missing candidate; the intervening admission is terminal.
+            fixture.complete(&contender).await;
+            let completed = observe_operation(fixture.directory.path(), &contender)
+                .await
+                .unwrap_err();
+            assert_eq!(completed.kind, expected);
+            if same_target {
+                assert_eq!(completed, rejection);
+            }
+            // A new explicit call made after the failure is allowed to perform
+            // preflight again. It reaches candidate inspection, which precisely
+            // reports this fixture's intentionally missing executable.
+            let retry = fixture.plan(3, fixture.build.clone(), contender.operation.target);
+            fixture.complete(&retry).await;
+            assert_eq!(
+                observe_operation(fixture.directory.path(), &retry)
+                    .await
+                    .unwrap_err()
+                    .kind,
+                UpgradeFailureKind::CandidateUnavailable
+            );
+            for (path, bytes) in files {
+                assert_eq!(std::fs::read(path).unwrap(), bytes);
+            }
+            assert_eq!(
+                control::inspect(&fixture.runtime.socket)
+                    .await
+                    .unwrap()
+                    .build,
+                fixture.build
+            );
+            assert!(fixture.daemon.lifecycle().borrow().is_none());
+            assert!(!fixture.daemon.shutdown().is_cancelled());
+        }
     }
 
     fn descriptor(version: &str) -> BuildDescriptor {
