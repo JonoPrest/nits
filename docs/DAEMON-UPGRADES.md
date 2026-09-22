@@ -45,6 +45,10 @@ sends a restart notice independently of review subscription filters. Already
 accepted jobs keep their admission permit and actual store ownership until the
 work finishes, even if the requesting client disconnects.
 
+Only the admitted coordinator updates shared operation progress. A competing
+request that fails revalidation keeps its own terminal receipt, so it cannot
+replace the winning operation's readiness or strand clients waiting for it.
+
 Connections receive completed receipts where possible. Long requests receive
 an explicit interruption, and output draining has a deadline so a slow reader
 cannot hold the daemon indefinitely. A closed listening socket is not proof
