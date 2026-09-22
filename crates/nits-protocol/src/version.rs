@@ -37,9 +37,9 @@ impl ProtocolVersion {
     pub const CURRENT: ProtocolVersion = ProtocolVersion {
         major: 0,
         #[cfg(feature = "upgrade-fixture-previous-protocol")]
-        minor: 19,
-        #[cfg(not(feature = "upgrade-fixture-previous-protocol"))]
         minor: 20,
+        #[cfg(not(feature = "upgrade-fixture-previous-protocol"))]
+        minor: 21,
         patch: 0,
     };
 
