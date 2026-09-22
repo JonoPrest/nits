@@ -48,6 +48,11 @@ work finishes, even if the requesting client disconnects.
 Only the admitted coordinator updates shared operation progress. A competing
 request that fails revalidation keeps its own terminal receipt, so it cannot
 replace the winning operation's readiness or strand clients waiting for it.
+Each request remembers the last admitted operation from preflight. If another
+operation intervenes, its queued child cannot activate later, including when
+the winner fails before stopping the original daemon. A new explicit retry can
+observe that completed failure and start fresh; already-running matching builds
+still join readiness without another restart.
 
 Connections receive completed receipts where possible. Long requests receive
 an explicit interruption, and output draining has a deadline so a slow reader
