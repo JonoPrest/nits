@@ -13,6 +13,16 @@ use crate::core::{Core, CoreError, Ctx};
 use crate::render::lines_of;
 
 impl Core {
+    pub fn list_comments(
+        &self,
+        review: ReviewId,
+        query: &nits_protocol::CommentQuery,
+    ) -> Result<nits_protocol::CommentListing, CoreError> {
+        self.store
+            .list_comments(review, query)?
+            .ok_or_else(|| CoreError::not_found(EntityKind::Review, &review))
+    }
+
     pub fn comments(&self, review: ReviewId) -> Result<Vec<Comment>, CoreError> {
         self.review(review)?;
         Ok(self.store.comments(review)?)

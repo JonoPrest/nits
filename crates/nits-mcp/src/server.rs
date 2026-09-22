@@ -783,18 +783,11 @@ impl Server {
             }
             QueryCall::GetFile(p) => self.get_file(p).await,
             QueryCall::ListComments(p) => {
-                let snap = ops.snapshot(p.review_id).await?;
+                let (review_id, query) = p.query();
+                let listing = ops.list_comments(review_id, query).await?;
                 ok(tools::Comments {
                     context: self.context_identity(),
-                    threads: snap.threads,
-                    comments: snap.comments,
-                    latest_checkpoints: nits_protocol::latest_checkpoints(
-                        &snap.checkpoints,
-                        snap.resolved.as_ref(),
-                    ),
-                    checkpoints: snap.checkpoints,
-                    requests: snap.requests,
-                    seq: snap.seq,
+                    listing,
                 })
             }
         }

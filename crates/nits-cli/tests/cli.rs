@@ -1,5 +1,7 @@
 //! `nits` against a daemon running in this test process (plan 2.6).
 
+mod comment_query;
+
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -287,8 +289,11 @@ fn workspace_review_comment_round_trip() {
         .success()
         .stdout(
             predicate::str::contains(format!("thread {thread} [open]"))
-                .and(predicate::str::contains("ada @ a.rs:1-1 (Head): hmm"))
-                .and(predicate::str::contains("ada @ review: lgtm")),
+                .and(
+                    predicate::str::contains("a.rs:1-1 (Head) [repo")
+                        .and(predicate::str::contains("]\n    hmm")),
+                )
+                .and(predicate::str::contains("ada @ review\n    lgtm")),
         );
     h.out(&["comment", "resolve", &review, &thread]);
     h.nits()
@@ -2151,7 +2156,10 @@ fn submodule_only_reviews_list_and_render_commit_metadata() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("submodule"));
-    assert!(h.out(&["comment", "list", &review]).is_empty());
+    assert!(
+        h.out(&["comment", "list", &review])
+            .starts_with("0 threads:")
+    );
 }
 
 #[test]

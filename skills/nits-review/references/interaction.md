@@ -43,6 +43,38 @@ request remains pending until its named agent records a checkpoint explicitly
 answering it; this is not an approval signal. The response's `seq` belongs to its
 coherent metadata read; still open the review and use that full snapshot's cursor.
 
+Read a complete filtered conversation with:
+
+```text
+list_comments {"review_id":"REVIEW_ID","status":"Open"}
+list_comments {"review_id":"REVIEW_ID","thread_id":"THREAD_ID"}
+list_comments {"review_id":"REVIEW_ID","path":"src/parser.rs","repo_id":"REPO_ID","author":"reviewer-a","since":42}
+```
+
+The result joins each thread's ordered `comments` (root first), retains its
+`resolution`, and adds a `status` and filtered `summary`. Status is `Open`,
+`Resolved`, `Deferred`, `Informational`, or `Deleted`. A deleted root is counted
+only as deleted, even when its historical resolution was Open. Outdated anchors
+remain distinct from deletion and can still be open findings. Deleted comment
+bodies retained in JSON are historical tombstones, not current prose.
+
+Filters combine at thread granularity: a matching reply author or anchor returns
+the whole conversation. Names and paths match exactly; `repo_id` disambiguates
+identical paths across repositories. `since` is an exclusive committed event
+sequence, selecting thread creation/replies, edits/deletes, reanchors,
+resolve/reopen/defer and suggestion application. Review renames, viewed marks,
+requests and checkpoints alone do not select threads. Future cursors return an
+empty result with the actual current `seq`; do not invent a later cursor.
+
+The `summary` counts only returned threads and their comments, including separate
+`deleted` root and `deleted_comments` counts. `suggestions` carries original patch
+identities and durable receipts for returned comments. Review-wide `requests`,
+`checkpoints` and `latest_checkpoints` remain available regardless of the filter.
+Save the coherent `seq` with the context and the exact query when polling this
+view; changing filters requires reading their full state again. A filtered list
+is not a complete review snapshot for maintaining every review field.
+Priority remains author prose; the tool does not infer `[P1]` metadata or counts.
+
 Omit both file bounds for full content, or supply both as inclusive 1-based source
 lines. Diff display row indices are not anchors.
 
@@ -168,8 +200,14 @@ nits --json events --review REVIEW_ID --since SNAPSHOT_SEQ --follow
 `comment add --patch` takes unified-diff text, not a patch filename. Pass it as
 `--patch="$patch"` so the leading `---` is parsed as the value. `--line` or
 `--lines` requires `--path`. Replies use the thread ID, not the reply comment ID.
-`review show --json` supplies snapshot state and `seq`; `comment list --json`
-does not supply a replacement snapshot cursor.
+Use `nits comment list REVIEW_ID --open` (alias for `--status open`), or select
+`--status resolved|deferred|informational|deleted`. Combine `--thread THREAD_ID`,
+`--path src/parser.rs`, `--repo REPO_ID`, `--author EXACT_NAME`, and `--since SEQ`.
+`--open` and `--status` conflict. Text indents every body line and ends with status
+and comment counts; `--oneline` gives one line per comment with IDs, status,
+anchor and first body line. JSON is now a named joined object, replacing the old
+`[threads, comments]` tuple, with the same filters and cursor semantics as MCP.
+`review show --json` still supplies the complete review snapshot.
 
 CLI `events --follow` internally resumes long-polls from `last_seq`, but prints
 events only, not that watermark. Save the last **processed event's** `seq` and

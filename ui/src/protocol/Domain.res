@@ -547,6 +547,58 @@ module SuggestionRecord = {
   }
 }
 
+module CommentThreadStatus = {
+  @schema type t = Open | Resolved | Deferred | Informational | Deleted
+}
+module CommentQuery = {
+  @schema
+  type t = {
+    status: @s.null option<CommentThreadStatus.t>,
+    @as("thread_id") threadId: @s.null option<threadId>,
+    path: @s.null option<string>,
+    @as("repo_id") repoId: @s.null option<repoId>,
+    author: @s.null option<string>,
+    since: @s.null option<seq>,
+  }
+}
+module CommentThread = {
+  @schema
+  type t = {
+    id: threadId,
+    @as("review_id") reviewId: reviewId,
+    root: commentId,
+    replies: array<commentId>,
+    resolution: ThreadResolution.t,
+    status: CommentThreadStatus.t,
+    comments: @s.matches(S.array(Comment.schema)->S.arrayMinLength(1)) array<Comment.t>,
+  }
+}
+module CommentSummary = {
+  @schema
+  type t = {
+    threads: int,
+    @as("open") open_: int,
+    resolved: int,
+    deferred: int,
+    informational: int,
+    deleted: int,
+    comments: int,
+    @as("deleted_comments") deletedComments: int,
+  }
+}
+module CommentListing = {
+  @schema
+  type t = {
+    threads: array<CommentThread.t>,
+    summary: CommentSummary.t,
+    suggestions: array<SuggestionRecord.t>,
+    requests: array<ReviewRequest.t>,
+    checkpoints: array<ReviewCheckpoint.t>,
+    @as("latest_checkpoints") latestCheckpoints: array<ReviewerCheckpoint.t>,
+    seq: seq,
+  }
+}
+
 module ReviewSnapshot = {
   @schema
   type t = {

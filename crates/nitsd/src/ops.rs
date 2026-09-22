@@ -307,6 +307,21 @@ impl Ops {
         }
     }
 
+    pub async fn list_comments(
+        &self,
+        review_id: ReviewId,
+        query: nits_protocol::CommentQuery,
+    ) -> Result<nits_protocol::CommentListing, OpsError> {
+        match self
+            .client
+            .request(Request::ListComments { review_id, query })
+            .await?
+        {
+            Response::CommentListing { listing } => Ok(listing),
+            _ => Err(OpsError::Shape),
+        }
+    }
+
     pub async fn snapshot(&self, review_id: ReviewId) -> Result<ReviewSnapshot, OpsError> {
         match self
             .client

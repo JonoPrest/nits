@@ -98,3 +98,15 @@ it("review discovery is a single metadata response, never a streamed snapshot", 
   response.discovery.reviews[0].pending_requests[0].recipient = 7;
   expect(Registry.roundtrip("Response", response).TAG).toBe("Error");
 });
+
+it("joined comment lists remain single responses, with explicit deleted status", () => {
+  const response = JSON.parse(
+    readFileSync(join(fixturesRoot, "protocol", "Response", "CommentListing.json"), "utf8"),
+  );
+  expect(Registry.roundtrip("Response", response).TAG).toBe("Ok");
+  expect(Registry.roundtrip("StreamItem", response).TAG).toBe("Error");
+  expect(Registry.roundtrip("CommentThreadStatus", "Deleted").TAG).toBe("Ok");
+  expect(Registry.roundtrip("CommentThreadStatus", "Closed").TAG).toBe("Error");
+  response.listing.threads[0].comments = [];
+  expect(Registry.roundtrip("Response", response).TAG).toBe("Error");
+});
