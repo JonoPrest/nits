@@ -1355,7 +1355,12 @@ mod tests {
                     .map(|field| field.as_str().unwrap())
                     .collect();
                 assert_eq!(expected, required, "{}", tool.name);
-                let size_limit = if tool.name == ToolName::EnsureDirectoryReview {
+                // These two receipts include typed revision identities. Keep
+                // their schema bounded separately from the small ID receipts.
+                let size_limit = if matches!(
+                    tool.name,
+                    ToolName::EnsureDirectoryReview | ToolName::FetchReview
+                ) {
                     5000
                 } else {
                     2500
