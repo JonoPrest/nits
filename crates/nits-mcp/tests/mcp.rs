@@ -418,6 +418,7 @@ async fn tools_list_is_json_rpc_conformant() {
             "get_checkpoint_delta",
             "ensure_directory_review",
             "update_review_target",
+            "fetch_review",
             "create_review",
             "update_review",
             "get_diff",

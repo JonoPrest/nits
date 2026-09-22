@@ -83,7 +83,7 @@ fn review_metadata_and_base_preserve_identity_other_fields_and_json_receipts() {
         matches!(event.body, EventBody::ReviewTargetUpdated { review_id, target }
         if review_id.to_string() == review && target.repo_id.to_string() == repo
             && target.base == nits_protocol::RefSpec::Head
-            && target.head == nits_protocol::RefSpec::Branch { name: "feature".into() })
+            && target.head == nits_protocol::RefSpec::Revision { expression: "feature".parse().unwrap() })
     );
     h.repo.git(&["tag", "base-tag", "main"]).unwrap();
     h.repo
@@ -100,8 +100,8 @@ fn review_metadata_and_base_preserve_identity_other_fields_and_json_receipts() {
         };
         assert_eq!(
             target.head,
-            nits_protocol::RefSpec::Branch {
-                name: "feature".into()
+            nits_protocol::RefSpec::Revision {
+                expression: "feature".parse().unwrap()
             }
         );
         let current = snapshot(&h, &review);
