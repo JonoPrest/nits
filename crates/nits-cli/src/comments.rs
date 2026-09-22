@@ -150,9 +150,15 @@ pub(crate) fn text(listing: &CommentListing, oneline: bool) -> String {
         }
     }
     let s = &listing.summary;
+    let threads = if s.threads == 1 { "thread" } else { "threads" };
+    let comments = if s.comments == 1 {
+        "comment"
+    } else {
+        "comments"
+    };
     let _ = writeln!(
         out,
-        "{} threads: {} open, {} resolved, {} deferred, {} informational, {} deleted; {} comments ({} deleted); seq {}",
+        "{} {threads}: {} open, {} resolved, {} deferred, {} informational, {} deleted; {} {comments} ({} deleted); seq {}",
         s.threads,
         s.open,
         s.resolved,

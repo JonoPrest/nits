@@ -70,9 +70,12 @@ The `summary` counts only returned threads and their comments, including separat
 `deleted` root and `deleted_comments` counts. `suggestions` carries original patch
 identities and durable receipts for returned comments. Review-wide `requests`,
 `checkpoints` and `latest_checkpoints` remain available regardless of the filter.
-Save the coherent `seq` with the context and the exact query when polling this
-view; changing filters requires reading their full state again. A filtered list
-is not a complete review snapshot for maintaining every review field.
+Save the coherent `seq` with the context and query when polling. Filters inspect
+current state: `--open --since` omits a thread that was resolved in the interval.
+This is a query, not a removal/change feed. Use unfiltered `since` or
+`subscribe_events` to maintain all conversation states; reread the full filtered
+list to discover departures. A filtered list is not a complete review snapshot
+for maintaining every review field.
 Priority remains author prose; the tool does not infer `[P1]` metadata or counts.
 
 Omit both file bounds for full content, or supply both as inclusive 1-based source
