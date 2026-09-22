@@ -50,6 +50,14 @@ review summary; do not fabricate approval, human authorship, or identity details
    by concern and anchor, not just title; reply in the original thread when
    continuing it. Requests are separate records, not finding threads.
 
+For repeated discussion reads, use `list_comments` or `comment list` filters to
+receive complete joined threads and filtered counts. Keep its cursor with that
+query; a filtered current-state result does not report threads that departed the
+filter. Use the full snapshot and event stream when maintaining complete state.
+If a daemon or worker needs recovery, use the management instructions in
+[interaction mechanics](references/interaction.md) without changing provenance or
+blindly retrying an uncertain write.
+
 ## Follow activity without gaps
 
 Start the review subscription after the snapshot's `seq`; process events in

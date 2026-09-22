@@ -1,5 +1,10 @@
 # Handover notes
 
+Historical implementation notes, retained with their original dates. References
+to the next task, local experiments and planned APIs below are not the current
+backlog or an installation guide. Start with the [README](../README.md),
+[quickstart](QUICKSTART.md) and [architecture](ARCHITECTURE.md) for current source.
+
 ## 2026-09-01 (later): Visual mode, z Expand group, search stepping SHIPPED
 
 Search-result stepping is in too: `SearchView.selected` /

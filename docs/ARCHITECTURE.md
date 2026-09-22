@@ -2,12 +2,12 @@
 
 Nits is a daemon-backed code review tool. Nits are anchored to content (blobs), not to diffs or line numbers.
 
-Status: **draft v1** — core decisions resolved (§10).
+Implementation reference for current source. The goals and explicitly deferred items include future work; see the [README](../README.md#status) for the available clients and [quickstart](QUICKSTART.md) for runnable commands.
 
 ## 1. Goals
 
-- A single always-running **daemon** per machine that owns all state: workspaces, reviews, comments.
-- Multiple **clients** (desktop, browser, TUI, CLI, agents) attach to the daemon over the same protocol.
+- One **daemon owner per selected data store** owns workspaces, reviews and comments. Separate contexts can use separate stores on the same machine.
+- Native desktop/browser hosts, CLI and MCP agents attach through the shared daemon protocol. TUI and standalone browser-Wasm hosts remain planned.
 - Clients work over **SSH** to a remote daemon with no perceptible latency: all navigation and typing is served from a local cache; only mutations and cache misses touch the wire.
 - **GitHub-style diff review** plus a **file explorer** over any ref, in one UI.
 - Review **any base against any head** (branch, commit, tag, working tree), and **step through commits** within a range, seeing each commit's full message, author and dates.
@@ -15,7 +15,7 @@ Status: **draft v1** — core decisions resolved (§10).
 - A **workspace** groups multiple git repos; one review can span repos.
 - **Comments** are first-class, persisted, content-anchored, and record provenance (human vs agent, and which agent/session).
 - Comments can be **inline** (lines of a blob), **file-level** (a whole file, whether or not it is in the diff), or **review-level** (like a non-inline GitHub PR comment).
-- **Agents are peers**: everything a human can do through the UI, an agent can do through MCP/CLI, using the same core API.
+- **Shared Core rules** govern human and agent clients, while exposed interfaces differ. Agent provenance is retained; human viewed marks and suggestion application are not agent capabilities.
 - **Keyboard-first**: everything is reachable without a mouse. A persistent hint bar shows the main bindings for the current context; `?` opens a full, searchable help overlay.
 - Clients apply mutations **optimistically** and reconcile after the fact.
 - State **persists across daemon restarts**; reviews live until explicitly deleted.
@@ -24,27 +24,25 @@ Non-goals (for now): multi-machine sync of comments, hosting/PR integration, aut
 
 ## 2. System overview
 
+```text
+Browser React UI -- ViewFrame WebSocket --> nits browser bridge (native ClientCore)
+Tauri webview    -- ViewFrame IPC -------> nits-desktop (native ClientCore)
+CLI nits ----------------------------------------------+
+MCP host -- private worker IPC --> MCP worker ----------+
+Native ClientCore hosts -------------------------------+
+                                                       |
+                                       local Unix / SSH stdio / WebSocket
+                                                       |
+                                                nits daemon serve
+                                                Core + redb event log
+                                                       |
+                                                 attached Git repos
 ```
-┌─────────────┐  ┌─────────────┐  ┌───────────┐  ┌──────────────┐
-│ Tauri app   │  │ Browser     │  │ TUI       │  │ Agent / CLI  │
-│ (webview UI)│  │ (wasm core) │  │ (ratatui) │  │ (MCP / nits)   │
-└──────┬──────┘  └──────┬──────┘  └─────┬─────┘  └──────┬───────┘
-       │ unix sock      │ websocket     │ unix sock     │ MCP (stdio/ws)
-       └────────────────┴───────┬───────┴───────────────┘
-                                ▼
-                    ┌───────────────────────┐
-                    │        daemon         │
-                    │  transports: unix, ws, mcp  (thin adapters)
-                    │  ┌─────────────────┐  │
-                    │  │   review-core   │  │  git engine · diff · anchoring
-                    │  │   event store   │  │  append-only log + views (redb)
-                    │  └─────────────────┘  │
-                    └───────────────────────┘
-                          ▲ reads repos
-                    ┌─────┴─────┐ ┌─────────┐
-                    │  repo A   │ │ repo B  │  (a workspace)
-                    └───────────┘ └─────────┘
-```
+
+The browser is already usable through the native bridge; it does not run a
+standalone Wasm core or store its cache in IndexedDB. The TUI and standalone Wasm
+adapter remain future clients. MCP is a separate stdio-facing host/worker adapter,
+not a daemon WebSocket endpoint.
 
 Remote use: the client tunnels the daemon's socket/port over SSH (`ssh -L` or `ssh host nits daemon stdio`). SSH is the only auth layer.
 
@@ -270,16 +268,16 @@ Comment → row placement is done in `nits-client-core` (anchor `blob_oid + line
 ### 4.7 Tree snapshots (file explorer)
 
 The explorer must never load per folder. The daemon serves a whole recursive listing in one
-message, keyed by the root tree OID:
+message, keyed by the repository ID and root tree OID:
 
 ```
-TreeSnapshot { root_oid, entries: [TreeEntry { path, kind: File | Dir | Symlink | Submodule,
+TreeSnapshot { repo_id, root_oid, entries: [TreeEntry { path, kind: File | Dir | Symlink | Submodule,
                                                 oid, size }] }   flat, sorted, one pass to nest
-TreeDelta    { from_root, to_root, added: [TreeEntry], removed: [path], changed: [TreeEntry] }
+TreeDelta    { repo_id, from_root, to_root, added: [TreeEntry], removed: [path], changed: [TreeEntry] }
 ```
 
 - `tree_snapshot(repo, ref)`; for reviews the daemon sends snapshots for every target ref (base
-  and head) on open. Cached by `root_oid`; pinned while the ref is open.
+  and head) on open. Cached by `(repo_id, root_oid)`; pinned while the ref is open.
 - Working-tree refs get `TreeDelta`s from the watcher instead of repeated full snapshots.
 - Fallback for very large repos (> ~200k entries, configurable): depth-limited snapshot plus lazy
   subtrees keyed by their own tree OID — same caching, not upfront.
@@ -306,11 +304,11 @@ back committed work or detach connection tasks that retain the daemon.
 - **CLI**, `nits`, the same recipes (`nitsd::ops`) printed as text or `--json`. Human author from `$USER`/`--user`; `--agent NAME` attributes to `Agent{via: Cli, invoked_by: user}` for scripts driven by an agent. `events` drains bounded historical pages; `--follow` waits for log-head movement before reading the next bounded window.
 - **Contexts** (`nits-config`, `~/.config/nits/config.toml`): named places a daemon lives — `Local{data_dir?, socket?}`, `Ssh{host, bin?, args}`, `Ws{url}`. Selection precedence is ad-hoc transport flags (`--socket`, `--data-dir`, `--daemon-url`; deprecated alias `--ws`) > `--context` > `NITS_CONTEXT` > persisted `current_context` > implicit `local`. `nits context use NAME` validates the name and atomically saves the default, including offline contexts; it affects new processes. `context show` reports the effective selection and its origin. Removing the persisted default is refused until another is selected. No current workspace/review is stored: creation workspace and repo can default from the **working directory** (`Ops::locate`); review discovery defaults to all workspaces independently of cwd. Commands: `nits context add-local|add-ssh|add-ws|list|show|use|remove`. Context names are validated at CLI parsing and config decoding: nonempty, with no surrounding whitespace or control characters.
 - **MCP context switching**: `nits mcp` resolves its startup selection with the same precedence. `list_contexts` reloads configured definitions and reports the active context and persisted default; `use_context {name}` changes only that MCP session. The adapter completes the new daemon handshake before replacing the active endpoint and entire `Ops`; failures leave the old connection intact. Ordinary calls execute in input order. Event subscriptions are acknowledged in that same order, then their waits may overlap later calls on dedicated connections. A successful switch cancels outstanding waits in the old session with a tool error and drops their connections and queued events; a failed switch leaves them intact. The author, session ID and invoking human survive; the new connection gets a fresh client ID and mutation sequence. Reconnects use the selected endpoint, even if the config default later changes. Every daemon query result includes `context: {name, kind}` (`kind` is `Local`, `Ssh` or `Ws`). IDs and event cursors belong to that source context. `subscribe_events.since_context` identifies the name that issued `since_seq`: mismatches are rejected, and it is required for replay after any successful context switch (legacy single-context calls can still omit it). Clients must await `use_context` before issuing work for the newly selected daemon. A daemon reconnect, `set_session_identity`, and a new successful `initialize` also cancel waits belonging to the replaced session, preserving attribution for mutations before and after the change. Context configuration and selection remain adapter concerns, outside Core.
-- **MCP event-wait scheduling**: only `subscribe_events` detaches after its subscription is acknowledged, so a following mutation cannot overtake a live subscription. Pings, reads, mutations and context/identity changes proceed while a wait is pending; ordinary calls and connection/subscription setup remain serialized (setup has a 20-second budget). Each wait owns its daemon connection, source context and author. `timeout_ms` bounds the wait for the first event to 0–60000 milliseconds (default 30000), followed by at most 20 milliseconds to drain the batch; at most 32 waits may be outstanding per MCP session. `notifications/cancelled {requestId}` aborts the matching wait and releases its connection without a response; unknown, completed and malformed cancellation notifications are ignored, following the [MCP cancellation specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/cancellation). String and numeric IDs remain distinct. Stdin EOF or transport failure cancels and joins all pending waits. Event-wait responses may arrive out of order and must be matched by request ID. Cancellation of ordinary serialized calls is not supported; mutations are never interrupted or replayed by this scheduler.
+- **MCP worker scheduling**: the ordinary worker executes calls in input order; `subscribe_events` detaches only after its subscription is acknowledged, so a following mutation cannot overtake registration. Each wait owns its connection, context and author. The first-event timeout is 0–60000ms (default30000), followed by a bounded drain, with at most32 outstanding waits. The stable supervisor keeps ping, status and cancellation responsive using private tickets distinct from host IDs. Cancellation suppresses the pending response; it does not undo an accepted mutation. Session changes are ordered barriers, worker replacement preserves checkpointed identity/context, and uncertain writes are never replayed. EOF closes owned transports and waits. See the [upgrade contract](DAEMON-UPGRADES.md#an-ongoing-mcp-session) for worker replacement and failure outcomes.
 
 
-- **One binary** (`nits`). The daemon and the MCP server are subcommands, not executables: `nits daemon serve` and `nits mcp`, linked in from the `nitsd` and `nits-mcp` libraries. `nitsd::launch::nits_binary` starts a daemon by **re-executing the running `nits`** (`$NITS_BIN` overrides; other embedders such as the desktop app look next to themselves, then `PATH`), so a client and the daemon it started are the same build and cannot fail the version handshake — the failure two separately-packaged binaries invite every time a channel updates one and not the other. It also collapses install to one artifact per channel and removes the `Depends: nitsd` relationships from the deb/rpm.
-- **Daemon lifecycle** (`nitsd::launch`, `nitsd::serve`, `nitsd::contexts`): **one daemon per machine**; the store is single-process so nothing else may open it. `nits daemon stdio` (what `ssh host nits daemon stdio` runs) is a *proxy*: it connects to the machine's socket, starting a detached daemon first if nothing answers (`nohup`, log in `<data_dir>/nitsd.log`, `--idle-exit 1800` so an auto-started daemon retires itself), then pipes bytes. With `--start-policy require-running` it exits 3 instead of starting, which is how a client probes or stops a remote without waking it. `Local` and `Ssh` contexts default to `--start-policy start-if-needed`; `Ws` is somebody else's daemon. `Request::Shutdown` → `Response::ShuttingDown` stops any daemon from any client. `nits daemon status [--all] | start | stop` is the CLI face; the desktop app shows the same per-context status and buttons; `nits mcp` auto-starts on `initialize` so an agent can always get going. Ssh specifics (keys, jumps, ports) stay in `~/.ssh/config`; `Context::Ssh.ssh` overrides the client binary (tests use a stand-in), `Context::Ssh.bin` the remote `nits`. That field is a `RemoteBin` — `Default | Nits(path) | Legacy(path)` — parsed once at the config boundary from the two wire spellings, so nothing downstream sees "both keys" or has to pick: `bin` and `nitsd` together are refused as a config error, and a lone pre-one-binary `nitsd = "..."` becomes `Legacy`, which names an executable that cannot serve `daemon stdio` and which `connect` refuses with the edit to make.
+- **One CLI/daemon/MCP artifact** (`nits`). The daemon and MCP host are subcommands, `nits daemon serve` and `nits mcp`, linked from libraries. `nitsd::launch::nits_program` locates the selected installation using the explicit override, registered CLI path or host discovery. The running daemon or browser/desktop host may still be an older process after installation. Exact executable digests, release ordering, maintenance preflight and application handshakes govern activation; one package does not guarantee equal running versions. The optional desktop executable is built separately.
+- **Daemon lifecycle** (`nitsd::launch`, `nitsd::serve`, `nitsd::contexts`): one owner per selected store. `nits daemon stdio` is a proxy to that endpoint, starting a detached daemon when policy permits (`nohup`, log in `<data_dir>/nitsd.log`, idle timeout for auto-started processes). `Local` and `Ssh` default to `start-if-needed`; `require-running` never launches, and raw `Ws` contexts are unmanaged. Status/start/stop and installed-build upgrade commands share the lifecycle implementation. MCP can initialize into a disconnected recovery state when Hello fails; management and identity remain available. SSH configuration stays in `~/.ssh/config`; the context chooses its SSH client and remote Nits executable. Legacy `nitsd` executable configuration is rejected with migration guidance.
 - **Stop completion and store ownership**: every daemon Core, including queued writer jobs and started blocking Git reads, retains a shared OS lock on `<data_dir>/daemon.lock`. Core and both redb stores drop before this occupancy guard. Redb remains the exclusive database owner; the shared lock is lifecycle evidence, not a second database lock. A nonblocking exclusive probe distinguishes free ownership from an owner whose listener has closed. The lock file is never unlinked or replaced, so symlink aliases and concurrent probes use the same inode. Its diagnostic phase (`Starting`, `Serving`, `Stopping`) is published only after Core opens successfully; a rejected duplicate open cannot overwrite an incumbent's phase. Stale phase bytes do not imply occupancy without the OS lock. A second shared guard at `<socket>.owner` follows socket symlink targets (even when dangling) and is retained with the same Core; this protects socket-only contexts that do not know the actual store directory. Only after both Core open and socket bind succeed, an atomic `<socket>.owner-data` symlink associates that endpoint with its actual store guard. Status and stop follow that association instead of an unrelated configured/default store; late phase writes from an earlier owner affect only its own store. The socket guard reports `Unknown` if held without a live association. An existing unlocked socket guard certifies that endpoint free. A legacy endpoint without a guard uses only its listener: a missing, untracked socket is stopped even when the caller's configured/default store is occupied elsewhere. Status and stop never infer an endpoint association from that store. Startup separately checks the explicitly configured store before launching, without substituting the previous association. Both stable lock files remain in place after shutdown. Binding only reclaims stale Unix sockets; existing regular files, including ownership guards, are never removed as stale endpoints.
 - **Bounded lifecycle waits**: stop waits for ownership release, and start waits for an existing owner before spawning a replacement; both have a 15-second budget. A slow/stuck Git operation can time out while status remains `transitioning` with the last published phase (`stopping` in text), then recover after that work finishes. Cancelling a caller does not release another task's Core or its guard. The serve entry point waits for all Core users to release before returning; this includes the dedicated writer thread, which Tokio runtime shutdown would not join. Its idle task observes shutdown rather than retaining Core until the idle deadline. SSH `daemon stdio --start-policy require-running` exits 3 for absent ownership, or 4/5/6/7 for occupied Starting/Serving/Stopping/Unknown phases; the SSH adapter reads the child exit outcome instead of treating every EOF as absence. Only the typed absent outcome certifies release; clean EOF before the handshake and other failed SSH exits are unreachable, and EOF without process exit has a two-second bound. Existing daemon protocol frames and persisted state are unchanged. Older daemons/proxies without ownership guards retain their listener-based completion semantics; upgrade shutdown still negotiates their compatible protocol, but cannot prove release of their untracked background work.
 - **Daemon serving selection**: `daemon serve` and `daemon stdio` bind this machine's socket. They ignore `current_context`, `NITS_CONTEXT`, and `NITS_WS_URL`, and bypass even a configured context called `local`. Explicit `-c NAME` can select a configured local binding; explicit remote contexts or `--daemon-url` are rejected. `--socket` / `--data-dir` (including `NITS_SOCKET` / `NITS_DATA_DIR`) retain their usual precedence over named contexts. Client lifecycle commands `daemon status|start|stop` still use normal context selection. This keeps SSH destination config from redirecting or breaking the proxy.
@@ -344,24 +342,23 @@ Two independent versions, both typed in `nits-protocol::version`.
 **Wire protocol — `ProtocolVersion` (semver string, e.g. `"0.1.0"`).**
 
 - Every frame is an `Envelope { v: ProtocolVersion, msg }`, so the version is on each message,
-  not only at handshake. One socket/port serves all versions; the version selects how the
-  daemon *serialises*, not where the client connects.
+  not only at handshake. One endpoint serves the explicitly supported serializer set;
+  a version number alone does not provide an older serializer.
 - Handshake: the client's first frame is `Hello { client_id, protocol, client: BuildInfo }`.
   The daemon answers `Welcome { protocol, daemon, schema, upgrade }` — `protocol` is the
   version all following frames use — or `Rejected { UnsupportedProtocol { requested, supported } }`
   and closes.
-- Compatibility rule: same `major`, daemon `minor >= client minor`. Minor bumps are additive
-  (new variants/fields); the daemon serialises responses at the client's requested minor so a
-  strict (`deny_unknown_fields`) older client never sees fields it doesn't know. Major bumps
-  are never bridged silently.
+- Version compatibility and implemented serializers are separate checks. The current
+  daemon serves only `ProtocolVersion::CURRENT`; it rejects older application protocols
+  before dispatch. A future multi-version daemon would need explicit serializers to keep
+  strict older clients from receiving unknown fields. No major transition is silently bridged.
 - Deprecation path: a daemon may keep serving an old minor for a time and attach
   `Welcome.upgrade: UpgradeNotice { latest, message }`; clients surface it. Once dropped, the
   handshake is rejected with the supported list, so the error is specific and actionable.
-- Protocol 0.16 currently serves **only minor 0.16**: older minors are retired and
-  rejected during Hello, before any event or snapshot. The daemon has one serializer;
-  the same-major compatibility predicate alone does not prove it can encode an old
-  minor. Adding a supported minor requires its serializer. The stable shutdown-only
-  fallback can still stop older same-major daemons during upgrades.
+- Inspect the invoked build with `nits daemon inspect --json` for its exact protocol
+  and schema. The maintenance contract is separately versioned; it can coordinate an
+  eligible installed replacement when ordinary Hello is incompatible. The stable
+  shutdown-only fallback can still stop supported older same-major daemons.
 - A frame whose `v` differs from the negotiated version is answered with `VersionMismatch`.
 - Bumping: any change to a fixture under `fixtures/protocol/` requires bumping
   `ProtocolVersion::CURRENT` (minor if additive, major otherwise); CI diffs fixtures.
@@ -372,8 +369,9 @@ Two independent versions, both typed in `nits-protocol::version`.
   writes.
 - On open: equal → proceed; older → run migrations forward in one transaction per step and
   restamp; newer → refuse to open with a clear error (a newer `nits` wrote this; upgrade).
-- Events are stored as JSON with a per-event `schema` tag, so the event log itself migrates by
-  re-serialisation, and materialised views can always be rebuilt from the migrated log.
+- Events carry a per-event `schema` tag. Each migration states whether it rewrites
+  events or only rebuilds materialized views; recent request/checkpoint migrations
+  preserve the historical event bytes and keep missing provenance explicit.
 - Schema 2 adds informational kinds/lifecycles. The 1→2 migration restamps raw
   event envelopes and rebuilds views, retaining old Note roots and all
   replies/resolutions unchanged. Older binaries refuse the schema 2 store.
@@ -417,7 +415,7 @@ Hosts (Tauri, wasm, TUI) own: transport, local KV store, clock. This makes the c
 
 ### 5.1 Cache
 
-Content-addressed, so never stale: blobs by OID, repository-scoped tree snapshots by `(repo_id, root_oid)`, diff render models by `(base_oid, head_oid, opts)`. On opening a review the daemon streams the full diff set and touched blobs; the file explorer prefetches siblings. Cache hit ⇒ zero-latency navigation.
+Content identity scopes cache reuse: blobs by OID, tree snapshots by `(repo_id, root_oid)`, and derived render models by typed render keys including OIDs, options and renderer generation. Headers retain entry/mode metadata. Opening a review streams its snapshot, trees, headers and initial chunks; viewport requests load later chunks. A cache hit avoids a daemon round trip.
 
 Two tiers, both LRU with a **byte budget**:
 
@@ -611,8 +609,8 @@ The proxy reports transport errors without replaying requests. Higher-level comp
 
 ## 9. Persistence & lifecycle
 
-- One daemon per machine, data dir `~/.local/share/nits/` (`state.redb`, logs, per-repo diff cache).
-- Reviews persist until `ReviewDeleted`. Deletion tombstones; compaction is offline and optional.
+- One owner per selected store/context; the default local data directory is `~/.local/share/nits/` (`state.redb`, logs and content caches).
+- Reviews persist until `ReviewDeleted`; deletion tombstones records and retains event history. Offline compaction remains a design option, not a CLI maintenance command.
 - Daemon restart: reopen store; clients resubscribe from `last_seq`.
 
 ## 10. Measure before optimising
@@ -640,10 +638,10 @@ Suspected bottlenecks with a ready solution, deliberately **not** built until a 
 | 5 | Syntax highlighting | daemon, token spans in render model |
 | 6 | Review identity | persistent object, cheap to create, lives until deleted |
 | 7 | Comment IDs | client-generated ULID |
-| 10 | First client | Tauri (native client-core; wasm/browser second) |
+| 10 | Native UI hosts | browser bridge and optional Tauri app share ClientCore; standalone Wasm and TUI are deferred |
 | 13 | Comment scopes | review-level, file-level, inline — all via `Anchor` enum |
 
-| 3 | Rust↔ReScript types | hand-written both sides; Sury schemas in ReScript; JSON fixture round-trip test in CI (§6.3) |
+| 3 | Rust↔ReScript types | declared types on both sides; derived Sury schemas through `@schema`; JSON fixture round-trip tests (§6.3) |
 | 8 | Working-tree changes | auto-refresh, debounced; client defers while a comment draft is open (§5.4) |
 | 9 | Agent event delivery | subscribe via MCP |
 | 11 | MCP transport | stdio shim proxying to daemon first; direct ws later |
@@ -651,7 +649,7 @@ Suspected bottlenecks with a ready solution, deliberately **not** built until a 
 | 14 | Highlighter | syntect |
 | 16 | Daemon concurrency | one writer thread (mutations + re-anchoring, strictly serialised) and the tokio blocking pool for reads/renders against the shared `Core`; events fan out via a broadcast channel, connections filter by scope |
 | 17 | Client cache when daemon is local | memory tier only; disk tier for remote daemons (§5.1) |
-| 18 | Daemon lifecycle | one daemon per machine; `nits daemon stdio` is a proxy that auto-starts it; clients hold named contexts (local/ssh/ws) and can probe/start/stop; ws contexts are unmanaged; persisted default context for new processes with explicit overrides and MCP session-local switching; workspace/repo default from cwd | herdr-style remotes without a second store opener; kubectl-style switching for the app |
+| 18 | Daemon lifecycle | one owner per selected store/context; local/SSH proxy autostart and bounded stop; unmanaged raw WebSocket endpoints; coordinated installed-build activation and MCP worker replacement | isolated contexts without concurrent store openers |
 | 19 | UI styling | Tailwind v4 (Vite plugin); utilities for chrome, semantic class set + `@theme` tokens for diff rows, `data-focused` variants (§6.6) | cheap rows at 10k lines; one palette for web and TUI |
 | 15 | Evolution | semver `ProtocolVersion` negotiated in `Hello`/`Welcome`, on every `Envelope`; integer `SchemaVersion` in redb `meta` with forward-only migrations (§4.9) |
 
@@ -659,7 +657,7 @@ Suspected bottlenecks with a ready solution, deliberately **not** built until a 
 
 - Cross-machine comment sync (log makes it feasible; not needed now).
 - Rust↔Rust wire encoding beyond JSON.
-- Browser/wasm client, TUI client.
+- Standalone browser-Wasm/IndexedDB host and TUI client; the native browser bridge is implemented.
 - Export to GitHub PR review / `.review/` directory.
 
 ### Portable reference routing
