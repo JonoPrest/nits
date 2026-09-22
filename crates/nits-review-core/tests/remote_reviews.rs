@@ -146,7 +146,9 @@ fn pushed(w: &World, empty: bool) -> CommitOid {
             .write_file("file.txt", b"updated by author\n")
             .unwrap();
         w.author.git(&["add", "file.txt"]).unwrap();
-        w.author.git(&["commit", "-q", "-m", "fix"]).unwrap();
+        w.author
+            .git(&["commit", "-q", "-m", "fix typo with spaces"])
+            .unwrap();
     }
     w.author.git(&["push", "-q", "origin", "main"]).unwrap();
     w.author.rev_parse("HEAD").unwrap().parse().unwrap()
@@ -255,6 +257,21 @@ fn git_revision_expressions_resolve_available_commits_and_report_unavailable_inp
     w.core
         .fetch_review(&ctx(), w.review, None, RemoteName::default())
         .unwrap();
+    git(
+        &w.checkout,
+        &[
+            "-c",
+            "user.name=Ada",
+            "-c",
+            "user.email=ada@example.com",
+            "tag",
+            "-a",
+            "annotated-base",
+            "-m",
+            "base tag",
+            "HEAD",
+        ],
+    );
     let repo = Repo::open(&w.checkout).unwrap();
     for (text, expected) in [
         (next.to_string(), next),
@@ -262,10 +279,28 @@ fn git_revision_expressions_resolve_available_commits_and_report_unavailable_inp
         ("origin/main".into(), next),
         ("refs/remotes/origin/main".into(), next),
         ("origin/main~1".into(), w.base),
+        (":/fix typo with spaces".into(), next),
+        (":/^base".into(), w.base),
+        ("origin/main^{/base}".into(), w.base),
         ("v1".into(), w.base),
         ("tag:v1".into(), w.base),
+        ("annotated-base".into(), w.base),
         ("branch:main".into(), w.base),
     ] {
+        if !text.starts_with("tag:") && !text.starts_with("branch:") {
+            let object = git(
+                &w.checkout,
+                &["rev-parse", "--verify", "--end-of-options", &text],
+            );
+            assert_eq!(
+                git(
+                    &w.checkout,
+                    &["rev-parse", "--verify", &format!("{object}^{{commit}}")]
+                ),
+                expected.to_string(),
+                "raw Git control for {text}"
+            );
+        }
         assert_eq!(
             repo.resolve(&text.parse().unwrap()).unwrap().source,
             ResolvedSource::Commit { oid: expected },
