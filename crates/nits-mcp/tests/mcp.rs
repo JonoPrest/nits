@@ -1492,6 +1492,9 @@ async fn directory_bootstrap_is_mcp_only_idempotent_and_honors_explicit_refs() {
     let args = json!({"path": h.repo.path(), "base": {"type": "Head"}});
     let first = call(&mut s, "ensure_directory_review", args.clone()).await;
     assert_eq!(first["outcome"], "Created");
+    assert_ne!(first["workspace_id"], first["repo_id"]);
+    assert_ne!(first["workspace_id"], first["review_id"]);
+    assert_ne!(first["repo_id"], first["review_id"]);
     assert_eq!(first["base"], args["base"]);
     assert_eq!(first["head"], json!({"type": "WorkingTree"}));
     let seq = h.daemon.core().last_seq().unwrap();
@@ -1519,6 +1522,7 @@ async fn directory_bootstrap_is_mcp_only_idempotent_and_honors_explicit_refs() {
     .await;
     assert_ne!(different["review_id"], first["review_id"]);
     assert_eq!(different["workspace_id"], first["workspace_id"]);
+    assert_eq!(different["repo_id"], first["repo_id"]);
     assert_eq!(different["base"], json!({"type": "Branch", "name": "main"}));
     let pinned_args = json!({"path": h.repo.path(), "base": {"type": "Head"},
         "head": {"type": "Commit", "oid": h.repo.rev_parse("HEAD").unwrap()}});

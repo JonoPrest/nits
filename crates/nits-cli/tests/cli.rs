@@ -381,6 +381,16 @@ fn headless_json_describes_created_and_reused_directory_reviews() {
             assert_eq!(workspaces.len(), 1);
             let workspace = &workspaces[0];
             assert_eq!(workspace.repos.len(), 1);
+            assert_ne!(workspace.id.to_string(), workspace.repos[0].id.to_string());
+            assert_ne!(workspace.id.to_string(), review_id.to_string());
+            assert_ne!(workspace.repos[0].id.to_string(), review_id.to_string());
+            for wrong_kind in [workspace.id.to_string(), workspace.repos[0].id.to_string()] {
+                h.nits()
+                    .args(["review", "show", &wrong_kind])
+                    .assert()
+                    .failure()
+                    .stderr(predicate::str::contains("NotFound"));
+            }
             let base_tree = h.repo.git(&["rev-parse", "main^{tree}"]).unwrap();
             let base_commit = h.repo.git(&["rev-parse", "main"]).unwrap();
             let head_tree = h.repo.git(&["rev-parse", "feature^{tree}"]).unwrap();
@@ -2330,3 +2340,5 @@ mod duplicates;
 mod maintenance;
 
 mod attribution;
+
+mod bootstrap;
