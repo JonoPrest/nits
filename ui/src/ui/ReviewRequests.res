@@ -36,6 +36,29 @@ module Item = {
           <p> {React.string("Requested revision unknown (historical request)")} </p>
         | Captured({targets}) => <ReviewCheckpoints.Targets targets />
         }}
+        {switch request.checkpointComparison {
+        | UnknownComparison(_) =>
+          <p> {React.string("Checkpoint comparison unknown (historical request)")} </p>
+        | NoCheckpoint(_) => React.null
+        | Compared({checkpointId, outcome: SameTargets}) =>
+          <p>
+            {React.string(
+              "Unchanged since checkpoint " ++
+              Float.toString(
+                checkpointId,
+              ) ++ ". New work pushed elsewhere may need fetching and selecting before another round.",
+            )}
+          </p>
+        | Compared({checkpointId, outcome: UnknownRevision}) =>
+          <p>
+            {React.string(
+              "Cannot compare exact revisions with checkpoint " ++
+              Float.toString(checkpointId) ++ ": captured HEAD identity is unavailable.",
+            )}
+          </p>
+        | Compared({checkpointId, outcome: ChangedTargets}) =>
+          <p> {React.string("Targets differ from checkpoint " ++ Float.toString(checkpointId))} </p>
+        }}
         <div onClick={ev => ReactEvent.Mouse.stopPropagation(ev)}>
           {switch request.targets {
           | UnknownTargets(_) => React.null

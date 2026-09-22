@@ -2473,3 +2473,5 @@ fn review_discovery_is_scoped_only_explicitly_and_filters_without_cwd() {
         .stdout(predicate::str::contains("last activity "))
         .stdout(predicate::str::contains("main..feature"));
 }
+
+mod remote;

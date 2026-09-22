@@ -264,6 +264,9 @@
     ],
     "requests": [
       {
+        "checkpoint_comparison": {
+          "type": "Unknown"
+        },
         "created": 1700000000000,
         "id": 40,
         "note": "Please review the updated parser.",

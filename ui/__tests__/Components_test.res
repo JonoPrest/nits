@@ -588,28 +588,16 @@ describe("DiffView (viewed)", () => {
 })
 
 describe("RefSpecText", () => {
-  test("parses every ref spec form and prints it back", () => {
-    let cases = [
-      ("main", Some(Domain.RefSpec.Branch({name: "main"}))),
-      ("branch:feature/x", Some(Branch({name: "feature/x"}))),
-      ("tag:v1.0", Some(Tag({name: "v1.0"}))),
-      ("commit:" ++ String.repeat("a", 40), Some(Commit({oid: String.repeat("a", 40)}))),
-      ("commit:abc", None),
-      ("worktree", Some(WorkingTree({}))),
-      ("HEAD", Some(Head({}))),
-      ("upstream", Some(Upstream({}))),
-      ("", None),
-    ]
-    cases->Array.forEach(((text, want)) => expect(RefSpecText.parse(text))->toEqual(want))
+  test("prints explicit namespaces and Git expressions without changing their meaning", () => {
     [
-      Domain.RefSpec.Branch({name: "main"}),
-      Tag({name: "v1"}),
-      WorkingTree({}),
-      Head({}),
-      Upstream({}),
-    ]->Array.forEach(
-      spec => expect(RefSpecText.parse(RefSpecText.print(spec)))->toEqual(Some(spec)),
-    )
+      (Domain.RefSpec.Branch({name: "main"}), "branch:main"),
+      (Revision({expression: "origin/main~1"}), "origin/main~1"),
+      (Tag({name: "v1"}), "tag:v1"),
+      (Commit({oid: String.repeat("a", 40)}), "commit:" ++ String.repeat("a", 40)),
+      (WorkingTree({}), "worktree"),
+      (Head({}), "head"),
+      (Upstream({}), "upstream"),
+    ]->Array.forEach(((spec, text)) => expect(RefSpecText.print(spec))->toBe(text))
   })
 })
 
@@ -2829,5 +2817,82 @@ describe("Revision checkpoints", () => {
     expect(dispatch)->toHaveBeenCalledWith(Action.SetFocus({focus: ReviewRequest({index: 0})}))
     expect(dispatch)->toHaveBeenCalledWith(Action.RunCommand({command: CheckRequested}))
     expect(Screen.getByText("Open requested changes"))->toBeTruthy
+  })
+})
+
+describe("Captured request checkpoint comparison", () => {
+  afterEach(() => cleanup())
+  test("shows the captured checkpoint warning independently of current state", () => {
+    let request = Fixtures.parse(
+      Domain.ReviewRequest.schema,
+      "protocol",
+      "ReviewRequest",
+      "default",
+    )
+    let request = {
+      ...request,
+      checkpointComparison: Compared({checkpointId: 39., outcome: SameTargets}),
+    }
+    render(
+      <ReviewRequests
+        requests=[request] focus={ReviewRequest({index: 0})} chrome=[] dispatch={_ => ()}
+      />,
+    )->ignore
+    expect(
+      Screen.getByText(
+        "Unchanged since checkpoint 39. New work pushed elsewhere may need fetching and selecting before another round.",
+      ),
+    )->toBeTruthy
+  })
+  test("keeps changed and historical comparison distinct", () => {
+    let request = Fixtures.parse(
+      Domain.ReviewRequest.schema,
+      "protocol",
+      "ReviewRequest",
+      "default",
+    )
+    render(
+      <ReviewRequests
+        requests=[
+          {
+            ...request,
+            checkpointComparison: Compared({checkpointId: 41., outcome: ChangedTargets}),
+          },
+        ]
+        focus={ReviewRequest({index: 0})}
+        chrome=[]
+        dispatch={_ => ()}
+      />,
+    )->ignore
+    expect(Screen.getByText("Targets differ from checkpoint 41"))->toBeTruthy
+    cleanup()
+    render(
+      <ReviewRequests
+        requests=[{...request, checkpointComparison: UnknownComparison({})}]
+        focus={ReviewRequest({index: 0})}
+        chrome=[]
+        dispatch={_ => ()}
+      />,
+    )->ignore
+    expect(Screen.getByText("Checkpoint comparison unknown (historical request)"))->toBeTruthy
+    cleanup()
+    render(
+      <ReviewRequests
+        requests=[
+          {
+            ...request,
+            checkpointComparison: Compared({checkpointId: 43., outcome: UnknownRevision}),
+          },
+        ]
+        focus={ReviewRequest({index: 0})}
+        chrome=[]
+        dispatch={_ => ()}
+      />,
+    )->ignore
+    expect(
+      Screen.getByText(
+        "Cannot compare exact revisions with checkpoint 43: captured HEAD identity is unavailable.",
+      ),
+    )->toBeTruthy
   })
 })

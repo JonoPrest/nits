@@ -519,6 +519,7 @@ fn daemon_answers(core: &mut ClientCore, effects: &[Effect]) -> Vec<Effect> {
             | Request::ListFiles { .. }
             | Request::OpenReview { .. }
             | Request::ResolveTargets { .. }
+            | Request::FetchReview { .. }
             | Request::ListCommits { .. }
             | Request::BlobRender { .. }
             | Request::Subscribe { .. }
@@ -706,6 +707,7 @@ fn viewport_requests_only_the_window_and_bounds_in_flight() {
             | Request::ListFiles { .. }
             | Request::OpenReview { .. }
             | Request::ResolveTargets { .. }
+            | Request::FetchReview { .. }
             | Request::ListCommits { .. }
             | Request::BlobRender { .. }
             | Request::Subscribe { .. }
@@ -1376,6 +1378,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
                 | Request::PreviewSuggestion { .. }
                 | Request::OpenReview { .. }
                 | Request::ResolveTargets { .. }
+                | Request::FetchReview { .. }
                 | Request::BlobRender { .. }
                 | Request::Subscribe { .. }
                 | Request::ReplayEvents { .. }
@@ -1499,6 +1502,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
             | Request::ListFiles { .. }
             | Request::OpenReview { .. }
             | Request::ResolveTargets { .. }
+            | Request::FetchReview { .. }
             | Request::ListCommits { .. }
             | Request::BlobRender { .. }
             | Request::Subscribe { .. }
@@ -2058,6 +2062,7 @@ fn comments_are_placed_on_rows_by_anchor_and_listed_as_threads() {
             | Request::ListFiles { .. }
             | Request::OpenReview { .. }
             | Request::ResolveTargets { .. }
+            | Request::FetchReview { .. }
             | Request::ListCommits { .. }
             | Request::BlobRender { .. }
             | Request::Subscribe { .. }
@@ -4281,6 +4286,7 @@ fn portable_reply_link_preserves_deferred_browse_source_and_inflight_review_requ
         core.handle(Input::Server(foreign_event(
             4,
             EventBody::ReviewRequested {
+                checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                 review_id: review_id(),
                 agent: "review-agent".into(),
                 note: "Check this retained source".into(),

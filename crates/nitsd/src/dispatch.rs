@@ -73,6 +73,18 @@ pub async fn single(
                 .await?;
             Ok(Response::Resolved { targets, changed })
         }
+        Request::FetchReview {
+            client_seq,
+            review_id,
+            repo_id,
+            remote,
+        } => {
+            let ctx = Daemon::ctx(who.author.clone(), who.client_id, client_seq);
+            let (result, _) = daemon
+                .write(move |core| core.fetch_review(&ctx, review_id, repo_id, remote))
+                .await?;
+            Ok(Response::ReviewFetched { result })
+        }
         Request::ListCommits { review_id, repo_id } => {
             let commits = daemon.read(move |c| c.commits(review_id, repo_id)).await?;
             Ok(Response::Commits { commits })

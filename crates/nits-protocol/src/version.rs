@@ -37,9 +37,9 @@ impl ProtocolVersion {
     pub const CURRENT: ProtocolVersion = ProtocolVersion {
         major: 0,
         #[cfg(feature = "upgrade-fixture-previous-protocol")]
-        minor: 18,
-        #[cfg(not(feature = "upgrade-fixture-previous-protocol"))]
         minor: 19,
+        #[cfg(not(feature = "upgrade-fixture-previous-protocol"))]
+        minor: 20,
         patch: 0,
     };
 
@@ -120,7 +120,7 @@ pub struct SchemaVersion(u32);
 
 impl SchemaVersion {
     /// The layout this build writes.
-    pub const CURRENT: SchemaVersion = SchemaVersion(10);
+    pub const CURRENT: SchemaVersion = SchemaVersion(11);
 
     #[must_use]
     pub const fn new(n: u32) -> Self {

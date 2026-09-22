@@ -1368,7 +1368,7 @@ async fn subscribe_events_preserves_each_single_scope_and_all_events() {
         assert_eq!(
             requested,
             json!({
-                "review_id": review, "request_id": requested["seq"], "agent": agent, "seq": requested["seq"]
+                "review_id": review, "request_id": requested["seq"], "agent": agent, "seq": requested["seq"], "checkpoint_comparison": {"type":"NoCheckpoint"}
             })
         );
         events.push(committed(&h, &requested));
@@ -2863,4 +2863,80 @@ async fn discovery_without_a_workspace_queries_all_metadata_and_keeps_context() 
         "{error}"
     );
     assert_eq!(h.daemon.core().last_seq().unwrap(), Some(before));
+}
+
+#[tokio::test]
+async fn fetch_review_and_request_comparison_use_the_shared_daemon_contract() {
+    let h = start();
+    let remote = RepoBuilder::new()
+        .commit("remote", files!["remote.txt" => "pushed\n"])
+        .build()
+        .unwrap();
+    let next = remote.rev_parse("HEAD").unwrap();
+    h.repo
+        .git(&["remote", "add", "origin", remote.path().to_str().unwrap()])
+        .unwrap();
+    let c = human(&h).await;
+    let (workspace, repo) = seed(&h, &c).await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    let created = call(&mut s, "create_review", json!({"workspace_id": workspace, "title": "remote round", "targets": [{"repo_id": repo, "base": {"type":"Branch","name":"main"},"head":{"type":"Head"}}]})).await;
+    let review = &created["review_id"];
+    let snapshot = call(&mut s, "get_review", json!({"review_id": review})).await;
+    let checked = call(
+        &mut s,
+        "record_checkpoint",
+        json!({"review_id":review,"targets":snapshot["resolved"],"in_reply_to":null}),
+    )
+    .await;
+    let request = call(
+        &mut s,
+        "request_review",
+        json!({"review_id":review,"agent":"reviewer","note":"check"}),
+    )
+    .await;
+    assert_eq!(
+        request["checkpoint_comparison"]["checkpoint_id"],
+        checked["id"]
+    );
+    assert_eq!(request["checkpoint_comparison"]["outcome"], "SameTargets");
+    let before = h.repo.rev_parse("HEAD").unwrap();
+    let fetched = call(&mut s, "fetch_review", json!({"review_id":review})).await;
+    assert_eq!(fetched["repo_id"], repo);
+    assert_eq!(fetched["resolution"]["changed"], false);
+    call(&mut s, "update_review_target", json!({"review_id":review,"repo_id":repo,"revision":{"type":"Head","ref_spec":{"type":"Revision","expression":"origin/main"}}})).await;
+    let updated = call(&mut s, "get_review", json!({"review_id":review})).await;
+    assert_eq!(updated["resolved"][0]["head"]["source"]["oid"], next);
+    assert_eq!(h.repo.rev_parse("HEAD").unwrap(), before);
+    let request = call(
+        &mut s,
+        "request_review",
+        json!({"review_id":review,"agent":"reviewer","note":"new work"}),
+    )
+    .await;
+    assert_eq!(
+        request["checkpoint_comparison"]["checkpoint_id"],
+        checked["id"]
+    );
+    assert_eq!(
+        request["checkpoint_comparison"]["outcome"],
+        "ChangedTargets"
+    );
+    let snapshot = call(&mut s, "get_review", json!({"review_id":review})).await;
+    assert_eq!(
+        snapshot["requests"][1]["checkpoint_comparison"],
+        request["checkpoint_comparison"]
+    );
+    let before_seq = h.daemon.read(|core| core.last_seq()).await.unwrap();
+    let error = call_err(
+        &mut s,
+        "fetch_review",
+        json!({"review_id":review,"remote":"file:/outside"}),
+    )
+    .await;
+    assert!(error.contains("remote name"), "{error}");
+    assert_eq!(
+        h.daemon.read(|core| core.last_seq()).await.unwrap(),
+        before_seq
+    );
 }

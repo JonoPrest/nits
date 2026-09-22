@@ -19,11 +19,13 @@ use strum::IntoEnumIterator;
 use nits_protocol::discovery::*;
 use nits_protocol::domain::*;
 use nits_protocol::events::*;
+use nits_protocol::fetch::*;
 use nits_protocol::ids::*;
 use nits_protocol::invariants::*;
 use nits_protocol::lifecycle::*;
 use nits_protocol::render::*;
 use nits_protocol::replay::*;
+use nits_protocol::revision::*;
 use nits_protocol::rpc::*;
 use nits_protocol::suggestion::*;
 use nits_protocol::version::*;
@@ -184,6 +186,13 @@ registry!(
     Workspace,
     Repo,
     RefSpec,
+    RevisionExpr,
+    RemoteName,
+    ReviewFetch,
+    SymbolicTrackingRef,
+    FetchResolution,
+    RequestCheckpointComparison,
+    TargetComparison,
     BaseRefSpec,
     TargetRevision,
     ReviewTargetUpdate,
@@ -765,6 +774,7 @@ fn event(body: EventBody) -> Event {
 
 fn review_request() -> ReviewRequest {
     ReviewRequest {
+        checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
         id: ReviewRequestId::from_event_seq(Seq::new(40)),
         review_id: review_id(),
         requester: human_author(),
@@ -797,6 +807,66 @@ mod lifecycle_fixtures;
 
 struct_fixture!(Workspace, "Workspace", workspace());
 struct_fixture!(Repo, "Repo", repo());
+struct_fixture!(
+    RevisionExpr,
+    "RevisionExpr",
+    "origin/topic~1".parse().map_err(FixtureError::Invalid)?
+);
+struct_fixture!(RemoteName, "RemoteName", RemoteName::default());
+struct_fixture!(ReviewFetch, "ReviewFetch", review_fetch()?);
+struct_fixture!(
+    SymbolicTrackingRef,
+    "SymbolicTrackingRef",
+    symbolic_tracking_ref()
+);
+fn symbolic_tracking_ref() -> SymbolicTrackingRef {
+    SymbolicTrackingRef {
+        name: "refs/remotes/origin/HEAD".into(),
+        target: "refs/remotes/origin/main".into(),
+    }
+}
+enum_fixture!(
+    FetchResolution,
+    FetchResolutionKind,
+    "FetchResolution",
+    [
+        FetchResolution::Resolved {
+            targets: resolved_targets()?,
+            changed: true
+        },
+        FetchResolution::Unavailable {
+            reason: "selected ref is absent after successful fetch".into()
+        },
+    ]
+);
+enum_fixture!(
+    RequestCheckpointComparison,
+    RequestCheckpointComparisonKind,
+    "RequestCheckpointComparison",
+    [
+        RequestCheckpointComparison::Unknown,
+        RequestCheckpointComparison::NoCheckpoint,
+        RequestCheckpointComparison::Compared {
+            checkpoint_id: ReviewCheckpointId::from_event_seq(Seq::new(39)),
+            outcome: TargetComparison::SameTargets
+        },
+    ]
+);
+unit_enum_fixture!(TargetComparison, "TargetComparison");
+
+fn review_fetch() -> Result<ReviewFetch, FixtureError> {
+    Ok(ReviewFetch {
+        review_id: review_id(),
+        repo_id: repo_id(),
+        remote: RemoteName::default(),
+        symbolic_tracking_refs: vec![symbolic_tracking_ref()],
+        resolution: FetchResolution::Resolved {
+            targets: resolved_targets()?,
+            changed: true,
+        },
+    })
+}
+
 enum_fixture!(
     RefSpec,
     RefSpecKind,
@@ -808,6 +878,9 @@ enum_fixture!(
         RefSpec::Commit { oid: commit(1) },
         RefSpec::Tag {
             name: "v0.1.0".into()
+        },
+        RefSpec::Revision {
+            expression: "origin/topic~1".parse().map_err(FixtureError::Invalid)?
         },
         RefSpec::WorkingTree,
         RefSpec::Upstream,
@@ -825,6 +898,9 @@ enum_fixture!(
         BaseRefSpec::Commit { oid: commit(1) },
         BaseRefSpec::Tag {
             name: "v0.1.0".into()
+        },
+        BaseRefSpec::Revision {
+            expression: "HEAD~1".parse().map_err(FixtureError::Invalid)?
         },
         BaseRefSpec::Upstream,
         BaseRefSpec::Head,
@@ -1274,6 +1350,7 @@ enum_fixture!(
             viewer: human()
         },
         EventBody::ReviewRequested {
+            checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
             review_id: review_id(),
             agent: "claude-code".into(),
             note: "Please review the store.".into(),
@@ -1703,6 +1780,12 @@ enum_fixture!(
             client_seq: ClientSeq::new(7),
             options: directory_options()
         },
+        Request::FetchReview {
+            client_seq: ClientSeq::new(8),
+            review_id: review_id(),
+            repo_id: Some(repo_id()),
+            remote: RemoteName::default()
+        },
         Request::ListWorkspaces,
         Request::ListReviews {
             workspace_id: workspace_id()
@@ -1818,6 +1901,9 @@ enum_fixture!(
     [
         Response::DirectoryReview {
             review: directory_review()
+        },
+        Response::ReviewFetched {
+            result: review_fetch()?
         },
         Response::Workspaces {
             workspaces: vec![workspace()]

@@ -4860,6 +4860,7 @@ fn response_name(r: &Response) -> &'static str {
         Response::SuggestionPreview { .. } => "SuggestionPreview",
         Response::Files { .. } => "Files",
         Response::Resolved { .. } => "Resolved",
+        Response::ReviewFetched { .. } => "ReviewFetched",
         Response::Search { .. } => "Search",
         Response::Commits { .. } => "Commits",
         Response::Refs { .. } => "Refs",

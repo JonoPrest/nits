@@ -323,6 +323,14 @@ pub enum Request {
     ResolveTargets {
         review_id: ReviewId,
     },
+    /// Opt-in network operation for one review repository. Omit `repo_id` only
+    /// for a single-repository review. Fetch preserves checkout/index/local refs.
+    FetchReview {
+        client_seq: ClientSeq,
+        review_id: ReviewId,
+        repo_id: Option<RepoId>,
+        remote: crate::RemoteName,
+    },
     ListCommits {
         review_id: ReviewId,
         repo_id: RepoId,
@@ -419,6 +427,7 @@ impl Request {
             | Request::ListFiles { .. }
             | Request::Search { .. }
             | Request::ResolveTargets { .. }
+            | Request::FetchReview { .. }
             | Request::ListCommits { .. }
             | Request::TreeSnapshot { .. }
             | Request::RenderChunk { .. }
@@ -454,6 +463,9 @@ pub struct ReviewSnapshot {
 #[strum_discriminants(name(ResponseKind), derive(EnumIter, Hash))]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum Response {
+    ReviewFetched {
+        result: crate::ReviewFetch,
+    },
     DirectoryReview {
         review: DirectoryReview,
     },

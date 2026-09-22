@@ -21,6 +21,8 @@ pub struct ReviewRequest {
     pub requester: Author,
     pub recipient: String,
     pub targets: RequestedTargets,
+    /// Comparison made when the request was committed, never recomputed on read.
+    pub checkpoint_comparison: RequestCheckpointComparison,
     pub note: String,
     pub created: Timestamp,
 }
@@ -34,6 +36,7 @@ impl ReviewRequest {
             agent,
             note,
             targets,
+            checkpoint_comparison,
         } = &event.body
         {
             Some(Self {
@@ -42,6 +45,7 @@ impl ReviewRequest {
                 requester: event.author.clone(),
                 recipient: agent.clone(),
                 targets: targets.clone(),
+                checkpoint_comparison: checkpoint_comparison.clone(),
                 note: note.clone(),
                 created: event.ts,
             })
@@ -91,6 +95,10 @@ pub enum RefSpec {
     Tag {
         name: String,
     },
+    /// A Git expression such as a short OID, remote-tracking ref, or `HEAD~1`.
+    Revision {
+        expression: crate::RevisionExpr,
+    },
     WorkingTree,
     /// The upstream of the current branch (`@{upstream}`).
     Upstream,
@@ -108,6 +116,7 @@ pub enum BaseRefSpec {
     Branch { name: String },
     Commit { oid: CommitOid },
     Tag { name: String },
+    Revision { expression: crate::RevisionExpr },
     Upstream,
     Head,
 }
@@ -118,6 +127,7 @@ impl From<BaseRefSpec> for RefSpec {
             BaseRefSpec::Branch { name } => Self::Branch { name },
             BaseRefSpec::Commit { oid } => Self::Commit { oid },
             BaseRefSpec::Tag { name } => Self::Tag { name },
+            BaseRefSpec::Revision { expression } => Self::Revision { expression },
             BaseRefSpec::Upstream => Self::Upstream,
             BaseRefSpec::Head => Self::Head,
         }
@@ -1006,6 +1016,80 @@ pub struct TreeDelta {
 pub enum RequestedTargets {
     Unknown,
     Captured { targets: NonEmpty<ResolvedTarget> },
+}
+
+/// Whether the captured request repeats the latest checkpoint in this review.
+/// Historical requests lack this fact; replay must not infer it from newer state.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, EnumDiscriminants)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "type", deny_unknown_fields)]
+#[strum_discriminants(name(RequestCheckpointComparisonKind), derive(EnumIter, Hash))]
+pub enum RequestCheckpointComparison {
+    #[default]
+    Unknown,
+    NoCheckpoint,
+    Compared {
+        checkpoint_id: crate::ReviewCheckpointId,
+        outcome: TargetComparison,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum TargetComparison {
+    SameTargets,
+    ChangedTargets,
+    /// Content is equal but a captured working-tree HEAD was not recorded.
+    UnknownRevision,
+}
+
+impl RequestCheckpointComparison {
+    /// Compare captured identities, including a working tree's captured HEAD.
+    /// Dirty-path lists and local branch labels do not select different content.
+    #[must_use]
+    pub fn against(
+        checkpoint: Option<&ReviewCheckpoint>,
+        targets: &NonEmpty<ResolvedTarget>,
+    ) -> Self {
+        let Some(checkpoint) = checkpoint else {
+            return Self::NoCheckpoint;
+        };
+        if !same_targets(&checkpoint.targets, targets) {
+            return Self::Compared {
+                checkpoint_id: checkpoint.id,
+                outcome: TargetComparison::ChangedTargets,
+            };
+        }
+        let mut outcome = TargetComparison::SameTargets;
+        for old in &checkpoint.targets {
+            if let Some(new) = targets.iter().find(|new| new.repo_id == old.repo_id) {
+                for (old, new) in [(&old.base, &new.base), (&old.head, &new.head)] {
+                    if let (
+                        ResolvedSource::WorkingTree { head: old, .. },
+                        ResolvedSource::WorkingTree { head: new, .. },
+                    ) = (&old.source, &new.source)
+                    {
+                        match (old, new) {
+                            (Some(old), Some(new)) if old != new => {
+                                return Self::Compared {
+                                    checkpoint_id: checkpoint.id,
+                                    outcome: TargetComparison::ChangedTargets,
+                                };
+                            }
+                            (Some(_), Some(_)) => {}
+                            (None, _) | (_, None) => {
+                                outcome = TargetComparison::UnknownRevision;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Self::Compared {
+            checkpoint_id: checkpoint.id,
+            outcome,
+        }
+    }
 }
 
 /// Stable reviewer identity across restarts. Full session provenance remains on the checkpoint.

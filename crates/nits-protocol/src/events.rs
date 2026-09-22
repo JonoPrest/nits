@@ -124,6 +124,8 @@ pub enum EventBody {
         agent: String,
         note: String,
         targets: crate::RequestedTargets,
+        #[serde(default)]
+        checkpoint_comparison: crate::RequestCheckpointComparison,
     },
     ReviewChecked {
         review_id: ReviewId,

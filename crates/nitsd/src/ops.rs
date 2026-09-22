@@ -105,6 +105,30 @@ impl EventPoll {
 }
 
 impl Ops {
+    /// Explicitly fetch a named remote for one review member; never replayed.
+    pub async fn fetch_review(
+        &mut self,
+        review_id: ReviewId,
+        repo_id: Option<RepoId>,
+        remote: nits_protocol::RemoteName,
+    ) -> Result<nits_protocol::ReviewFetch, OpsError> {
+        self.seq += 1;
+        let client_seq = nits_protocol::ClientSeq::new(self.seq);
+        match self
+            .client
+            .request(Request::FetchReview {
+                client_seq,
+                review_id,
+                repo_id,
+                remote,
+            })
+            .await?
+        {
+            Response::ReviewFetched { result } => Ok(result),
+            _ => Err(OpsError::Shape),
+        }
+    }
+
     /// One bounded, scoped replay page. `Follow` waits for new log entries;
     /// `Continue` retains the preceding page's fixed historical boundary.
     pub async fn replay_events(

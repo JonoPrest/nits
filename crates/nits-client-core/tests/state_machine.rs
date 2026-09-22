@@ -1327,6 +1327,7 @@ fn request_delivered_ahead_of_older_open_snapshot_survives_handoff() {
     let request = event(
         2,
         EventBody::ReviewRequested {
+            checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
             review_id,
             targets: nits_protocol::RequestedTargets::Unknown,
             agent: "review-agent".into(),
@@ -1356,6 +1357,7 @@ fn request_delivered_ahead_of_older_open_snapshot_survives_handoff() {
         event: event(
             3,
             EventBody::ReviewRequested {
+                checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                 review_id,
                 targets: nits_protocol::RequestedTargets::Unknown,
                 agent: "other-agent".into(),
@@ -1375,6 +1377,7 @@ fn committed_request_fold_is_idempotent_scoped_and_ordered_by_identity() {
         event(
             seq,
             EventBody::ReviewRequested {
+                checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                 review_id,
                 targets: nits_protocol::RequestedTargets::Unknown,
                 agent: "review-agent".into(),
@@ -1813,6 +1816,7 @@ fn requested_checkpoint_and_new_target_delivered_ahead_of_snapshot_are_preserved
     let request = event(
         2,
         EventBody::ReviewRequested {
+            checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
             review_id,
             agent: "review-agent".into(),
             note: "H1".into(),
@@ -1950,6 +1954,7 @@ fn linked_browse_reply_survives_newer_request_target_and_checkpoint_before_snaps
             event(
                 4,
                 EventBody::ReviewRequested {
+                    checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                     review_id: id,
                     agent: "review-agent".into(),
                     note: "Check H1".into(),

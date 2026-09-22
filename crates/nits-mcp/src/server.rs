@@ -978,8 +978,17 @@ impl Server {
                     review_id: p.review_id,
                     agent: p.agent,
                     seq: event.seq,
+                    checkpoint_comparison: nits_protocol::ReviewRequest::from_event(&event)
+                        .ok_or_else(|| {
+                            ToolError::Invalid("daemon returned an unexpected request event".into())
+                        })?
+                        .checkpoint_comparison,
                 })
             }
+            MutatingCall::FetchReview(p) => ok(self
+                .ops_mut()?
+                .fetch_review(p.review_id, p.repo_id, p.remote)
+                .await?),
         }
     }
 

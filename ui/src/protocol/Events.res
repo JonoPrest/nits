@@ -93,6 +93,7 @@ module EventBody = {
         agent: string,
         note: string,
         targets: RequestedTargets.t,
+        @as("checkpoint_comparison") checkpointComparison: RequestCheckpointComparison.t,
       })
     | @as("ReviewChecked")
     ReviewChecked({

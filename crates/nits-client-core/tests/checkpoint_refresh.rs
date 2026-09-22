@@ -335,6 +335,7 @@ fn inspecting_a_requested_scope_keeps_explicit_current_and_requested_checks_dist
     snapshot.resolved = Some(targets(3));
     let request_id = ReviewRequestId::from_event_seq(Seq::new(7));
     snapshot.requests.push(ReviewRequest {
+        checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
         id: request_id,
         review_id: review(),
         requester: author(),
@@ -408,6 +409,7 @@ fn opening_legacy_request_resets_both_historical_scopes_to_all() {
     let open_id = start_open(&mut core);
     let mut snapshot = snapshot();
     snapshot.requests.push(ReviewRequest {
+        checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
         id: ReviewRequestId::from_event_seq(Seq::new(7)),
         review_id: review(),
         requester: author(),

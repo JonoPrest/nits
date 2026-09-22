@@ -261,6 +261,25 @@ module DirectoryReview = {
   }
 }
 
+module FetchResolution = {
+  @schema @tag("type")
+  type t =
+    Resolved({targets: array<ResolvedTarget.t>, changed: bool}) | Unavailable({reason: string})
+}
+module SymbolicTrackingRef = {
+  @schema type t = {name: string, target: string}
+}
+module ReviewFetch = {
+  @schema
+  type t = {
+    @as("review_id") reviewId: reviewId,
+    @as("repo_id") repoId: repoId,
+    remote: string,
+    resolution: FetchResolution.t,
+    @as("symbolic_tracking_refs") symbolicTrackingRefs: array<SymbolicTrackingRef.t>,
+  }
+}
+
 module Request = {
   @@warning("-27")
   @schema @tag("type")
@@ -291,6 +310,12 @@ module Request = {
       })
     | @as("OpenReview") OpenReview({@as("review_id") reviewId: reviewId, opts: RenderOpts.t})
     | @as("ResolveTargets") ResolveTargets({@as("review_id") reviewId: reviewId})
+    | FetchReview({
+        @as("client_seq") clientSeq: clientSeq,
+        @as("review_id") reviewId: reviewId,
+        @as("repo_id") repoId: @s.null option<repoId>,
+        remote: string,
+      })
     | @as("ListCommits")
     ListCommits({
         @as("review_id") reviewId: reviewId,
@@ -342,6 +367,7 @@ module Response = {
   @schema @tag("type")
   type t =
     | @as("DirectoryReview") DirectoryReview({review: DirectoryReview.t})
+    | ReviewFetched({result: ReviewFetch.t})
     | @as("Workspaces") Workspaces({workspaces: array<Workspace.t>})
     | @as("Reviews") Reviews({reviews: array<Review.t>})
     | ReviewDiscovery({discovery: Domain.ReviewDiscovery.t})
