@@ -542,6 +542,7 @@ fn every_action_is_reachable_from_a_binding() {
         (
             3,
             nits_protocol::EventBody::ReviewRequested {
+                checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                 review_id: review_id(),
                 agent: "review-agent".into(),
                 note: "Check these captured revisions".into(),
@@ -3096,6 +3097,7 @@ fn requests_have_keyboard_navigation_and_open_changes_without_resolving_findings
                 client_id: ClientId::from_parts(9, 9),
                 client_seq: nits_protocol::ClientSeq::new(seq),
                 body: nits_protocol::EventBody::ReviewRequested {
+                    checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                     review_id: review_id(),
                     agent: "review-agent".into(),
                     note: format!("Request {seq}"),

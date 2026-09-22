@@ -37,7 +37,7 @@ test(
     }
     let view = browse => <BrowseBar browse targets repositories={Workspace(ws())} chrome dispatch />
     let {rerender} = render(view(browse))
-    let _ = Screen.getByText("Viewing: Atlas · main")
+    let _ = Screen.getByText("Viewing: Atlas · branch:main")
     expect(Element.value(Screen.getByLabelText("Browse repository")))->toBe("beta")
     FireEvent.click(Screen.getByText("Choose revision…"))
     expect(dispatch)->toHaveBeenLastCalledWith(Action.RunCommand({command: BrowseRevision}))
@@ -55,8 +55,8 @@ test(
         }),
       }),
     )
-    let _ = Screen.getByText("Loading Beacon · main…")
-    let _ = Screen.getByText("Viewing: Atlas · main")
+    let _ = Screen.getByText("Loading Beacon · branch:main…")
+    let _ = Screen.getByText("Viewing: Atlas · branch:main")
     rerender(
       view({
         ...browse,
@@ -66,12 +66,12 @@ test(
         }),
       }),
     )
-    let _ = Screen.getByText("Could not open Beacon · main: unknown branch")
-    let _ = Screen.getByText("Viewing: Atlas · main")
+    let _ = Screen.getByText("Could not open Beacon · branch:main: unknown branch")
+    let _ = Screen.getByText("Viewing: Atlas · branch:main")
     FireEvent.click(Screen.getByText("Review heads"))
     expect(dispatch)->toHaveBeenLastCalledWith(Action.ResetBrowse({}))
     rerender(view({...browse, selection: None}))
-    let _ = Screen.getByText("Viewing: Atlas · main, Beacon · develop")
+    let _ = Screen.getByText("Viewing: Atlas · branch:main, Beacon · branch:develop")
   },
 )
 
@@ -152,7 +152,7 @@ test(
     }
     let _ = render(<App.Shell core />)
     expect(Element.value(Screen.getByLabelText("Browse repository")))->toBe("beta")
-    let _ = Screen.getByText("Viewing: Atlas · main, Beacon · develop")
+    let _ = Screen.getByText("Viewing: Atlas · branch:main, Beacon · branch:develop")
     FireEvent.click(Screen.getByText("Choose revision…"))
     expect(dispatch)->toHaveBeenLastCalledWith(Action.RunCommand({command: BrowseRevision}))
   },

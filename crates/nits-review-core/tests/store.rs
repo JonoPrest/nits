@@ -723,6 +723,7 @@ fn schema_two_requests_survive_upgrade_reopen_and_rebuild() {
         for note in ["Review the parser", "Review the follow-up"] {
             store
                 .append(new_event(EventBody::ReviewRequested {
+                    checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                     review_id: review_id(1),
                     agent: "review-agent".into(),
                     note: note.into(),
@@ -822,6 +823,7 @@ fn snapshot_requests_checkpoints_and_cursor_share_one_read_transaction() {
         for n in 0..100 {
             let requested = writer
                 .append(new_event(EventBody::ReviewRequested {
+                    checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                     review_id: review_id(1),
                     agent: "review-agent".into(),
                     note: format!("Request {n}"),
@@ -937,6 +939,7 @@ fn legacy_diff_context_migrates_without_reinterpreting_null_contexts() {
             }
             store
                 .append(new_event(EventBody::ReviewRequested {
+                    checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                     review_id: review_id(1),
                     agent: "review-agent".into(),
                     note: "Please check the retained discussion".into(),
@@ -1084,6 +1087,7 @@ fn schema_four_history_migrates_then_deferrals_survive_rebuild_and_restart() {
         }
         store
             .append(new_event(EventBody::ReviewRequested {
+                checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                 review_id: review_id(1),
                 agent: "review-agent".into(),
                 note: "Inspect the retained Browse finding".into(),
@@ -1255,6 +1259,7 @@ fn every_old_schema_migrates_raw_requests_with_unknown_targets_without_invention
             }
             store
                 .append(new_event(EventBody::ReviewRequested {
+                    checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                     review_id: review_id(1),
                     agent: "review-agent".into(),
                     note: "Legacy revision in prose".into(),
@@ -1417,6 +1422,7 @@ fn schema_six_worktree_snapshots_preserve_unknown_head_through_upgrade_and_rebui
             .unwrap();
         store
             .append(new_event(EventBody::ReviewRequested {
+                checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                 review_id: review_id(1),
                 agent: "review-agent".into(),
                 note: "captured".into(),
@@ -1812,5 +1818,109 @@ fn schema_nine_rebuilds_original_suggestion_identity_and_historical_receipts() {
     assert_eq!(
         reopened.review_snapshot(review_id(1)).unwrap().unwrap(),
         snapshot
+    );
+}
+
+#[test]
+fn schema_ten_preserves_request_history_and_marks_comparison_unknown() {
+    use redb::{ReadableDatabase, ReadableTable};
+    let (dir, store) = open_temp();
+    store
+        .append(new_event(EventBody::WorkspaceCreated {
+            workspace: workspace(),
+        }))
+        .unwrap();
+    store
+        .append(new_event(EventBody::ReviewCreated { review: review(1) }))
+        .unwrap();
+    store
+        .append(new_event(EventBody::CommentCreated {
+            comment: comment(1, 1, 1, 7),
+        }))
+        .unwrap();
+    let event = store
+        .append(new_event(EventBody::ReviewRequested {
+            review_id: review_id(1),
+            agent: "reviewer".into(),
+            note: "historical request".into(),
+            targets: nits_protocol::RequestedTargets::Unknown,
+            checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
+        }))
+        .unwrap();
+    let expected = store.review_snapshot(review_id(1)).unwrap().unwrap();
+    let path = dir.path().join("state.redb");
+    drop(store);
+    let old_bytes = {
+        let db = redb::Database::open(&path).unwrap();
+        let txn = db.begin_write().unwrap();
+        let bytes = {
+            let mut events = txn
+                .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
+                .unwrap();
+            let mut value: serde_json::Value =
+                serde_json::from_slice(events.get(event.seq.get()).unwrap().unwrap().value())
+                    .unwrap();
+            value["schema"] = serde_json::json!(10);
+            value["event"]["body"]
+                .as_object_mut()
+                .unwrap()
+                .remove("checkpoint_comparison");
+            let bytes = serde_json::to_vec(&value).unwrap();
+            events.insert(event.seq.get(), bytes.as_slice()).unwrap();
+            bytes
+        };
+        {
+            let mut requests = txn
+                .open_table(redb::TableDefinition::<(&str, u64), &[u8]>::new(
+                    "review_requests",
+                ))
+                .unwrap();
+            let id = review_id(1).to_string();
+            let mut value: serde_json::Value = serde_json::from_slice(
+                requests
+                    .get((id.as_str(), event.seq.get()))
+                    .unwrap()
+                    .unwrap()
+                    .value(),
+            )
+            .unwrap();
+            value
+                .as_object_mut()
+                .unwrap()
+                .remove("checkpoint_comparison");
+            let bytes = serde_json::to_vec(&value).unwrap();
+            requests
+                .insert((id.as_str(), event.seq.get()), bytes.as_slice())
+                .unwrap();
+        }
+        txn.open_table(redb::TableDefinition::<&str, u64>::new("meta"))
+            .unwrap()
+            .insert("schema_version", 10_u64)
+            .unwrap();
+        txn.commit().unwrap();
+        bytes
+    };
+    for _ in 0..2 {
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+            expected
+        );
+        assert_eq!(store.events_after(None).unwrap().last().unwrap(), &event);
+        store.rebuild_views().unwrap();
+        assert_eq!(
+            store.review_snapshot(review_id(1)).unwrap().unwrap(),
+            expected
+        );
+    }
+    let db = redb::Database::open(&path).unwrap();
+    let txn = db.begin_read().unwrap();
+    let events = txn
+        .open_table(redb::TableDefinition::<u64, &[u8]>::new("events"))
+        .unwrap();
+    assert_eq!(
+        events.get(event.seq.get()).unwrap().unwrap().value(),
+        old_bytes.as_slice(),
+        "migration preserves historical event bytes"
     );
 }

@@ -179,6 +179,7 @@ impl Sim {
             client_id: ClientId::from_parts(1, u128::MAX),
             client_seq: nits_protocol::ClientSeq::new(self.daemon.next_seq().get()),
             body: nits_protocol::EventBody::ReviewRequested {
+                checkpoint_comparison: nits_protocol::RequestCheckpointComparison::Unknown,
                 review_id: self.daemon.snapshot.review.id,
                 agent: recipient,
                 note,
@@ -530,6 +531,7 @@ impl Sim {
                     | Request::PreviewSuggestion { .. }
                     | Request::ListFiles { .. }
                     | Request::ResolveTargets { .. }
+                    | Request::FetchReview { .. }
                     | Request::ListCommits { .. }
                     | Request::TreeSnapshot { .. }
                     | Request::Search { .. }
@@ -736,6 +738,7 @@ impl Sim {
             | Request::GetReview { .. }
             | Request::PreviewSuggestion { .. }
             | Request::ResolveTargets { .. }
+            | Request::FetchReview { .. }
             | Request::ListCommits { .. }
             | Request::Search { .. }
             | Request::FileRender { .. }

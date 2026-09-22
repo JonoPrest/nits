@@ -271,7 +271,7 @@ fn named_query(query: &str) -> Option<RefSpec> {
     if query.is_empty() || query.contains(':') || query.chars().any(char::is_whitespace) {
         return None;
     }
-    Some(RefSpec::Branch { name: query.into() })
+    query.parse().ok()
 }
 
 fn base_ref(spec: &RefSpec) -> Option<BaseRefSpec> {
@@ -279,6 +279,9 @@ fn base_ref(spec: &RefSpec) -> Option<BaseRefSpec> {
         RefSpec::Branch { name } => Some(BaseRefSpec::Branch { name: name.clone() }),
         RefSpec::Commit { oid } => Some(BaseRefSpec::Commit { oid: *oid }),
         RefSpec::Tag { name } => Some(BaseRefSpec::Tag { name: name.clone() }),
+        RefSpec::Revision { expression } => Some(BaseRefSpec::Revision {
+            expression: expression.clone(),
+        }),
         RefSpec::Upstream => Some(BaseRefSpec::Upstream),
         RefSpec::Head => Some(BaseRefSpec::Head),
         RefSpec::WorkingTree => None,
@@ -290,6 +293,7 @@ fn search_text(candidate: &RefCandidate) -> String {
         RefSpec::Branch { name } => ("branch", name.clone()),
         RefSpec::Commit { oid } => ("commit", oid.to_string()),
         RefSpec::Tag { name } => ("tag", name.clone()),
+        RefSpec::Revision { expression } => ("revision", expression.to_string()),
         RefSpec::WorkingTree => ("working tree", String::new()),
         RefSpec::Upstream => ("upstream", String::new()),
         RefSpec::Head => ("head", String::new()),

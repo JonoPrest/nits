@@ -1385,3 +1385,162 @@ on_both_transports! {
     a_large_render_does_not_delay_another_clients_mutation,
     reanchoring_many_comments_does_not_block_reads,
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_fetch_and_captured_request_comparison_cross_both_transports() {
+    for transport in [Transport::Unix, Transport::Ws] {
+        let h = start_on(small_repo(), transport);
+        let remote = RepoBuilder::new()
+            .commit("remote", files!["remote.txt" => "pushed\n"])
+            .build()
+            .unwrap();
+        h.repo
+            .git(&["remote", "add", "origin", remote.path().to_str().unwrap()])
+            .unwrap();
+        let client = h.endpoint.connect(identity(600, "author")).await;
+        seed(&h, &client).await;
+        let mut ops = Ops::new(client);
+        let before_head = h.repo.rev_parse("HEAD").unwrap();
+        let fetched = ops
+            .fetch_review(review_id(), None, nits_protocol::RemoteName::default())
+            .await
+            .unwrap();
+        assert_eq!(fetched.repo_id, rid());
+        assert!(matches!(
+            fetched.resolution,
+            nits_protocol::FetchResolution::Resolved { changed: false, .. }
+        ));
+        ops.mutate(Mutation::UpdateReviewTarget {
+            review_id: review_id(),
+            update: ReviewTargetUpdate {
+                repo_id: rid(),
+                revision: TargetRevision::Head {
+                    ref_spec: "origin/main".parse().unwrap(),
+                },
+            },
+        })
+        .await
+        .unwrap();
+        let targets = ops.snapshot(review_id()).await.unwrap().resolved.unwrap();
+        let checked = ops
+            .mutate(Mutation::RecordCheckpoint {
+                review_id: review_id(),
+                targets,
+                in_reply_to: None,
+            })
+            .await
+            .unwrap();
+        remote
+            .git(&[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "new revision with same tree",
+            ])
+            .unwrap();
+        let next = remote.rev_parse("HEAD").unwrap();
+        let fetched = ops
+            .fetch_review(
+                review_id(),
+                Some(rid()),
+                nits_protocol::RemoteName::default(),
+            )
+            .await
+            .unwrap();
+        let nits_protocol::FetchResolution::Resolved { targets, changed } = fetched.resolution
+        else {
+            panic!("resolved fetch")
+        };
+        assert!(changed);
+        assert_eq!(
+            targets.first().head.source,
+            nits_protocol::ResolvedSource::Commit {
+                oid: next.parse().unwrap()
+            }
+        );
+        let requested = ops
+            .mutate(Mutation::RequestReview {
+                review_id: review_id(),
+                agent: "reviewer".into(),
+                note: "check fetched head".into(),
+            })
+            .await
+            .unwrap();
+        let request = nits_protocol::ReviewRequest::from_event(&requested).unwrap();
+        assert_eq!(
+            request.checkpoint_comparison,
+            nits_protocol::RequestCheckpointComparison::Compared {
+                checkpoint_id: nits_protocol::ReviewCheckpointId::from_event_seq(checked.seq),
+                outcome: nits_protocol::TargetComparison::ChangedTargets
+            }
+        );
+        assert_eq!(
+            ops.snapshot(review_id()).await.unwrap().requests[0],
+            request
+        );
+        assert_eq!(h.repo.rev_parse("HEAD").unwrap(), before_head);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_checkpoint_and_request_comparison_follow_committed_event_order() {
+    let h = start(small_repo());
+    let requester = connect(&h, 601, "author").await;
+    let reviewer = connect(&h, 602, "reviewer").await;
+    seed(&h, &requester).await;
+    let targets = h
+        .daemon
+        .core()
+        .review_snapshot(review_id())
+        .unwrap()
+        .resolved
+        .unwrap();
+    for round in 0..8 {
+        let (checked, requested) = tokio::join!(
+            mutate(
+                &reviewer,
+                100 + round,
+                Mutation::RecordCheckpoint {
+                    review_id: review_id(),
+                    targets: targets.clone(),
+                    in_reply_to: None
+                }
+            ),
+            mutate(
+                &requester,
+                100 + round,
+                Mutation::RequestReview {
+                    review_id: review_id(),
+                    agent: "reviewer".into(),
+                    note: "concurrent round".into()
+                }
+            )
+        );
+        checked.unwrap();
+        let requested = requested.unwrap();
+        let latest = h
+            .daemon
+            .core()
+            .events_after(None)
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                event.seq < requested.seq && matches!(event.body, EventBody::ReviewChecked { .. })
+            })
+            .max_by_key(|event| event.seq);
+        let expected = latest.map_or(
+            nits_protocol::RequestCheckpointComparison::NoCheckpoint,
+            |event| nits_protocol::RequestCheckpointComparison::Compared {
+                checkpoint_id: nits_protocol::ReviewCheckpointId::from_event_seq(event.seq),
+                outcome: nits_protocol::TargetComparison::SameTargets,
+            },
+        );
+        assert_eq!(
+            nits_protocol::ReviewRequest::from_event(&requested)
+                .unwrap()
+                .checkpoint_comparison,
+            expected
+        );
+    }
+}

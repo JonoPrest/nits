@@ -25,6 +25,41 @@ pub enum ViewedState {
 }
 
 impl Core {
+    /// Fetch one attached repository and refresh the review's existing refs.
+    /// The daemon writer serializes membership validation, fetch and publication.
+    pub fn fetch_review(
+        &self,
+        ctx: &Ctx,
+        review_id: ReviewId,
+        repo_id: Option<RepoId>,
+        remote: nits_protocol::RemoteName,
+    ) -> Result<nits_protocol::ReviewFetch, CoreError> {
+        let record = self.review(review_id)?;
+        let repo_id = match repo_id {
+            Some(id) => id,
+            None if record.review.targets.len() == 1 => record.review.targets.first().repo_id,
+            None => {
+                return Err(CoreError::invalid(
+                    "review has multiple repositories; select repo_id (--repo) explicitly",
+                ));
+            }
+        };
+        let symbolic_tracking_refs = self.review_repo(review_id, repo_id)?.fetch(&remote)?;
+        let resolution = match self.resolve_targets(ctx, review_id) {
+            Ok((targets, changed)) => nits_protocol::FetchResolution::Resolved { targets, changed },
+            Err(error) => nits_protocol::FetchResolution::Unavailable {
+                reason: error.to_string(),
+            },
+        };
+        Ok(nits_protocol::ReviewFetch {
+            review_id,
+            repo_id,
+            remote,
+            symbolic_tracking_refs,
+            resolution,
+        })
+    }
+
     // ---- workspaces -------------------------------------------------------
 
     pub fn workspaces(&self) -> Result<Vec<Workspace>, CoreError> {

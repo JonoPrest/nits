@@ -2,7 +2,7 @@
 //! A dropped response is reconciled by review identity before another write.
 
 use nits_protocol::{
-    CommitOid, CreateReviewTargets, NonEmpty, RefSpec, RepoId, ReviewId, ReviewTarget, WorkspaceId,
+    CreateReviewTargets, NonEmpty, RefSpec, RepoId, ReviewId, ReviewTarget, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use strum::EnumDiscriminants;
@@ -265,27 +265,9 @@ impl ReviewCreation {
     }
 }
 
-/// The existing form's ref syntax, parsed into validated protocol OIDs.
+/// Parse the same revision syntax used by CLI and typed daemon requests.
 fn parse_ref(text: &str) -> Result<RefSpec, String> {
-    let text = text.trim();
-    match text.to_ascii_lowercase().as_str() {
-        "" => Err("Enter a revision.".into()),
-        "worktree" | "working-tree" => Ok(RefSpec::WorkingTree),
-        "head" => Ok(RefSpec::Head),
-        "upstream" | "@{upstream}" => Ok(RefSpec::Upstream),
-        _ => match text.split_once(':') {
-            Some(("branch", name)) if !name.is_empty() => Ok(RefSpec::Branch { name: name.into() }),
-            Some(("tag", name)) if !name.is_empty() => Ok(RefSpec::Tag { name: name.into() }),
-            Some(("commit", oid)) => oid
-                .parse::<CommitOid>()
-                .map(|oid| RefSpec::Commit { oid })
-                .map_err(|error| format!("Invalid commit: {error}")),
-            Some(_) => {
-                Err("Use a branch, tag:name, commit:<oid>, head, upstream or worktree.".into())
-            }
-            None => Ok(RefSpec::Branch { name: text.into() }),
-        },
-    }
+    text.parse()
 }
 
 use crate::{ClientCore, CoreError, Effect, InFlight};

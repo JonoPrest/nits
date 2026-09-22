@@ -28,7 +28,7 @@ test("failed creation keeps title and refs visible until confirmed success", () 
   let dispatch = fn()
   let creation = CreationFixtures.make()
   let {rerender} = render(view(creation, dispatch))
-  expect(Element.value(Screen.getByLabelText("Base revision")))->toBe("develop")
+  expect(Element.value(Screen.getByLabelText("Base revision")))->toBe("branch:develop")
   FireEvent.change(Screen.getByPlaceholderText("Title"), {"target": {"value": "Keep this title"}})
   FireEvent.change(Screen.getByLabelText("Base revision"), {"target": {"value": "missing-ref"}})
   FireEvent.click(Screen.getByText("Create"))
@@ -467,7 +467,7 @@ test("one repo is exhausted immediately and restored duplicates remain correctab
       let acknowledged = {...lastCreation(dispatch), status: Failed({message: "invalid ref"})}
       rerender(element(acknowledged))
       expect(Document.activeElement)->toEqual(Nullable.make(movedElsewhere ? other : input))
-      expect(Element.value(input))->toBe("develop")
+      expect(Element.value(input))->toBe("branch:develop")
     },
   )
 })

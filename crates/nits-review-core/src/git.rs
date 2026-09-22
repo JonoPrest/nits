@@ -171,6 +171,69 @@ impl Repo {
         &self.workdir
     }
 
+    /// Fetch only remote-tracking heads. The empty refmap prevents configured
+    /// fetch mappings from also updating local branches, including linked HEADs.
+    /// Git's mandatory ref locks remain enabled; no checkout/index command runs.
+    pub fn fetch(
+        &self,
+        remote: &nits_protocol::RemoteName,
+    ) -> Result<Vec<nits_protocol::SymbolicTrackingRef>, GitError> {
+        let remotes = self.git(&["remote"], &[])?;
+        if !String::from_utf8_lossy(&remotes)
+            .lines()
+            .any(|name| name == remote.as_str())
+        {
+            return Err(GitError::Parse(format!(
+                "no configured remote {remote:?} in {}",
+                self.workdir.display()
+            )));
+        }
+        // Inspect aliases before starting the network operation, so a later
+        // local diagnostic failure cannot disguise a successful fetch as skipped.
+        let prefix = format!("refs/remotes/{remote}/");
+        let out = self.git(
+            &["for-each-ref", "--format=%(refname)%00%(symref)", &prefix],
+            &[],
+        )?;
+        let aliases = String::from_utf8_lossy(&out)
+            .lines()
+            .filter_map(|line| match line.split_once('\0') {
+                Some((_, "")) => None,
+                Some((name, target)) => Some(Ok(nits_protocol::SymbolicTrackingRef {
+                    name: name.to_owned(),
+                    target: target.to_owned(),
+                })),
+                None => Some(Err(GitError::Parse(
+                    "remote-tracking ref has no separator".into(),
+                ))),
+            })
+            .collect::<Result<Vec<_>, GitError>>()?;
+        let refspec = format!("+refs/heads/*:refs/remotes/{remote}/*");
+        self.git(
+            &[
+                "-c",
+                "credential.interactive=false",
+                "fetch",
+                "--atomic",
+                "--no-write-fetch-head",
+                "--no-recurse-submodules",
+                "--no-tags",
+                "--no-prune",
+                "--no-prune-tags",
+                "--no-auto-maintenance",
+                "--refmap=",
+                "--",
+                remote.as_str(),
+                &refspec,
+            ],
+            &[
+                ("GIT_TERMINAL_PROMPT", OsStr::new("0")),
+                ("GIT_OPTIONAL_LOCKS", OsStr::new("0")),
+            ],
+        )?;
+        Ok(aliases)
+    }
+
     /// Actual metadata directories, including paths outside linked checkouts.
     pub fn metadata_paths(&self) -> Result<GitMetadataPaths, GitError> {
         let local = self.local();
@@ -382,6 +445,18 @@ impl Repo {
                 }),
         );
 
+        let remote_refs = self.git(
+            &["for-each-ref", "--format=%(refname)", "refs/remotes/"],
+            &[],
+        )?;
+        for name in String::from_utf8_lossy(&remote_refs).lines() {
+            let expression = name.parse().map_err(GitError::Parse)?;
+            refs.push(RefCandidate {
+                ref_spec: RefSpec::Revision { expression },
+                subject: None,
+            });
+        }
+
         let log = self.git(
             &["log", "--all", "--max-count=50", "--format=%H%x00%s"],
             &[],
@@ -537,11 +612,15 @@ impl Repo {
             RefSpec::Branch { name } => format!("refs/heads/{name}"),
             RefSpec::Tag { name } => format!("refs/tags/{name}"),
             RefSpec::Commit { oid } => oid.to_string(),
+            RefSpec::Revision { expression } => expression.to_string(),
             RefSpec::Head => "HEAD".to_owned(),
             RefSpec::Upstream => "@{upstream}".to_owned(),
             RefSpec::WorkingTree => return self.working_tree(),
         };
-        let commit = self.rev_parse_commit(&rev)?;
+        let commit = self.rev_parse_commit(&rev).map_err(|error| GitError::Resolve {
+            rev: rev.clone(),
+            reason: format!("{error}; checkout {}. Expected a locally available commit (branch, tag, short/full OID, remote-tracking ref or Git revision expression). Fetch explicitly if the commit is only on the remote", self.workdir.display()),
+        })?;
         let tree = self.commit_tree(commit)?;
         Ok(ResolvedRef {
             tree,

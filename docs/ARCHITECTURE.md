@@ -113,7 +113,7 @@ Review {
   targets: [ReviewTarget { repo_id, base: RefSpec, head: RefSpec }],
   created, status: Open | Archived
 }
-RefSpec = Branch(name) | Commit(oid) | Tag | WorkingTree | Upstream | Head
+RefSpec = Branch(name) | Commit(oid) | Tag | Revision(expression) | WorkingTree | Upstream | Head
 
 CommitInfo { oid, parents, author: Sig, committer: Sig, subject, body }
 Sig        { name, email, time: Timestamp, offset }
@@ -299,7 +299,7 @@ back committed work or detach connection tasks that retain the daemon.
 - **MCP**, `nits mcp` on stdio (newline-delimited JSON-RPC), proxying to the daemon's unix socket or ws port. Tools: `list_contexts`, `use_context`, `list_workspaces`, `list_reviews`, `get_review` (snapshot + changed files), `create_review`, `ensure_directory_review`, `update_review`, `update_review_target`, `get_diff`, `get_file` (numbered text, any side, unchanged files too), `list_comments`, `add_comment` (review / file / line anchors), `suggest`, `reply`, `resolve`, `defer`, `request_review`, `subscribe_events` (long-poll; pass `last_seq` back as `since_seq`). Author is `Agent{name: clientInfo.name, model: $NITS_AGENT_MODEL, session_id: $NITS_SESSION_ID, invoked_by: $USER@host, via: Mcp}`. `mark_viewed` is deliberately not offered. Anchors go up with a zero `context_hash`; the daemon computes the real one.
 - **Review discovery**: `Core::discover_reviews(ReviewQuery)` and `Request::DiscoverReviews` read workspace names, live review records, thread roots, requests/checkpoints and latest review events in one redb read transaction. No Git or cwd access is required. CLI `review list` and MCP `list_reviews` default to all workspaces, with optional explicit workspace, case-insensitive title substring and exact awaiting-recipient filters. Rows retain review fields and add workspace/repository identity, open actionable findings, pending named requests and latest activity; newest committed sequence sorts first. Deleted reviews are excluded and archived reviews remain visible. Only a checkpoint from the named agent explicitly linked to a request answers it; this does not imply approval. Workspace-only events do not manufacture review activity. The response includes the coherent global sequence; opening a full snapshot still supplies its own replay cursor. The UI's existing workspace-scoped `ListReviews` remains unchanged.
 - **MCP comment anchors**: flat `add_comment` arguments are parsed before dispatch into review, file or line scopes. A line scope requires `path` and a positive `start_line`; omitted `end_line` means that single line. An explicit end requires a start and must be at least the start. Orphan, zero or inverted bounds are tool errors and append no event. Advertised argument schemas derive from the same wire types.
-- **MCP mutation results** are compact receipts in both text and structured content. `create_review` returns `{review_id, seq}`; `update_review` returns `{review_id, status, seq}`; `update_review_target` returns `{review_id, repo_id, seq}`; `add_comment`, `suggest`, and `reply` return `{comment_id, thread_id, seq}`; `resolve` returns `{review_id, thread_id, resolution, seq}` with `resolution` as `"Open"` or `"Resolved"`; `defer` returns `{review_id, thread_id, seq}`; fresh `get_review`/`list_comments` snapshots include the complete `Deferred` disposition with reason, optional tracking URL and actor/time; `request_review` returns `{request_id, review_id, agent, seq}`. These replace the former nested `event` fields, and `create_review` no longer embeds `review` or `resolved` (use `get_review`). `seq` identifies the committed mutation's primary event, not a later snapshot watermark. Passing it to `subscribe_events.since_seq` yields subsequent full event envelopes, including target resolution and reanchoring caused by the mutation. To include the mutation itself, resume from a cursor before its `seq` (or `seq - 1`); continue subsequent polls from `last_seq`. Full heterogeneous event schemas appear only on `subscribe_events`. Daemon/CLI event responses are unchanged.
+- **MCP mutation results** are compact receipts in both text and structured content. `create_review` returns `{review_id, seq}`; `update_review` returns `{review_id, status, seq}`; `update_review_target` returns `{review_id, repo_id, seq}`; `add_comment`, `suggest`, and `reply` return `{comment_id, thread_id, seq}`; `resolve` returns `{review_id, thread_id, resolution, seq}` with `resolution` as `"Open"` or `"Resolved"`; `defer` returns `{review_id, thread_id, seq}`; fresh `get_review`/`list_comments` snapshots include the complete `Deferred` disposition with reason, optional tracking URL and actor/time; `request_review` returns `{request_id, review_id, agent, seq, checkpoint_comparison}`. These replace the former nested `event` fields, and `create_review` no longer embeds `review` or `resolved` (use `get_review`). `seq` identifies the committed mutation's primary event, not a later snapshot watermark. Passing it to `subscribe_events.since_seq` yields subsequent full event envelopes, including target resolution and reanchoring caused by the mutation. To include the mutation itself, resume from a cursor before its `seq` (or `seq - 1`); continue subsequent polls from `last_seq`. Full heterogeneous event schemas appear only on `subscribe_events`. Daemon/CLI event responses are unchanged.
 - **Directory bootstrap**: `ensure_directory_review {path, base?, head?}` discovers and canonicalizes the checkout beside the daemon, attaches it if needed, and returns `{workspace_id, repo_id, review_id, base, head, outcome, seq}`. `head` defaults to `WorkingTree`; omitted `base` preserves a matching open review's base or uses daemon detection. Explicit refs must match for reuse; differing refs create a separate review. To change the same logical review, use `update_review_target {review_id, repo_id, revision: {type: "Base" | "Head", ref_spec}}`; it retains threads/history and reanchors comments. Bootstrap validates refs before creating state and runs under the writer queue so concurrent calls reuse the same IDs. Reuse re-resolves the matching review before returning it, even if no watcher is running. Its `seq` is the first bootstrap event when created and the current log position after resolution when reused. CLI directory opening uses the same operation; remote paths are never resolved on the client.
   Clients generate independent workspace, repository, and review ID candidates for new entities. Reuse preserves existing IDs, including older reviews whose three IDs are equal.
 - **CLI/MCP connection loss**: EOF, malformed frames, and failed writes close both transport halves and fail all pending requests; request registration shares the closure lock. Streams report interruption instead of accepting a partial render. MCP preserves initialization and agent provenance, reconnecting before the next tool call with the selected context/start policy and a 20-second connection deadline. Interrupted calls are never replayed automatically: a mutation may have committed before its reply was lost, so the tool error asks the agent to inspect state before repeating it.
@@ -717,6 +717,38 @@ queries include their selected source context. CLI exposes
 `review set-head REVIEW REF --repo REPO`, `review request`, `review check --request ID|--current`, optional
 `--answer-request ID` / `--answer-checkpoint ID`, and `files`/`diff` with either
 `--request ID` (the captured revision) or `--since-checkpoint ID` (the incremental delta).
+
+### Cross-machine revision rounds (#161)
+
+The CLI and creation forms parse revision input once into `RefSpec`. Bare input
+is a Git revision expression: short/full commit IDs, remote-tracking refs, fully
+qualified refs, tags, and ancestry expressions resolve to exactly one commit in
+the daemon's checkout. Explicit `branch:NAME` and `tag:NAME` preserve those
+namespaces; `HEAD`, `upstream` and `worktree` retain their established meaning.
+Errors identify the attempted revision and checkout. Ref catalogs include remote
+refs, and resolution never fetches implicitly.
+
+`review fetch REVIEW [--repo REPO] [--remote origin]` and MCP `fetch_review` run
+under the daemon writer for an attached review repository. Multi-repository
+reviews require an explicit repository. Fetch reads the named remote but ignores
+its configured destination refmaps: the only destination is
+`refs/remotes/REMOTE/*`. It does not update tags, recurse into submodules, prune,
+write `FETCH_HEAD`, or change local branches, HEAD, index or worktree. It then
+refreshes the review's existing requested refs; a HEAD-selected review still
+tracks local HEAD until the author explicitly selects a fetched ref. Receipts
+report symbolic tracking aliases left untouched and distinguish a successful
+fetch from a subsequent resolution error. Connection loss never replays fetch.
+
+Each `ReviewRequested` event captures its comparison with the last committed
+checkpoint in the same writer operation as its immutable targets. The comparison
+is `NoCheckpoint`, or `Compared { checkpoint_id, outcome }`; an unchanged warning
+therefore names the exact checkpoint and cannot change after later fetches,
+checks or restarts. Equal trees with different known commit/working-tree HEAD
+identities count as changed, while equal content with absent captured HEAD is
+`UnknownRevision`. Historical requests default to `Unknown`, without comparing
+against current state. Schema 10 → 11 rebuilds derived request views while
+preserving all historical event bytes and discussion. Protocol 0.20 carries the
+new revisions, fetch receipt and captured comparison across CLI, MCP and UI.
 
 ### Working-tree HEAD provenance (#97)
 

@@ -273,3 +273,14 @@ cover pipelining, subscription ordering, identities, contexts and disconnects.
 Daemon lifecycle completion includes Core/store ownership after connection or
 watcher cancellation. Local and SSH stop/start use bounded ownership waits;
 real-process gated Git tests cover delayed release, timeout and recovery.
+
+### Cross-machine revision rounds (#161)
+
+Practical Git revision expressions resolve on the daemon; explicit named-remote
+fetch updates only remote-tracking heads and refreshes the selected refs without
+checkout or automatic replay. Requests capture an immutable comparison with the
+latest checkpoint and show unchanged/unknown revision guidance in CLI, MCP and
+Conversation. Real ordinary/linked repositories, hostile fetch mappings, Unix/WS
+ordering, history migration and concurrent checkpoint/request tests cover the
+workflow. Schema 11 preserves historical events and protocol 0.20 exposes the
+shared contracts.

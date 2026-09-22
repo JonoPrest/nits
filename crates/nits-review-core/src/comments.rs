@@ -336,12 +336,20 @@ impl Core {
         let record = self.review(review)?;
         let targets = self.resolve_review_targets(&record.review)?;
         self.retain_targets(review, &targets)?;
+        let snapshot = self.review_snapshot(review)?;
+        let checkpoint = snapshot
+            .checkpoints
+            .iter()
+            .max_by_key(|checkpoint| checkpoint.id);
+        let checkpoint_comparison =
+            nits_protocol::RequestCheckpointComparison::against(checkpoint, &targets);
         let event = self.append(
             ctx,
             EventBody::ReviewRequested {
                 review_id: review,
                 agent,
                 note,
+                checkpoint_comparison,
                 targets: nits_protocol::RequestedTargets::Captured {
                     targets: targets.clone(),
                 },

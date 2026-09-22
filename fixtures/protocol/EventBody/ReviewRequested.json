@@ -1,5 +1,8 @@
 {
   "agent": "claude-code",
+  "checkpoint_comparison": {
+    "type": "Unknown"
+  },
   "note": "Please review the store.",
   "review_id": "01HF7YATZ80000000000000004",
   "targets": {

@@ -39,6 +39,13 @@ module Author = {
     | @as("Daemon") Daemon({machine: string})
 }
 
+module RevisionExpr = {
+  @schema type t = string
+}
+module RemoteName = {
+  @schema type t = string
+}
+
 module RefSpec = {
   @@warning("-27")
   @schema @tag("type")
@@ -46,6 +53,7 @@ module RefSpec = {
     | @as("Branch") Branch({name: string})
     | @as("Commit") Commit({oid: commitOid})
     | @as("Tag") Tag({name: string})
+    | @as("Revision") Revision({expression: string})
     | @as("WorkingTree") WorkingTree({})
     | @as("Upstream") Upstream({})
     | @as("Head") Head({})
@@ -59,6 +67,7 @@ module BaseRefSpec = {
     | @as("Branch") Branch({name: string})
     | @as("Commit") Commit({oid: commitOid})
     | @as("Tag") Tag({name: string})
+    | @as("Revision") Revision({expression: string})
     | @as("Upstream") Upstream({})
     | @as("Head") Head({})
   @@warning("+27")
@@ -483,6 +492,19 @@ module ReviewerCheckpoint = {
   @schema type t = {checkpoint: ReviewCheckpoint.t, freshness: CheckpointFreshness.t}
 }
 
+module TargetComparison = {
+  @schema type t = SameTargets | ChangedTargets | UnknownRevision
+}
+module RequestCheckpointComparison = {
+  @@warning("-27")
+  @schema @tag("type")
+  type t =
+    | @as("Unknown") UnknownComparison({})
+    | NoCheckpoint({})
+    | Compared({@as("checkpoint_id") checkpointId: reviewCheckpointId, outcome: TargetComparison.t})
+  @@warning("+27")
+}
+
 module ReviewRequest = {
   @schema
   type t = {
@@ -491,6 +513,7 @@ module ReviewRequest = {
     requester: Author.t,
     recipient: string,
     targets: RequestedTargets.t,
+    @as("checkpoint_comparison") checkpointComparison: RequestCheckpointComparison.t,
     note: string,
     created: timestamp,
   }

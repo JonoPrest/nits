@@ -78,6 +78,10 @@ pub enum ToolCall {
     ))]
     UpdateReviewTarget(UpdateReviewTarget),
     #[strum_discriminants(strum(
+        message = "Explicitly fetch a configured remote on the daemon for one review repository, then refresh existing review refs. Updates remote-tracking heads only; preserves local branches, HEAD, index and working files. Omit repo_id only for a single-repository review; remote defaults to origin. Use update_review_target with Revision expression origin/BRANCH to select fetched work. No implicit fetch, checkout, merge or replay. A successful fetch may report a separate target-resolution error."
+    ))]
+    FetchReview(FetchReview),
+    #[strum_discriminants(strum(
         message = "Create a review over one or more repos. Returns its ID and committed sequence; use `get_review` for its contents and resolved targets. Without `workspace_id`: the workspace containing this server's working directory."
     ))]
     CreateReview(CreateReview),
@@ -114,7 +118,7 @@ pub enum ToolCall {
     ))]
     Defer(Defer),
     #[strum_discriminants(strum(
-        message = "Capture and retain the current resolved repository/base/head identities, then ask a named agent to review. Select a different head explicitly with update_review_target before requesting it; note text never selects revisions. Subscribers with scope `AwaitingAgent` for that name are notified. Use the recipient's `get_session_identity` `author.name` unchanged as `agent`."
+        message = "Capture and retain the current resolved repository/base/head identities, then ask a named agent to review. Select a different head explicitly with update_review_target before requesting it; note text never selects revisions. The receipt records checkpoint_comparison against the latest committed checkpoint: SameTargets warns that new remote work may need explicit fetch and selection; historical comparisons remain Unknown. Subscribers with scope `AwaitingAgent` for that name are notified. Use the recipient's `get_session_identity` `author.name` unchanged as `agent`."
     ))]
     RequestReview(RequestReview),
     #[strum_discriminants(strum(
@@ -150,6 +154,7 @@ pub enum QueryCall {
 /// A call that appends to the log.
 #[derive(Debug)]
 pub enum MutatingCall {
+    FetchReview(FetchReview),
     EnsureDirectoryReview(EnsureDirectoryReview),
     UpdateReviewTarget(UpdateReviewTarget),
     CreateReview(CreateReview),
@@ -260,6 +265,7 @@ impl ToolCall {
                 Call::Mutating(MutatingCall::EnsureDirectoryReview(p))
             }
             ToolCall::UpdateReviewTarget(p) => Call::Mutating(MutatingCall::UpdateReviewTarget(p)),
+            ToolCall::FetchReview(p) => Call::Mutating(MutatingCall::FetchReview(p)),
             ToolCall::CreateReview(p) => Call::Mutating(MutatingCall::CreateReview(p)),
             ToolCall::UpdateReview(p) => Call::Mutating(MutatingCall::UpdateReview(p)),
             ToolCall::AddComment(p) => Call::Mutating(MutatingCall::AddComment(p)),
@@ -300,6 +306,7 @@ impl ToolName {
             Self::UseContext | Self::SetSessionIdentity => ToolBehavior::Session,
             Self::SubscribeEvents => ToolBehavior::Wait,
             Self::EnsureDirectoryReview
+            | Self::FetchReview
             | Self::UpdateReviewTarget
             | Self::CreateReview
             | Self::UpdateReview
@@ -355,6 +362,10 @@ impl ToolName {
             ToolName::UpdateReviewTarget => {
                 (schema_for!(UpdateReviewTarget), schema_for!(TargetUpdated))
             }
+            ToolName::FetchReview => (
+                schema_for!(FetchReview),
+                schema_for!(nits_protocol::ReviewFetch),
+            ),
             ToolName::CreateReview => (schema_for!(CreateReview), schema_for!(Created)),
             ToolName::UpdateReview => (schema_for!(UpdateReview), schema_for!(Updated)),
             ToolName::GetDiff => (schema_for!(GetDiff), schema_for!(DiffText)),
@@ -446,6 +457,15 @@ pub struct UpdateReviewTarget {
     pub review_id: ReviewId,
     pub repo_id: RepoId,
     pub revision: nits_protocol::TargetRevision,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FetchReview {
+    pub review_id: ReviewId,
+    pub repo_id: Option<RepoId>,
+    #[serde(default)]
+    pub remote: nits_protocol::RemoteName,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -1016,6 +1036,7 @@ pub struct Requested {
     pub request_id: nits_protocol::ReviewRequestId,
     pub review_id: ReviewId,
     pub agent: String,
+    pub checkpoint_comparison: nits_protocol::RequestCheckpointComparison,
     /// Committed mutation sequence; pass as `subscribe_events.since_seq` for later events.
     pub seq: Seq,
 }
@@ -1277,7 +1298,20 @@ mod tests {
                 }
                 ToolName::Defer => Some(&["review_id", "thread_id", "seq"]),
                 ToolName::Resolve => Some(&["review_id", "thread_id", "resolution", "seq"]),
-                ToolName::RequestReview => Some(&["request_id", "review_id", "agent", "seq"]),
+                ToolName::RequestReview => Some(&[
+                    "request_id",
+                    "review_id",
+                    "agent",
+                    "seq",
+                    "checkpoint_comparison",
+                ]),
+                ToolName::FetchReview => Some(&[
+                    "review_id",
+                    "repo_id",
+                    "remote",
+                    "resolution",
+                    "symbolic_tracking_refs",
+                ]),
                 ToolName::GetDaemonStatus
                 | ToolName::RestartDaemon
                 | ToolName::GetCheckpointDelta

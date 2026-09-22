@@ -372,6 +372,18 @@ enum WorkspaceCmd {
 
 #[derive(Debug, Subcommand)]
 enum ReviewCmd {
+    /// Fetch a named remote on the daemon, then refresh this review's existing refs.
+    /// Updates remote-tracking branches only; preserves local branches, HEAD,
+    /// index and working files. Use set-head origin/BRANCH to select fetched work.
+    Fetch {
+        review: ReviewId,
+        /// Required for multi-repository reviews; optional for one repository.
+        #[arg(long)]
+        repo: Option<RepoId>,
+        /// A configured remote name, not a URL. No other operation fetches implicitly.
+        #[arg(long, default_value = "origin")]
+        remote: nits_protocol::RemoteName,
+    },
     /// Rename a review, preserving its open/archived status and targets.
     Rename { review: ReviewId, title: String },
     /// Archive a review; keeps its comments and history and can be reopened.
@@ -383,7 +395,8 @@ enum ReviewCmd {
     /// Change one repository's base, preserving its head and review identity.
     SetBase {
         review: ReviewId,
-        /// Branch, tag:NAME, full commit OID, HEAD, or upstream; never worktree.
+        /// Git revision: branch, tag, short/full OID, origin/branch, HEAD~1,
+        /// HEAD or upstream. Explicit branch:NAME/tag:NAME disambiguate; never worktree.
         reference: String,
         #[arg(long)]
         repo: RepoId,
@@ -391,6 +404,8 @@ enum ReviewCmd {
     /// Explicitly select a new head before requesting the next review round.
     SetHead {
         review: ReviewId,
+        /// Git revision: branch, tag, short/full OID, origin/branch, HEAD~1,
+        /// HEAD, upstream or worktree. Objects must exist on the daemon; use review fetch first.
         reference: String,
         #[arg(long)]
         repo: RepoId,
@@ -423,8 +438,8 @@ enum ReviewCmd {
     },
     /// Create a review; prints its id.
     Create {
-        /// Base ref: branch name, tag:NAME, full commit oid, `HEAD`,
-        /// `upstream`, or `worktree`.
+        /// Base Git revision: branch, tag, short/full OID, origin/branch,
+        /// HEAD~1, HEAD, or upstream. Explicit branch:NAME/tag:NAME disambiguate.
         #[arg(long)]
         base: String,
         /// Head ref, same forms as `--base`.
@@ -630,41 +645,19 @@ fn parse_daemon_url(s: &str) -> Result<String, String> {
     Ok(s.into())
 }
 
-/// `worktree` / `upstream` / `HEAD` / `tag:NAME` / 40-hex commit / branch.
+/// Shared Git revision syntax, including explicit branch/tag forms.
 fn parse_ref(s: &str) -> anyhow::Result<RefSpec> {
-    Ok(match s {
-        "worktree" | "wt" | "working-tree" => RefSpec::WorkingTree,
-        "upstream" | "@{upstream}" | "@{u}" => RefSpec::Upstream,
-        "HEAD" => RefSpec::Head,
-        _ => {
-            if let Some(tag) = s.strip_prefix("tag:") {
-                RefSpec::Tag { name: tag.into() }
-            } else if s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()) {
-                RefSpec::Commit { oid: s.parse()? }
-            } else {
-                RefSpec::Branch { name: s.into() }
-            }
-        }
-    })
+    s.parse().map_err(anyhow::Error::msg)
 }
 
-/// Parse the shared ref syntax into the narrower base-side domain type.
 fn parse_base_ref(s: &str) -> anyhow::Result<BaseRefSpec> {
-    Ok(match parse_ref(s)? {
-        RefSpec::Branch { name } => BaseRefSpec::Branch { name },
-        RefSpec::Commit { oid } => BaseRefSpec::Commit { oid },
-        RefSpec::Tag { name } => BaseRefSpec::Tag { name },
-        RefSpec::Upstream => BaseRefSpec::Upstream,
-        RefSpec::Head => BaseRefSpec::Head,
-        RefSpec::WorkingTree => bail!(
-            "a review base cannot be worktree; select a branch, tag, commit, HEAD or upstream"
-        ),
-    })
+    BaseRefSpec::try_from(parse_ref(s)?).map_err(anyhow::Error::msg)
 }
 
 fn ref_label(reference: &RefSpec) -> String {
     match reference {
         RefSpec::Branch { name } => name.clone(),
+        RefSpec::Revision { expression } => expression.to_string(),
         RefSpec::Commit { oid } => oid.to_string(),
         RefSpec::Tag { name } => format!("tag:{name}"),
         RefSpec::WorkingTree => "worktree".into(),
@@ -1081,8 +1074,14 @@ fn event_line(e: &Event) -> String {
         EventBody::ThreadUnresolved { thread_id, .. } => format!("thread reopened {thread_id}"),
         EventBody::FileViewed { path, .. } => format!("viewed {path}"),
         EventBody::FileUnviewed { path, .. } => format!("unviewed {path}"),
-        EventBody::ReviewRequested { agent, note, .. } => {
-            format!("review requested from {agent}: {note}")
+        EventBody::ReviewRequested {
+            agent,
+            note,
+            checkpoint_comparison,
+            ..
+        } => {
+            let comparison = checkpoint_comparison_text(checkpoint_comparison);
+            format!("review requested from {agent}: {note}{comparison}")
         }
         EventBody::ReviewChecked { targets, .. } => format!(
             "revision check recorded across {} repositories",
@@ -1093,6 +1092,31 @@ fn event_line(e: &Event) -> String {
         }
     };
     format!("#{} {who}: {what}", e.seq)
+}
+
+fn checkpoint_comparison_text(comparison: &nits_protocol::RequestCheckpointComparison) -> String {
+    match comparison {
+        nits_protocol::RequestCheckpointComparison::Unknown => {
+            "\nCheckpoint comparison unknown (historical request).".into()
+        }
+        nits_protocol::RequestCheckpointComparison::NoCheckpoint => {
+            "\nNo previous checkpoint.".into()
+        }
+        nits_protocol::RequestCheckpointComparison::Compared {
+            checkpoint_id,
+            outcome,
+        } => match outcome {
+            nits_protocol::TargetComparison::SameTargets => format!(
+                "\nWarning: captured targets are unchanged since checkpoint {checkpoint_id}. If new work was pushed elsewhere, fetch and select its revision before requesting another round."
+            ),
+            nits_protocol::TargetComparison::ChangedTargets => {
+                format!("\nCaptured targets differ from checkpoint {checkpoint_id}.")
+            }
+            nits_protocol::TargetComparison::UnknownRevision => format!(
+                "\nCannot determine whether the exact revisions changed since checkpoint {checkpoint_id}: captured HEAD identity is unavailable."
+            ),
+        },
+    }
 }
 
 fn anchor_text(a: &Anchor) -> String {
@@ -1705,6 +1729,32 @@ async fn review(
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
+        ReviewCmd::Fetch {
+            review,
+            repo,
+            remote,
+        } => {
+            let result = ops.fetch_review(review, repo, remote).await?;
+            emit(json, &result, || {
+                let status = match &result.resolution {
+                    nits_protocol::FetchResolution::Resolved { changed, .. } => {
+                        if *changed {
+                            "review targets refreshed".to_owned()
+                        } else {
+                            "review targets unchanged; use set-head to select a different fetched revision".to_owned()
+                        }
+                    }
+                    nits_protocol::FetchResolution::Unavailable { reason } => {
+                        format!("fetch completed, but review target refresh failed: {reason}")
+                    }
+                };
+                let aliases = result.symbolic_tracking_refs.iter().map(|reference| format!("\nSymbolic tracking ref {} → {} remains an alias; fetch does not update it directly.", reference.name, reference.target)).collect::<String>();
+                format!(
+                    "fetched {} for repository {} in review {}; {status}. Checkout, index and local branches unchanged{aliases}",
+                    result.remote, result.repo_id, result.review_id
+                )
+            })
+        }
         ReviewCmd::Rename { review, title } => {
             edit_review_metadata(ops, review, ReviewMetadataEdit::Title(title), json).await
         }
@@ -1954,13 +2004,14 @@ fn review_snapshot_text(
     for request in &snap.requests {
         let _ = writeln!(
             out,
-            "  request {}: {} → {} at {}\n    {}\n    targets: {:?}",
+            "  request {}: {} → {} at {}\n    {}\n    targets: {:?}{}",
             request.id,
             author_text(&request.requester),
             request.recipient,
             request.created.millis(),
             request.note,
-            request.targets
+            request.targets,
+            checkpoint_comparison_text(&request.checkpoint_comparison)
         );
     }
     out

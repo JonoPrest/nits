@@ -39,7 +39,20 @@ const MIGRATIONS: &[Migration] = &[
     migrate_7_to_8,
     migrate_8_to_9,
     migrate_9_to_10,
+    migrate_10_to_11,
 ];
+
+/// Schema 11 materializes request-time checkpoint comparisons. Missing event
+/// fields decode as Unknown; retain every historical event byte and identity.
+fn migrate_10_to_11(txn: &WriteTransaction) -> Result<(), String> {
+    fn migrate(txn: &WriteTransaction) -> Result<(), StoreError> {
+        let mut tables = tables::Write::open(txn)?;
+        tables.clear_views()?;
+        tables.clear_view_seq()?;
+        Ok(())
+    }
+    migrate(txn).map_err(|error| error.to_string())
+}
 
 /// Schema 10 materializes immutable suggestion anchors and applied receipts.
 /// Existing creation/application events are sufficient; never rewrite history.

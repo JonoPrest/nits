@@ -4,6 +4,7 @@ let kind = spec =>
   switch spec {
   | RefSpec.Branch(_) => "branch"
   | Tag(_) => "tag"
+  | Revision(_) => "revision"
   | Commit(_) => "commit"
   | WorkingTree(_) => "working tree"
   | Upstream(_) => "upstream"
@@ -13,6 +14,7 @@ let kind = spec =>
 let value = spec =>
   switch spec {
   | RefSpec.Branch({name}) | Tag({name}) => name
+  | Revision({expression}) => expression
   | Commit({oid}) => String.slice(oid, ~start=0, ~end=8)
   | WorkingTree(_) => "Working tree"
   | Upstream(_) => "@{upstream}"
