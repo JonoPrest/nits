@@ -11,6 +11,7 @@
 //! (dev tooling only); `cargo xtask fixtures` writes them under
 //! `fixtures/protocol/` and that crate's tests assert every variant has one.
 
+pub mod comment_query;
 pub mod creation;
 pub mod deferral;
 pub mod discovery;
@@ -30,6 +31,7 @@ mod schema;
 pub mod suggestion;
 pub mod version;
 
+pub use comment_query::*;
 pub use creation::*;
 pub use deferral::*;
 pub use discovery::*;

@@ -1,0 +1,290 @@
+{
+  "listing": {
+    "checkpoints": [
+      {
+        "author": {
+          "invoked_by": {
+            "machine": "laptop",
+            "name": "ada"
+          },
+          "model": "claude-fable-5",
+          "name": "claude-code",
+          "session_id": "sess_01",
+          "type": "Agent",
+          "via": "Mcp"
+        },
+        "created": 1700000006000,
+        "id": 41,
+        "in_reply_to": {
+          "request_id": 40,
+          "type": "Request"
+        },
+        "review_id": "01HF7YATZ80000000000000004",
+        "reviewer": {
+          "name": "claude-code",
+          "type": "Agent"
+        },
+        "targets": [
+          {
+            "base": {
+              "source": {
+                "oid": "1f202122232425262728292a2b2c2d2e2f303132",
+                "type": "Commit"
+              },
+              "tree": "8b8c8d8e8f909192939495969798999a9b9c9d9e"
+            },
+            "head": {
+              "source": {
+                "branch": "feature",
+                "dirty": [
+                  "src/lib.rs"
+                ],
+                "head": "3e3f404142434445464748494a4b4c4d4e4f5051",
+                "type": "WorkingTree"
+              },
+              "tree": "aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbd"
+            },
+            "repo_id": "01HF7YAT000000000000000002"
+          },
+          {
+            "base": {
+              "source": {
+                "oid": "1f202122232425262728292a2b2c2d2e2f303132",
+                "type": "Commit"
+              },
+              "tree": "c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdc"
+            },
+            "head": {
+              "source": {
+                "oid": "3e3f404142434445464748494a4b4c4d4e4f5051",
+                "type": "Commit"
+              },
+              "tree": "e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafb"
+            },
+            "repo_id": "01HF7YAT000000000000000003"
+          }
+        ]
+      }
+    ],
+    "latest_checkpoints": [
+      {
+        "checkpoint": {
+          "author": {
+            "invoked_by": {
+              "machine": "laptop",
+              "name": "ada"
+            },
+            "model": "claude-fable-5",
+            "name": "claude-code",
+            "session_id": "sess_01",
+            "type": "Agent",
+            "via": "Mcp"
+          },
+          "created": 1700000006000,
+          "id": 41,
+          "in_reply_to": {
+            "request_id": 40,
+            "type": "Request"
+          },
+          "review_id": "01HF7YATZ80000000000000004",
+          "reviewer": {
+            "name": "claude-code",
+            "type": "Agent"
+          },
+          "targets": [
+            {
+              "base": {
+                "source": {
+                  "oid": "1f202122232425262728292a2b2c2d2e2f303132",
+                  "type": "Commit"
+                },
+                "tree": "8b8c8d8e8f909192939495969798999a9b9c9d9e"
+              },
+              "head": {
+                "source": {
+                  "branch": "feature",
+                  "dirty": [
+                    "src/lib.rs"
+                  ],
+                  "head": "3e3f404142434445464748494a4b4c4d4e4f5051",
+                  "type": "WorkingTree"
+                },
+                "tree": "aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbd"
+              },
+              "repo_id": "01HF7YAT000000000000000002"
+            },
+            {
+              "base": {
+                "source": {
+                  "oid": "1f202122232425262728292a2b2c2d2e2f303132",
+                  "type": "Commit"
+                },
+                "tree": "c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdc"
+              },
+              "head": {
+                "source": {
+                  "oid": "3e3f404142434445464748494a4b4c4d4e4f5051",
+                  "type": "Commit"
+                },
+                "tree": "e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafb"
+              },
+              "repo_id": "01HF7YAT000000000000000003"
+            }
+          ]
+        },
+        "freshness": "Current"
+      }
+    ],
+    "requests": [
+      {
+        "created": 1700000000000,
+        "id": 40,
+        "note": "Please review the updated parser.",
+        "recipient": "review-agent",
+        "requester": {
+          "machine": "laptop",
+          "name": "ada",
+          "type": "Human"
+        },
+        "review_id": "01HF7YATZ80000000000000004",
+        "targets": {
+          "type": "Unknown"
+        }
+      }
+    ],
+    "seq": 42,
+    "suggestions": [
+      {
+        "anchor": {
+          "blob_oid": "a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5",
+          "context_hash": "0123456789abcdef",
+          "lines": {
+            "end": 12,
+            "start": 10
+          },
+          "path": "src/lib.rs",
+          "repo_id": "01HF7YAT000000000000000002",
+          "side": "Head",
+          "type": "Lines"
+        },
+        "comment_id": "01HF7YAWXR0000000000000006",
+        "outcome": {
+          "type": "Unapplied"
+        },
+        "patch": "@@ -10,1 +10,1 @@\n-let x = 1;\n+let x: u32 = 1;\n",
+        "review_id": "01HF7YATZ80000000000000004"
+      }
+    ],
+    "summary": {
+      "comments": 2,
+      "deferred": 0,
+      "deleted": 0,
+      "deleted_comments": 0,
+      "informational": 0,
+      "open": 1,
+      "resolved": 0,
+      "threads": 1
+    },
+    "threads": [
+      {
+        "comments": [
+          {
+            "anchor": {
+              "blob_oid": "a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5",
+              "context_hash": "0123456789abcdef",
+              "lines": {
+                "end": 12,
+                "start": 10
+              },
+              "path": "src/lib.rs",
+              "repo_id": "01HF7YAT000000000000000002",
+              "side": "Head",
+              "type": "Lines"
+            },
+            "author": {
+              "machine": "laptop",
+              "name": "ada",
+              "type": "Human"
+            },
+            "body": "This should be a newtype.",
+            "context": {
+              "change": {
+                "new": {
+                  "mode": "Regular",
+                  "oid": "c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4"
+                },
+                "old": {
+                  "mode": "Regular",
+                  "oid": "a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5"
+                },
+                "type": "Modified"
+              },
+              "type": "Diff"
+            },
+            "created": 1700000002000,
+            "edited": null,
+            "id": "01HF7YAVYG0000000000000005",
+            "kind": {
+              "type": "Note"
+            },
+            "review_id": "01HF7YATZ80000000000000004",
+            "state": {
+              "type": "Live"
+            },
+            "thread_id": "01HF7YAVYG0000000000000005"
+          },
+          {
+            "anchor": {
+              "blob_oid": "a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5",
+              "context_hash": "0123456789abcdef",
+              "lines": {
+                "end": 12,
+                "start": 10
+              },
+              "path": "src/lib.rs",
+              "repo_id": "01HF7YAT000000000000000002",
+              "side": "Head",
+              "type": "Lines"
+            },
+            "author": {
+              "invoked_by": {
+                "machine": "laptop",
+                "name": "ada"
+              },
+              "model": "claude-fable-5",
+              "name": "claude-code",
+              "session_id": "sess_01",
+              "type": "Agent",
+              "via": "Mcp"
+            },
+            "body": "Agreed; suggested change attached.",
+            "context": null,
+            "created": 1700000003000,
+            "edited": 1700000004000,
+            "id": "01HF7YAWXR0000000000000006",
+            "kind": {
+              "patch": "@@ -10,1 +10,1 @@\n-let x = 1;\n+let x: u32 = 1;\n",
+              "type": "Suggestion"
+            },
+            "review_id": "01HF7YATZ80000000000000004",
+            "state": {
+              "type": "Live"
+            },
+            "thread_id": "01HF7YAVYG0000000000000005"
+          }
+        ],
+        "id": "01HF7YAVYG0000000000000005",
+        "replies": [
+          "01HF7YAWXR0000000000000006"
+        ],
+        "resolution": {
+          "type": "Open"
+        },
+        "review_id": "01HF7YATZ80000000000000004",
+        "root": "01HF7YAVYG0000000000000005",
+        "status": "Open"
+      }
+    ]
+  },
+  "type": "CommentListing"
+}

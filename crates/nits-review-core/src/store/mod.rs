@@ -21,6 +21,7 @@
 //! All values are JSON. Ids are stored as their canonical strings so keys are
 //! human-readable in a hex dump and sort by ULID time.
 
+mod comment_query;
 mod discovery;
 mod migrate;
 pub mod replay;
@@ -270,6 +271,13 @@ impl Store {
         id: ReviewId,
     ) -> Result<Option<nits_protocol::ReviewSnapshot>, StoreError> {
         let txn = self.db.begin_read()?;
+        Self::snapshot_in_transaction(&txn, id)
+    }
+
+    fn snapshot_in_transaction(
+        txn: &redb::ReadTransaction,
+        id: ReviewId,
+    ) -> Result<Option<nits_protocol::ReviewSnapshot>, StoreError> {
         let rid = id.to_string();
         let reviews = txn.open_table(tables::REVIEWS)?;
         let Some(record) = reviews.get(rid.as_str())? else {

@@ -1,0 +1,12 @@
+{
+  "query": {
+    "author": null,
+    "path": null,
+    "repo_id": null,
+    "since": null,
+    "status": null,
+    "thread_id": null
+  },
+  "review_id": "01HF7YATZ80000000000000004",
+  "type": "ListComments"
+}

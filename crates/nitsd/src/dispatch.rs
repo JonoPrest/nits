@@ -50,6 +50,12 @@ pub async fn single(
             let discovery = daemon.read(move |c| c.discover_reviews(&query)).await?;
             Ok(Response::ReviewDiscovery { discovery })
         }
+        Request::ListComments { review_id, query } => {
+            let listing = daemon
+                .read(move |c| c.list_comments(review_id, &query))
+                .await?;
+            Ok(Response::CommentListing { listing })
+        }
         Request::DefaultBase { repo_id } => {
             let base = daemon.read(move |c| c.default_base(repo_id)).await?;
             Ok(Response::DefaultBase { base })

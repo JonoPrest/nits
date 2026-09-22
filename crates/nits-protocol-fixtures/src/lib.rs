@@ -16,6 +16,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use strum::IntoEnumIterator;
 
+use nits_protocol::comment_query::*;
 use nits_protocol::discovery::*;
 use nits_protocol::domain::*;
 use nits_protocol::events::*;
@@ -209,6 +210,11 @@ registry!(
     PendingReviewRequest,
     ReviewSummary,
     ReviewDiscovery,
+    CommentThreadStatus,
+    CommentQuery,
+    CommentThread,
+    CommentSummary,
+    CommentListing,
     Sig,
     CommitInfo,
     Human,
@@ -1003,6 +1009,52 @@ struct_fixture!(
     }
 );
 
+unit_enum_fixture!(CommentThreadStatus, "CommentThreadStatus");
+struct_fixture!(
+    CommentQuery,
+    "CommentQuery",
+    CommentQuery {
+        status: Some(CommentThreadStatus::Open),
+        thread_id: Some(thread_id()),
+        path: Some(path("src/lib.rs")?),
+        repo_id: Some(repo_id()),
+        author: Some("review-agent".into()),
+        since: Some(Seq::new(12)),
+    }
+);
+struct_fixture!(CommentThread, "CommentThread", comment_thread()?);
+struct_fixture!(CommentSummary, "CommentSummary", comment_listing()?.summary);
+struct_fixture!(CommentListing, "CommentListing", comment_listing()?);
+fn comment_thread() -> Result<CommentThread, FixtureError> {
+    let thread = thread();
+    Ok(CommentThread {
+        id: thread.id,
+        review_id: thread.review_id,
+        root: thread.root,
+        replies: thread.replies,
+        resolution: thread.resolution,
+        status: CommentThreadStatus::Open,
+        comments: NonEmpty::new(vec![comment()?, reply_comment()?])?,
+    })
+}
+fn comment_listing() -> Result<CommentListing, FixtureError> {
+    let snapshot = review_snapshot()?;
+    Ok(CommentListing {
+        threads: vec![comment_thread()?],
+        summary: CommentSummary {
+            threads: 1,
+            open: 1,
+            comments: 2,
+            ..CommentSummary::default()
+        },
+        suggestions: snapshot.suggestions,
+        latest_checkpoints: latest_checkpoints(&snapshot.checkpoints, snapshot.resolved.as_ref()),
+        requests: snapshot.requests,
+        checkpoints: snapshot.checkpoints,
+        seq: snapshot.seq,
+    })
+}
+
 fn review_activity() -> ReviewActivity {
     ReviewActivity {
         seq: Seq::new(41),
@@ -1793,6 +1845,10 @@ enum_fixture!(
         Request::DiscoverReviews {
             query: ReviewQuery::default()
         },
+        Request::ListComments {
+            review_id: review_id(),
+            query: CommentQuery::default()
+        },
         Request::ListRefs { repo_id: repo_id() },
         Request::DefaultBase { repo_id: repo_id() },
         Request::GetReview {
@@ -1916,6 +1972,9 @@ enum_fixture!(
                 reviews: vec![review_summary()?],
                 seq: Seq::new(42)
             }
+        },
+        Response::CommentListing {
+            listing: comment_listing()?
         },
         Response::DefaultBase {
             base: RefSpec::Branch {

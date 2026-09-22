@@ -47,6 +47,15 @@ fn small_repo() -> TestRepo {
         .unwrap()
 }
 
+fn joined_comments(listing: &Value) -> Vec<&Value> {
+    listing["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|thread| thread["comments"].as_array().unwrap())
+        .collect()
+}
+
 fn start() -> Harness {
     start_with_repo(small_repo())
 }
@@ -554,10 +563,8 @@ async fn session_identity_changes_future_authorship_and_preserves_other_sessions
         (&reply, &updated),
         (&other_comment, &other_identity),
     ] {
-        let comment = comments["comments"]
-            .as_array()
-            .unwrap()
-            .iter()
+        let comment = joined_comments(&comments)
+            .into_iter()
             .find(|comment| comment["id"] == result["comment_id"])
             .unwrap();
         assert_eq!(comment["author"], identity["author"]);
@@ -1086,9 +1093,9 @@ async fn agent_comments_carry_provenance_and_thread_ops_work() {
         );
     }
     let comments = call(&mut s, "list_comments", json!({ "review_id": review_id })).await;
-    let all = comments["comments"].as_array().unwrap();
+    let all = joined_comments(&comments);
     assert_eq!(all.len(), 4);
-    for cm in all {
+    for cm in &all {
         assert_eq!(cm["author"]["type"], json!("Agent"), "{cm}");
         assert_eq!(cm["author"]["name"], json!("claude-code"));
         assert_eq!(cm["author"]["model"], json!("test-model"));
@@ -1972,8 +1979,11 @@ async fn context_switch_is_atomic_preserves_identity_and_isolates_events() {
         context_a
     );
     let comments = call(&mut s, "list_comments", json!({"review_id":review_id})).await;
-    assert_eq!(comments["comments"].as_array().unwrap().len(), 1);
-    assert_eq!(comments["comments"][0]["body"], "comment on a");
+    assert_eq!(comments["summary"]["comments"], 1);
+    assert_eq!(
+        comments["threads"][0]["comments"][0]["body"],
+        "comment on a"
+    );
 }
 
 #[tokio::test]
@@ -2358,7 +2368,11 @@ async fn deferred_followup_is_discoverable_to_fresh_clients_and_can_be_reopened(
         let snapshot = call(&mut fresh, tool, json!({"review_id":review})).await;
         assert_eq!(snapshot["threads"][0]["resolution"], resolution);
         assert_eq!(
-            snapshot["comments"][0]["body"],
+            if tool == "list_comments" {
+                &snapshot["threads"][0]["comments"][0]["body"]
+            } else {
+                &snapshot["comments"][0]["body"]
+            },
             "Controller wire-format bug"
         );
     }
@@ -2453,6 +2467,94 @@ async fn checkpoints_capture_h1_check_after_h2_and_inspect_delta_with_fresh_iden
     assert_eq!(delta["context"], after["context"]);
     let diff = call(&mut restarted, "get_diff", json!({"review_id": review_id, "path": "round.txt", "scope": {"type": "SinceCheckpoint", "checkpoint_id": checked["id"]}})).await;
     assert!(diff["text"].as_str().unwrap().contains("H2"));
+}
+
+#[tokio::test]
+async fn comment_listing_filters_complete_threads_and_preserves_coordination() {
+    let h = start();
+    let c = human(&h).await;
+    let (ws, repo) = seed(&h, &c).await;
+    let mut s = server(&h);
+    init(&mut s).await;
+    let created = call(&mut s, "create_review", json!({"workspace_id":ws,"title":"query","targets":[{"repo_id":repo,"base":{"type":"Branch","name":"main"},"head":{"type":"WorkingTree"}}]})).await;
+    let review = &created["review_id"];
+    let root = call(
+        &mut s,
+        "add_comment",
+        json!({"review_id":review,"path":"a.rs","repo_id":repo,"body":"root\nsecond"}),
+    )
+    .await;
+    let reply = call(
+        &mut s,
+        "reply",
+        json!({"review_id":review,"thread_id":root["thread_id"],"body":"reply"}),
+    )
+    .await;
+    let info = call(
+        &mut s,
+        "add_comment",
+        json!({"review_id":review,"intent":"Informational","body":"status"}),
+    )
+    .await;
+    let requested = call(
+        &mut s,
+        "request_review",
+        json!({"review_id":review,"agent":"reader","note":"inspect"}),
+    )
+    .await;
+    let snapshot = call(&mut s, "get_review", json!({"review_id":review})).await;
+    call(
+        &mut s,
+        "record_checkpoint",
+        json!({"review_id":review,"targets":snapshot["resolved"]}),
+    )
+    .await;
+    let before = h.daemon.core().last_seq().unwrap();
+    let selected = call(&mut s, "list_comments", json!({"review_id":review,"status":"Open","thread_id":root["thread_id"],"path":"a.rs","repo_id":repo,"author":"claude-code","since":root["seq"]})).await;
+    assert!(
+        selected.get("comments").is_none(),
+        "no duplicate flat array"
+    );
+    assert_eq!(selected["summary"]["threads"], 1);
+    assert_eq!(selected["summary"]["comments"], 2);
+    assert_eq!(
+        selected["threads"][0]["comments"][0]["id"],
+        root["comment_id"]
+    );
+    assert_eq!(
+        selected["threads"][0]["comments"][1]["id"],
+        reply["comment_id"]
+    );
+    assert_eq!(selected["requests"][0]["id"], requested["request_id"]);
+    assert_eq!(selected["checkpoints"].as_array().unwrap().len(), 1);
+    assert_eq!(selected["latest_checkpoints"].as_array().unwrap().len(), 1);
+    let empty = call(
+        &mut s,
+        "list_comments",
+        json!({"review_id":review,"since":u64::MAX}),
+    )
+    .await;
+    assert_eq!(empty["summary"]["threads"], 0);
+    assert_eq!(empty["seq"], selected["seq"]);
+    assert_eq!(empty["requests"], selected["requests"]);
+    let informational = call(
+        &mut s,
+        "list_comments",
+        json!({"review_id":review,"status":"Informational"}),
+    )
+    .await;
+    assert_eq!(informational["threads"][0]["root"], info["comment_id"]);
+    for bad in [
+        json!({"status":"open"}),
+        json!({"path":"../outside"}),
+        json!({"since":-1}),
+        json!({"thread_id":"wrong"}),
+    ] {
+        let mut args = bad;
+        args["review_id"] = review.clone();
+        call_err(&mut s, "list_comments", args).await;
+    }
+    assert_eq!(h.daemon.core().last_seq().unwrap(), before);
 }
 
 #[path = "checkpoint/mod.rs"]
@@ -2582,7 +2684,7 @@ async fn submodule_changes_are_metadata_in_mcp_and_never_source_line_anchors() {
         let error = call_err(&mut s, "add_comment", json!({"review_id":id, "path":"dep", "side":side, "start_line":1, "body":"metadata has no source line"})).await;
         assert!(error.contains("submodule"), "{error}");
         let comments = call(&mut s, "list_comments", json!({"review_id":id})).await;
-        assert!(comments["comments"].as_array().unwrap().is_empty());
+        assert!(comments["threads"].as_array().unwrap().is_empty());
     }
 }
 

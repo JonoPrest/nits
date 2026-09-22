@@ -510,6 +510,7 @@ fn daemon_answers(core: &mut ClientCore, effects: &[Effect]) -> Vec<Effect> {
             | Request::ListWorkspaces
             | Request::ListReviews { .. }
             | Request::DiscoverReviews { .. }
+            | Request::ListComments { .. }
             | Request::ListRefs { .. }
             | Request::DefaultBase { .. }
             | Request::EnsureDirectoryReview { .. }
@@ -698,6 +699,7 @@ fn viewport_requests_only_the_window_and_bounds_in_flight() {
             | Request::ListWorkspaces
             | Request::ListReviews { .. }
             | Request::DiscoverReviews { .. }
+            | Request::ListComments { .. }
             | Request::ListRefs { .. }
             | Request::DefaultBase { .. }
             | Request::EnsureDirectoryReview { .. }
@@ -1370,6 +1372,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
                 | Request::ListWorkspaces
                 | Request::ListReviews { .. }
                 | Request::DiscoverReviews { .. }
+                | Request::ListComments { .. }
                 | Request::ListRefs { .. }
                 | Request::DefaultBase { .. }
                 | Request::EnsureDirectoryReview { .. }
@@ -1493,6 +1496,7 @@ fn restart_serves_the_previous_review_from_disk_without_content_requests() {
             | Request::ListWorkspaces
             | Request::ListReviews { .. }
             | Request::DiscoverReviews { .. }
+            | Request::ListComments { .. }
             | Request::ListRefs { .. }
             | Request::DefaultBase { .. }
             | Request::EnsureDirectoryReview { .. }
@@ -2053,6 +2057,7 @@ fn comments_are_placed_on_rows_by_anchor_and_listed_as_threads() {
             | Request::ListWorkspaces
             | Request::ListReviews { .. }
             | Request::DiscoverReviews { .. }
+            | Request::ListComments { .. }
             | Request::ListRefs { .. }
             | Request::DefaultBase { .. }
             | Request::EnsureDirectoryReview { .. }

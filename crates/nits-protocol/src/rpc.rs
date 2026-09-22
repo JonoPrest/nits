@@ -282,6 +282,10 @@ pub enum Request {
     DiscoverReviews {
         query: crate::ReviewQuery,
     },
+    ListComments {
+        review_id: ReviewId,
+        query: crate::CommentQuery,
+    },
     /// Detect the branch a working-tree review should use as its base.
     /// Detection runs beside the repository, in the daemon, so local and
     /// remote clients behave identically.
@@ -418,6 +422,7 @@ impl Request {
             Request::ListWorkspaces
             | Request::ListReviews { .. }
             | Request::DiscoverReviews { .. }
+            | Request::ListComments { .. }
             | Request::ListRefs { .. }
             | Request::DefaultBase { .. }
             | Request::EnsureDirectoryReview { .. }
@@ -477,6 +482,9 @@ pub enum Response {
     },
     ReviewDiscovery {
         discovery: crate::ReviewDiscovery,
+    },
+    CommentListing {
+        listing: crate::CommentListing,
     },
     DefaultBase {
         base: RefSpec,

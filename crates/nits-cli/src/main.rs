@@ -3,6 +3,7 @@
 //! printer over [`nitsd::ops::Ops`]; `--json` prints the protocol values
 //! verbatim for scripting.
 
+mod comments;
 mod events;
 mod skill;
 
@@ -512,10 +513,7 @@ enum CommentCmd {
         review: ReviewId,
         thread: ThreadId,
     },
-    List {
-        #[command(flatten)]
-        review: ReviewArg,
-    },
+    List(comments::ListArgs),
 }
 
 #[derive(Debug, Args)]
@@ -2198,50 +2196,10 @@ async fn comment(ops: &mut Ops, cmd: CommentCmd, json: bool) -> anyhow::Result<(
                 .await?;
             emit(json, &event, String::new)
         }
-        CommentCmd::List { review } => {
-            let snap = ops.snapshot(review.0).await?;
-            emit(json, &(&snap.threads, &snap.comments), || {
-                let mut out = String::new();
-                for t in &snap.threads {
-                    let state = match t.resolution {
-                        nits_protocol::ThreadResolution::Open => "open",
-                        nits_protocol::ThreadResolution::Deferred { .. } => "deferred (unfixed)",
-                        nits_protocol::ThreadResolution::Informational => "informational",
-                        nits_protocol::ThreadResolution::Resolved { .. } => "resolved",
-                    };
-                    let _ = writeln!(out, "thread {} [{state}]", t.id);
-                    if let nits_protocol::ThreadResolution::Deferred {
-                        reason,
-                        tracking_url,
-                        by,
-                        at,
-                    } = &t.resolution
-                    {
-                        let _ = writeln!(out, "  Deferred by {by:?} at {at:?}: {reason}");
-                        if let Some(url) = tracking_url {
-                            let _ = writeln!(out, "  Follow-up: {url}");
-                        }
-                    }
-                    for id in std::iter::once(&t.root).chain(t.replies.iter()) {
-                        if let Some(c) = snap.comments.iter().find(|c| c.id == *id) {
-                            let who = match &c.author {
-                                Author::Human { name, .. } | Author::Agent { name, .. } => {
-                                    name.as_str()
-                                }
-                                Author::Daemon { .. } => "daemon",
-                            };
-                            let _ = writeln!(
-                                out,
-                                "  {} {who} @ {}: {}",
-                                c.id,
-                                anchor_text(&c.anchor),
-                                c.body
-                            );
-                        }
-                    }
-                }
-                out
-            })
+        CommentCmd::List(args) => {
+            let (review, query, oneline) = args.into_query();
+            let listing = ops.list_comments(review, query).await?;
+            emit(json, &listing, || comments::text(&listing, oneline))
         }
     }
 }

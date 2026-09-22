@@ -919,3 +919,23 @@ must agree with the actual running descriptor before the worker is installed.
 See [DAEMON-UPGRADES.md](DAEMON-UPGRADES.md) for CLI/keymap behavior, failure
 recovery, exact local/remote installation selection and the explicit pre-contract
 legacy bootstrap boundary.
+
+
+### Complete comment-list queries (#160)
+
+`Core::list_comments` and `Request::ListComments` return a typed `CommentListing`
+from one redb read transaction. The same transaction reads the materialized
+snapshot, its cursor and (for an exclusive `since`) relevant committed events.
+Only thread/comment lifecycle, anchor and suggestion-application events select a
+changed conversation; unrelated review metadata and coordination events do not.
+Filters combine at thread granularity and return every comment in root/reply order.
+Status counts describe the selected rows, with deleted roots separate from their
+retained historical resolution and outdated anchors still distinguishable.
+
+CLI and MCP are printers over the shared Ops request. Joined rows carry original
+thread fields, computed status and comments; the listing also includes summary,
+selected suggestion records and review-wide requests/checkpoints/latest freshness.
+No Git read, mutation, event migration or materialized schema change is needed.
+The CLI's old positional tuple and MCP's separate flat comment array are replaced
+by named joined conversations. Structured priority remains out of scope: prose
+prefixes are not silently converted into persisted severity.

@@ -96,9 +96,9 @@ pub enum ToolCall {
     ))]
     GetFile(GetFile),
     #[strum_discriminants(strum(
-        message = "Comment threads on a review, including Open current-scope findings, Deferred unfixed follow-ups with reason/link/actor/time, Resolved findings, and Informational notes, plus comments and attribution, and a separate collection of durable review requests."
+        message = "Comment threads joined with ordered comments, filtered counts and a coherent cursor. Filter by status, thread_id, exact path/repo_id/author, or exclusive since thread activity. Deleted roots are separate from Open findings. Complete Deferred reason/link/actor/time and review-wide requests/checkpoints remain available."
     ))]
-    ListComments(ByReview),
+    ListComments(ListComments),
     #[strum_discriminants(strum(
         message = "Start a thread. Anchor to the whole review (no path), a file (path only) or a line range (path + `start_line` [+ `end_line`]) on the given side. Line bounds must be positive and require a path. An end requires a start and must be at least the start; omitted end means a single line."
     ))]
@@ -148,7 +148,7 @@ pub enum QueryCall {
     GetCheckpointDelta(GetCheckpointDelta),
     GetDiff(GetDiff),
     GetFile(GetFile),
-    ListComments(ByReview),
+    ListComments(ListComments),
 }
 
 /// A call that appends to the log.
@@ -370,7 +370,7 @@ impl ToolName {
             ToolName::UpdateReview => (schema_for!(UpdateReview), schema_for!(Updated)),
             ToolName::GetDiff => (schema_for!(GetDiff), schema_for!(DiffText)),
             ToolName::GetFile => (schema_for!(GetFile), schema_for!(FileText)),
-            ToolName::ListComments => (schema_for!(ByReview), schema_for!(Comments)),
+            ToolName::ListComments => (schema_for!(ListComments), schema_for!(Comments)),
             ToolName::AddComment => (schema_for!(AddComment), schema_for!(NewThread)),
             ToolName::Suggest => (schema_for!(Suggest), schema_for!(NewThread)),
             ToolName::Reply => (schema_for!(Reply), schema_for!(Replied)),
@@ -558,6 +558,43 @@ pub struct ListReviews {
 #[serde(deny_unknown_fields)]
 pub struct ByReview {
     pub review_id: ReviewId,
+}
+
+/// Filter complete conversations; since is an exclusive thread-activity sequence.
+/// Counts cover returned threads; deleted roots are not open findings.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListComments {
+    pub review_id: ReviewId,
+    #[serde(default)]
+    pub status: Option<nits_protocol::CommentThreadStatus>,
+    #[serde(default)]
+    pub thread_id: Option<ThreadId>,
+    #[serde(default)]
+    pub path: Option<RepoPath>,
+    #[serde(default)]
+    pub repo_id: Option<RepoId>,
+    /// Exact name of any comment author in the thread.
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub since: Option<Seq>,
+}
+
+impl ListComments {
+    pub fn query(self) -> (ReviewId, nits_protocol::CommentQuery) {
+        (
+            self.review_id,
+            nits_protocol::CommentQuery {
+                status: self.status,
+                thread_id: self.thread_id,
+                path: self.path,
+                repo_id: self.repo_id,
+                author: self.author,
+                since: self.since,
+            },
+        )
+    }
 }
 
 /// One repo's base and head. `repo_id` may be omitted to mean the repo
@@ -1081,12 +1118,8 @@ pub struct FileLines {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Comments {
     pub context: ContextIdentity,
-    pub threads: Vec<Thread>,
-    pub comments: Vec<Comment>,
-    pub requests: Vec<nits_protocol::ReviewRequest>,
-    pub checkpoints: Vec<nits_protocol::ReviewCheckpoint>,
-    pub latest_checkpoints: Vec<nits_protocol::ReviewerCheckpoint>,
-    pub seq: Seq,
+    #[serde(flatten)]
+    pub listing: nits_protocol::CommentListing,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
