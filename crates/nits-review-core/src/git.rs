@@ -628,40 +628,37 @@ impl Repo {
         })
     }
 
-    /// `git rev-parse` of `<rev>^{commit}`.
+    /// Resolve the exact Git expression, then peel its object ID to a commit.
+    /// Appending a peel operator to `:/message` would change its search pattern.
     pub fn rev_parse_commit(&self, rev: &str) -> Result<CommitOid, GitError> {
-        let spec = format!("{rev}^{{commit}}");
-        let out = self
-            .git(
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    "--end-of-options",
-                    &spec,
-                ],
-                &[],
-            )
-            .map_err(|e| GitError::Resolve {
-                rev: rev.to_owned(),
-                reason: match e {
-                    GitError::Command { stderr, .. } if stderr.is_empty() => {
-                        "no such revision".into()
-                    }
-                    other @ (GitError::Open { .. }
-                    | GitError::Command { .. }
-                    | GitError::Resolve { .. }
-                    | GitError::DefaultBase { .. }
-                    | GitError::Object { .. }
-                    | GitError::Parse(_)
-                    | GitError::Io(_)) => other.to_string(),
-                },
-            })?;
-        let text = String::from_utf8_lossy(&out);
-        text.trim()
-            .parse::<Oid>()
-            .map(CommitOid::new)
-            .map_err(|e| GitError::Parse(format!("rev-parse output {text:?}: {e}")))
+        let resolve = |spec: &str| {
+            let out = self
+                .git(
+                    &["rev-parse", "--verify", "--quiet", "--end-of-options", spec],
+                    &[],
+                )
+                .map_err(|e| GitError::Resolve {
+                    rev: rev.to_owned(),
+                    reason: match e {
+                        GitError::Command { stderr, .. } if stderr.is_empty() => {
+                            "no such revision".into()
+                        }
+                        other @ (GitError::Open { .. }
+                        | GitError::Command { .. }
+                        | GitError::Resolve { .. }
+                        | GitError::DefaultBase { .. }
+                        | GitError::Object { .. }
+                        | GitError::Parse(_)
+                        | GitError::Io(_)) => other.to_string(),
+                    },
+                })?;
+            let text = String::from_utf8_lossy(&out);
+            text.trim()
+                .parse::<Oid>()
+                .map_err(|e| GitError::Parse(format!("rev-parse output {text:?}: {e}")))
+        };
+        let oid = resolve(rev)?;
+        resolve(&format!("{oid}^{{commit}}")).map(CommitOid::new)
     }
 
     fn commit_tree(&self, commit: CommitOid) -> Result<TreeOid, GitError> {
