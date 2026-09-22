@@ -16,6 +16,7 @@ pub(crate) enum Recovery {
 
 impl ClientCore {
     pub(crate) fn restart_notice(&mut self, operation: UpgradeOperation) -> Vec<Effect> {
+        self.invalidate_daemon_status();
         self.recovery = Recovery::Restarting {
             operation: operation.clone(),
             deadline: self.now.saturating_add(60_000),
@@ -131,6 +132,22 @@ pub enum DaemonManagement {
 }
 
 impl ClientCore {
+    /// Status describes the connection era in which it was inspected. A known
+    /// lifecycle transition invalidates both its snapshot and any late reply;
+    /// an activation result instead belongs to its independent operation.
+    pub(crate) fn invalidate_daemon_status(&mut self) {
+        match self.view.daemon_management {
+            DaemonManagement::Inspecting | DaemonManagement::Status { .. } => {
+                self.management_request = None;
+                self.view.daemon_management = DaemonManagement::Idle;
+            }
+            DaemonManagement::Idle
+            | DaemonManagement::Upgrading
+            | DaemonManagement::Outcome { .. }
+            | DaemonManagement::Unavailable { .. } => {}
+        }
+    }
+
     pub(crate) fn manage_daemon(&mut self, request: ManagementRequest) -> Vec<Effect> {
         // The request ID supersedes slow status responses without changing the
         // chosen endpoint, persisted context, or existing daemon connection.
