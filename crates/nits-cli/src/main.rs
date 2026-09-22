@@ -1748,7 +1748,14 @@ async fn review(
                         format!("fetch completed, but review target refresh failed: {reason}")
                     }
                 };
-                let aliases = result.symbolic_tracking_refs.iter().map(|reference| format!("\nSymbolic tracking ref {} → {} remains an alias; fetch does not update it directly.", reference.name, reference.target)).collect::<String>();
+                let mut aliases = String::new();
+                for reference in &result.symbolic_tracking_refs {
+                    aliases.push_str("\nSymbolic tracking ref ");
+                    aliases.push_str(&reference.name);
+                    aliases.push_str(" → ");
+                    aliases.push_str(&reference.target);
+                    aliases.push_str(" remains an alias; fetch does not update it directly.");
+                }
                 format!(
                     "fetched {} for repository {} in review {}; {status}. Checkout, index and local branches unchanged{aliases}",
                     result.remote, result.repo_id, result.review_id
