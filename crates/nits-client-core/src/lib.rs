@@ -3710,6 +3710,7 @@ impl ClientCore {
                 if was_down {
                     return Vec::new();
                 }
+                self.invalidate_daemon_status();
                 self.view.connection = self
                     .restart_disconnected_view()
                     .unwrap_or(ConnectionView::Disconnected);
@@ -4240,6 +4241,7 @@ impl ClientCore {
                 let last_seq = self.connection.last_seq().map_or(seq, |s| s.max(seq));
                 self.connection = Connection::Subscribed { last_seq };
                 self.view.connection = ConnectionView::Subscribed;
+                self.invalidate_daemon_status();
                 self.recovery = lifecycle::Recovery::Idle;
                 self.view.last_error = None;
                 // Only a typed rejection before admission proves a retry safe.

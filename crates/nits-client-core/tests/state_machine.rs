@@ -2934,3 +2934,109 @@ fn maintenance_reply_identity_survives_disconnect_and_discards_superseded_status
         DaemonManagement::Outcome { result }
     );
 }
+
+fn daemon_status(build: nits_protocol::BuildDescriptor) -> nits_protocol::ManagedDaemonStatus {
+    nits_protocol::ManagedDaemonStatus {
+        running: nits_protocol::ManagedDaemonState::Running {
+            build: build.clone(),
+        },
+        installed: nits_protocol::InstalledCandidate::Available { build },
+        operation: None,
+    }
+}
+
+#[test]
+fn lifecycle_changes_invalidate_status_and_ignore_late_inspection_replies() {
+    use nits_client_core::{DaemonManagement, ManagementReply};
+    let operation = planned_restart(ProtocolVersion::CURRENT);
+    for completed in [false, true] {
+        for transition in [
+            Input::Server(ServerMsg::Lifecycle {
+                notice: nits_protocol::LifecycleNotice::Restarting {
+                    operation: operation.clone(),
+                },
+            }),
+            Input::Transport(TransportEvent::Disconnected),
+        ] {
+            let mut core = subscribed(11);
+            let effects = core.handle(Input::User(Action::InspectDaemon)).unwrap();
+            let Effect::ManageDaemon { id, .. } = effects[0] else {
+                panic!("inspection")
+            };
+            let reply = ManagementReply::Status(Ok(daemon_status(operation.source.clone())));
+            if completed {
+                core.handle(Input::DaemonManaged {
+                    id,
+                    reply: reply.clone(),
+                })
+                .unwrap();
+            }
+            let effects = core.handle(transition).unwrap();
+            assert_eq!(core.view().daemon_management, DaemonManagement::Idle);
+            assert!(rendered(&effects).contains(&ViewSection::Connection));
+            assert!(
+                core.handle(Input::DaemonManaged { id, reply })
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(core.view().daemon_management, DaemonManagement::Idle);
+        }
+    }
+}
+
+#[test]
+fn reconnect_invalidates_handoff_inspection_but_allows_a_fresh_status() {
+    use nits_client_core::{DaemonManagement, ManagementReply};
+    let operation = planned_restart(ProtocolVersion::CURRENT);
+    for completed in [false, true] {
+        let mut core = subscribed(11);
+        core.handle(Input::Transport(TransportEvent::Disconnected))
+            .unwrap();
+        let effects = core.handle(Input::User(Action::InspectDaemon)).unwrap();
+        let Effect::ManageDaemon { id: old, .. } = effects[0] else {
+            panic!("inspection")
+        };
+        let stale = ManagementReply::Status(Ok(daemon_status(operation.source.clone())));
+        if completed {
+            core.handle(Input::DaemonManaged {
+                id: old,
+                reply: stale.clone(),
+            })
+            .unwrap();
+        }
+        core.handle(Input::User(Action::Connect)).unwrap();
+        core.handle(Input::Transport(TransportEvent::Connected))
+            .unwrap();
+        let effects = core.handle(Input::Server(welcome())).unwrap();
+        let (id, _) = sent_request(&effects).unwrap();
+        core.handle(Input::Server(ServerMsg::Response {
+            id,
+            response: Response::Subscribed { seq: Seq::new(11) },
+        }))
+        .unwrap();
+        assert_eq!(core.view().daemon_management, DaemonManagement::Idle);
+        assert!(
+            core.handle(Input::DaemonManaged {
+                id: old,
+                reply: stale
+            })
+            .unwrap()
+            .is_empty()
+        );
+
+        let effects = core.handle(Input::User(Action::InspectDaemon)).unwrap();
+        let Effect::ManageDaemon { id, .. } = effects[0] else {
+            panic!("fresh inspection")
+        };
+        let status = daemon_status(operation.target.clone());
+        core.handle(Input::DaemonManaged {
+            id,
+            reply: ManagementReply::Status(Ok(status.clone())),
+        })
+        .unwrap();
+        assert_eq!(
+            core.view().daemon_management,
+            DaemonManagement::Status { status }
+        );
+    }
+}
