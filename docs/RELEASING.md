@@ -78,11 +78,12 @@ those path dependencies when it packages, which is also what keeps the
 ## What each package ships
 
 One binary: `nits`. The daemon is `nits daemon serve` and the MCP server is
-`nits mcp`, both linked in from the `nitsd` and `nits-mcp` *libraries*, and
-`nitsd::launch::nits_binary` starts a daemon by re-executing the running
-`nits`. So there is no second executable to bundle, to depend on, or to let
-drift a version behind the client — which is the failure this layout exists to
-remove.
+`nits mcp`, both linked in from the `nitsd` and `nits-mcp` *libraries*.
+`nitsd::launch::nits_program` selects the installed executable for new daemon
+processes, so no separate daemon or MCP executable needs packaging. An existing
+process may still run older bytes after installation; packaging alone does not
+replace it. [Coordinated activation](DAEMON-UPGRADES.md) handles supported running
+daemons and MCP workers, with explicit bootstrap requirements for older builds.
 
 | Package | Binaries |
 | --- | --- |
@@ -95,8 +96,10 @@ The Homebrew `test` block runs `nits workspace list`, which reaches
 `ensure_daemon`, and drives one `initialize` through `nits mcp`. `--version`
 passes on a binary missing either piece, so neither would catch it.
 
-`cargo install nits` is now the whole instruction: one crate, one binary,
-nothing about dependency crates whose binaries cargo will not install.
+`cargo install nits --locked` installs the published package: one crate, one
+binary, with no separate dependency binaries to install. It does not build
+unreleased `main`; the [source-install instructions](../README.md#install) cover
+that workflow and explicit activation of same-version development builds.
 
 Note for deb metadata: cargo-deb interpolates only `$auto`, so a literal
 `$version` in `depends`/`provides` reaches the control file verbatim and
